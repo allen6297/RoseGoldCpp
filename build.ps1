@@ -23,7 +23,12 @@ $sources = @(
     "RoseGoldC\RoseGoldC.cpp",
     "RoseGoldC\lexer.cpp",
     "RoseGoldC\parser.cpp",
-    "RoseGoldC\eval.cpp"
+    "RoseGoldC\value.cpp",
+    "RoseGoldC\modules.cpp",
+    "RoseGoldC\constexpr.cpp",
+    "RoseGoldC\typecheck.cpp",
+    "RoseGoldC\eval.cpp",
+    "RoseGoldC\harness.cpp"
 )
 
 $quoted = ($sources | ForEach-Object { "`"$root\$_`"" }) -join " "

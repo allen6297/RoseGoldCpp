@@ -22,7 +22,7 @@ Open a `.rg` file. Title-bar play / beaker, or Command Palette:
 - **RoseGoldC: Run Tests** → `RoseGoldC.exe test <file>`
 - **Go to Definition** (F12) on a `fn` / `signal` / `struct` name
 - Hover shows the declaration and any `///` / `//` / `#` comments above it
-- **IntelliSense**: keywords, types, `print` / `checks.*`, file symbols; `connect`/`emit` after a signal name + `.`; `@test` / `@deprecated` after `@`
+- **IntelliSense**: keywords, types, `print` / `checks.*`, file symbols; `connect`/`emit` after a signal name + `.`; `@test` / `@deprecated` / `@constexpr` after `@`
 
 Comments: `//` line, `///` docs, `/# ... #/` block (jump between delimiters with **Go to Bracket**). `#` line comments still work. `#` is also fine in older examples.
 

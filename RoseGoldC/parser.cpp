@@ -41,21 +41,24 @@ struct Parser {
     return advance();
   }
 
-  void parseType() {
-    expect(Tok::Identifier, "expected type name");
-    if (!match(Tok::LArrow))
-      return;
-    if (!check(Tok::RArrow)) {
-      do {
-        parseType();
-      } while (match(Tok::Comma));
+  std::string parseType() {
+    const Token &name = expect(Tok::Identifier, "expected type name");
+    std::string t = name.text;
+    if (match(Tok::LArrow)) {
+      if (!check(Tok::RArrow)) {
+        do {
+          parseType();
+        } while (match(Tok::Comma));
+      }
+      expect(Tok::RArrow, "expected '>'");
     }
-    expect(Tok::RArrow, "expected '>'");
+    return t;
   }
 
-  void skipTypeAnnotation() {
-    if (match(Tok::Colon))
-      parseType();
+  std::string parseOptionalType() {
+    if (!match(Tok::Colon))
+      return "";
+    return parseType();
   }
 
   Expr make(Expr::Kind kind, int line, int col) {
@@ -66,11 +69,23 @@ struct Parser {
     return e;
   }
 
+  struct FnAttrs {
+    bool isTest = false;
+    bool isDeprecated = false;
+    bool isConstexpr = false;
+    bool any() const { return isTest || isDeprecated || isConstexpr; }
+  };
+
   Expr parsePrimary() {
     const Token &t = peek();
     if (match(Tok::Integer)) {
       Expr e = make(Expr::Kind::Int, t.line, t.col);
       e.number = t.number;
+      return e;
+    }
+    if (match(Tok::Float)) {
+      Expr e = make(Expr::Kind::Float, t.line, t.col);
+      e.real = t.real;
       return e;
     }
     if (match(Tok::String)) {
@@ -92,6 +107,32 @@ struct Parser {
       Expr inner = parseExpr();
       expect(Tok::RParen, "expected ')'");
       return inner;
+    }
+    if (match(Tok::LBracket)) {
+      Expr e = make(Expr::Kind::Array, t.line, t.col);
+      if (!check(Tok::RBracket)) {
+        do {
+          e.kids.push_back(parseExpr());
+        } while (match(Tok::Comma));
+      }
+      expect(Tok::RBracket, "expected ']' after array");
+      return e;
+    }
+    if (match(Tok::LBrace)) {
+      Expr e = make(Expr::Kind::Map, t.line, t.col);
+      if (!check(Tok::RBrace)) {
+        while (true) {
+          e.kids.push_back(parseExpr());
+          expect(Tok::Colon, "expected ':' after map key");
+          e.kids.push_back(parseExpr());
+          if (!match(Tok::Comma))
+            break;
+          if (check(Tok::RBrace))
+            break;
+        }
+      }
+      expect(Tok::RBrace, "expected '}' after map");
+      return e;
     }
     errorHere("expected expression");
   }
@@ -162,6 +203,12 @@ struct Parser {
         }
         expect(Tok::RParen, "expected ')'");
         expr = std::move(call);
+      } else if (match(Tok::LBracket)) {
+        Expr idx = make(Expr::Kind::Index, expr.line, expr.col);
+        idx.kids.push_back(std::move(expr));
+        idx.kids.push_back(parseExpr());
+        expect(Tok::RBracket, "expected ']' after index");
+        expr = std::move(idx);
       } else if (expr.kind == Expr::Kind::Var && isStructLitStart()) {
         expr = parseStructLit(std::move(expr));
       } else {
@@ -272,6 +319,19 @@ struct Parser {
       s.body = parseBlock();
       return s;
     }
+    if (match(Tok::For)) {
+      Stmt s;
+      s.kind = Stmt::Kind::For;
+      s.line = t.line;
+      s.col = t.col;
+      s.name = expect(Tok::Identifier, "expected loop variable").text;
+      expect(Tok::In, "expected 'in' after loop variable");
+      s.expr = parseExpr();
+      s.body = parseBlock();
+      return s;
+    }
+    if (check(Tok::Match) || check(Tok::Switch))
+      return parseMatchStmt();
     if (match(Tok::Return)) {
       Stmt s;
       s.kind = Stmt::Kind::Return;
@@ -298,11 +358,12 @@ struct Parser {
     if (match(Tok::Variable) || match(Tok::Constant)) {
       const bool isConst = prev().kind == Tok::Constant;
       const Token &name = expect(Tok::Identifier, "expected variable name");
-      skipTypeAnnotation();
+      std::string ty = parseOptionalType();
       expect(Tok::Eq, "expected '='");
       Stmt s;
       s.kind = isConst ? Stmt::Kind::Const : Stmt::Kind::Var;
       s.name = name.text;
+      s.typeName = std::move(ty);
       s.expr = parseExpr();
       s.line = name.line;
       s.col = name.col;
@@ -331,37 +392,164 @@ struct Parser {
       s.name = s.expr.text;
       s.target = std::move(s.expr.kids[0]);
       s.expr = parseExpr();
+    } else if (s.expr.kind == Expr::Kind::Index && match(Tok::Eq)) {
+      s.kind = Stmt::Kind::IndexAssign;
+      s.target = std::move(s.expr);
+      s.expr = parseExpr();
     }
     expect(Tok::Semi, "expected ';'");
     return s;
   }
-  // MARK: DECLARATIONS
-  FnDecl parseFn(bool isTest, bool isDeprecated, bool isPub) {
+
+  MatchArm parseMatchArm() {
+    MatchArm arm;
+    if (check(Tok::Integer)) {
+      arm.pat = MatchArm::Pat::Int;
+      arm.number = advance().number;
+    } else if (check(Tok::Float)) {
+      arm.pat = MatchArm::Pat::Float;
+      arm.real = advance().real;
+    } else if (check(Tok::String)) {
+      arm.pat = MatchArm::Pat::String;
+      arm.text = advance().text;
+    } else if (match(Tok::True) || match(Tok::False)) {
+      arm.pat = MatchArm::Pat::Bool;
+      arm.boolean = (prev().kind == Tok::True);
+    } else {
+      const Token &name = expect(Tok::Identifier, "expected match pattern");
+      if (name.text == "_") {
+        arm.pat = MatchArm::Pat::Wildcard;
+      } else {
+        arm.pat = MatchArm::Pat::Variant;
+        arm.name = name.text;
+        while (match(Tok::Dot))
+          arm.name = expect(Tok::Identifier, "expected name after '.'").text;
+        if (match(Tok::LParen)) {
+          if (!check(Tok::RParen)) {
+            while (true) {
+              if (check(Tok::Identifier) && tokens[i + 1].kind == Tok::Colon) {
+                arm.fieldNames.push_back(advance().text);
+                expect(Tok::Colon, "expected ':' after field name");
+                arm.binds.push_back(
+                    expect(Tok::Identifier, "expected binding name").text);
+              } else {
+                arm.fieldNames.push_back("");
+                arm.binds.push_back(
+                    expect(Tok::Identifier, "expected binding name").text);
+              }
+              if (!match(Tok::Comma))
+                break;
+              if (check(Tok::RParen))
+                break;
+            }
+          }
+          expect(Tok::RParen, "expected ')' after pattern binding");
+        }
+      }
+    }
+    arm.body = parseBlock();
+    return arm;
+  }
+
+  Stmt parseMatchStmt() {
+    const Token &kw = advance();
+    Stmt s;
+    s.kind = Stmt::Kind::Match;
+    s.line = kw.line;
+    s.col = kw.col;
+    s.expr = parseExpr();
+    expect(Tok::LBrace, "expected '{' before match arms");
+    while (!check(Tok::RBrace) && !check(Tok::Eof))
+      s.arms.push_back(parseMatchArm());
+    expect(Tok::RBrace, "expected '}' after match arms");
+    match(Tok::Semi);
+    return s;
+  }
+
+  EnumDecl parseEnum() {
+    const Token &enumTok = expect(Tok::Enum, "expected 'enum'");
+    const Token &name = expect(Tok::Identifier, "expected enum name");
+    EnumDecl e;
+    e.name = name.text;
+    e.line = enumTok.line;
+    if (match(Tok::LArrow)) {
+      int depth = 1;
+      while (depth > 0 && !check(Tok::Eof)) {
+        if (match(Tok::LArrow))
+          ++depth;
+        else if (match(Tok::RArrow))
+          --depth;
+        else
+          advance();
+      }
+    }
+    expect(Tok::LBrace, "expected '{'");
+    while (!check(Tok::RBrace) && !check(Tok::Eof)) {
+      match(Tok::Pub);
+      const Token &vname = expect(Tok::Identifier, "expected variant name");
+      EnumVariant v;
+      v.name = vname.text;
+      if (match(Tok::LParen)) {
+        if (!check(Tok::RParen)) {
+          while (true) {
+            if (check(Tok::Identifier) && tokens[i + 1].kind == Tok::Colon) {
+              v.fieldNames.push_back(advance().text);
+              expect(Tok::Colon, "expected ':' after field name");
+              parseType();
+            } else {
+              v.fieldNames.push_back("");
+              parseType();
+            }
+            ++v.arity;
+            if (!match(Tok::Comma))
+              break;
+            if (check(Tok::RParen))
+              break;
+          }
+        }
+        expect(Tok::RParen, "expected ')' after variant types");
+      }
+      for (const auto &prev : e.variants) {
+        if (prev.name == v.name)
+          errorHere("duplicate variant '" + v.name + "'");
+      }
+      e.variants.push_back(std::move(v));
+      if (!match(Tok::Comma))
+        break;
+    }
+    expect(Tok::RBrace, "expected '}' after enum variants");
+    return e;
+  }
+
+  FnDecl parseFn(const FnAttrs &attrs, bool isPub) {
     const Token &fnTok = expect(Tok::Function, "expected 'fn'");
     const Token &name = expect(Tok::Identifier, "expected function name");
     expect(Tok::LParen, "expected '('");
     FnDecl fn;
     fn.name = name.text;
-    fn.isTest = isTest;
-    fn.isDeprecated = isDeprecated;
+    fn.isTest = attrs.isTest;
+    fn.isDeprecated = attrs.isDeprecated;
+    fn.isConstexpr = attrs.isConstexpr;
     fn.isPub = isPub;
     fn.line = fnTok.line;
     if (!check(Tok::RParen)) {
       do {
         const Token &param = expect(Tok::Identifier, "expected parameter name");
-        skipTypeAnnotation();
+        fn.paramTypes.push_back(parseOptionalType());
         fn.params.push_back(param.text);
       } while (match(Tok::Comma));
     }
     expect(Tok::RParen, "expected ')'");
-    skipTypeAnnotation();
+    fn.returnType = parseOptionalType();
     fn.body = parseBlock();
     return fn;
   }
 
   void bindSelf(FnDecl &fn) {
-    if (fn.params.empty() || fn.params[0] != "self")
+    if (fn.params.empty() || fn.params[0] != "self") {
       fn.params.insert(fn.params.begin(), "self");
+      fn.paramTypes.insert(fn.paramTypes.begin(), "");
+    }
   }
 
   void checkMethodName(const std::vector<std::string> &fields,
@@ -377,26 +565,28 @@ struct Parser {
     }
   }
 
-  bool parseOneAttr(bool &isTest, bool &isDeprecated) {
+  bool parseOneAttr(FnAttrs &attrs) {
     if (!match(Tok::At))
       return false;
     const Token &attr = expect(Tok::Identifier, "expected attribute name");
     if (attr.text == "test")
-      isTest = true;
+      attrs.isTest = true;
     else if (attr.text == "deprecated")
-      isDeprecated = true;
+      attrs.isDeprecated = true;
+    else if (attr.text == "constexpr")
+      attrs.isConstexpr = true;
     else
       errorHere("unknown attribute @" + attr.text);
     return true;
   }
 
   FnDecl parseMethod() {
-    bool isTest = false;
-    bool isDeprecated = false;
-    parseOneAttr(isTest, isDeprecated);
-    if (isTest)
+    FnAttrs attrs;
+    while (parseOneAttr(attrs)) {
+    }
+    if (attrs.isTest)
       errorHere("@test cannot apply to method");
-    FnDecl fn = parseFn(false, isDeprecated, true);
+    FnDecl fn = parseFn(attrs, true);
     bindSelf(fn);
     return fn;
   }
@@ -409,22 +599,22 @@ struct Parser {
     s.line = structTok.line;
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      bool isTest = false;
-      bool isDeprecated = false;
-      parseOneAttr(isTest, isDeprecated);
+      FnAttrs attrs;
+      while (parseOneAttr(attrs)) {
+      }
       if (check(Tok::Function)) {
-        if (isTest)
+        if (attrs.isTest)
           errorHere("@test cannot apply to method");
-        FnDecl fn = parseFn(false, isDeprecated, true);
+        FnDecl fn = parseFn(attrs, true);
         bindSelf(fn);
         checkMethodName(s.fields, s.methods, fn.name);
         s.methods.push_back(std::move(fn));
         continue;
       }
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to field");
       const Token &field = expect(Tok::Identifier, "expected field name");
-      skipTypeAnnotation();
+      std::string ty = parseOptionalType();
       expect(Tok::Semi, "expected ';'");
       for (const auto &f : s.fields) {
         if (f == field.text)
@@ -436,6 +626,7 @@ struct Parser {
                     field.text + "'");
       }
       s.fields.push_back(field.text);
+      s.fieldTypes.push_back(std::move(ty));
     }
     expect(Tok::RBrace, "expected '}'");
     return s;
@@ -474,15 +665,17 @@ struct Parser {
     if (!check(Tok::RParen)) {
       do {
         const Token &param = expect(Tok::Identifier, "expected parameter name");
-        skipTypeAnnotation();
+        m.paramTypes.push_back(parseOptionalType());
         m.params.push_back(param.text);
       } while (match(Tok::Comma));
     }
     expect(Tok::RParen, "expected ')'");
-    skipTypeAnnotation();
+    m.returnType = parseOptionalType();
     expect(Tok::Semi, "expected ';' after trait method (signatures only)");
-    if (m.params.empty() || m.params[0] != "self")
+    if (m.params.empty() || m.params[0] != "self") {
       m.params.insert(m.params.begin(), "self");
+      m.paramTypes.insert(m.paramTypes.begin(), "");
+    }
     return m;
   }
 
@@ -535,10 +728,9 @@ struct Parser {
     expect(Tok::LBrace, "expected '{'");
     std::vector<std::string> fieldNames;
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      bool isTest = false;
-      bool isDeprecated = false;
+      FnAttrs attrs;
       while (true) {
-        if (parseOneAttr(isTest, isDeprecated))
+        if (parseOneAttr(attrs))
           continue;
         if (match(Tok::Pub))
           continue;
@@ -547,7 +739,7 @@ struct Parser {
       if (check(Tok::Constant))
         errorHere("class const is not v1 (use a module-level const)");
       if (check(Tok::Implements)) {
-        if (isTest || isDeprecated)
+        if (attrs.any())
           errorHere("attributes cannot apply to impl");
         expect(Tok::Implements, "expected 'impl'");
         const Token &trait =
@@ -570,9 +762,9 @@ struct Parser {
         continue;
       }
       if (check(Tok::Function)) {
-        if (isTest)
+        if (attrs.isTest)
           errorHere("@test cannot apply to method");
-        FnDecl fn = parseFn(false, isDeprecated, true);
+        FnDecl fn = parseFn(attrs, true);
         bindSelf(fn);
         checkMethodName(fieldNames, c.methods, fn.name);
         for (const auto &b : c.traitImpls) {
@@ -583,13 +775,13 @@ struct Parser {
       }
       if (!check(Tok::Variable))
         errorHere("expected var, fn, or impl in class body");
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to field");
       expect(Tok::Variable, "expected 'var'");
       const Token &field = expect(Tok::Identifier, "expected field name");
-      skipTypeAnnotation();
       ClassField f;
       f.name = field.text;
+      f.type = parseOptionalType();
       if (match(Tok::Eq)) {
         f.hasDefault = true;
         f.defaultValue = parseExpr();
@@ -613,8 +805,10 @@ struct Parser {
     expect(Tok::RBrace, "expected '}'");
     c.shape.name = c.name;
     c.shape.line = c.line;
-    for (const auto &f : c.fields)
+    for (const auto &f : c.fields) {
       c.shape.fields.push_back(f.name);
+      c.shape.fieldTypes.push_back(f.type);
+    }
     return c;
   }
 
@@ -628,7 +822,7 @@ struct Parser {
     if (!check(Tok::RParen)) {
       do {
         const Token &param = expect(Tok::Identifier, "expected parameter name");
-        skipTypeAnnotation();
+        parseOptionalType();
         sig.params.push_back(param.text);
       } while (match(Tok::Comma));
     }
@@ -671,10 +865,9 @@ struct Parser {
   void parseItem(Program *prog, ModDecl *mod) {
     const bool inMod = mod != nullptr;
     bool isPub = !inMod;
-    bool isTest = false;
-    bool isDeprecated = false;
+    FnAttrs attrs;
     while (true) {
-      if (parseOneAttr(isTest, isDeprecated))
+      if (parseOneAttr(attrs))
         continue;
       if (match(Tok::Pub)) {
         isPub = true;
@@ -683,7 +876,7 @@ struct Parser {
       break;
     }
     if (check(Tok::Import) || check(Tok::From)) {
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to import");
       ImportDecl im = parseImport();
       if (inMod)
@@ -693,7 +886,7 @@ struct Parser {
       return;
     }
     if (check(Tok::Module)) {
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to mod");
       ModDecl nested = parseMod();
       nested.isPub = isPub;
@@ -704,8 +897,10 @@ struct Parser {
       return;
     }
     if (check(Tok::Struct)) {
-      if (isTest)
+      if (attrs.isTest)
         errorHere("@test cannot apply to struct");
+      if (attrs.isConstexpr)
+        errorHere("@constexpr cannot apply to struct");
       structDecl s = parseStruct();
       s.isPub = isPub;
       if (inMod)
@@ -715,8 +910,10 @@ struct Parser {
       return;
     }
     if (check(Tok::Class)) {
-      if (isTest)
+      if (attrs.isTest)
         errorHere("@test cannot apply to class");
+      if (attrs.isConstexpr)
+        errorHere("@constexpr cannot apply to class");
       ClassDecl c = parseClass();
       c.isPub = isPub;
       c.shape.isPub = isPub;
@@ -727,8 +924,10 @@ struct Parser {
       return;
     }
     if (check(Tok::Trait)) {
-      if (isTest)
+      if (attrs.isTest)
         errorHere("@test cannot apply to trait");
+      if (attrs.isConstexpr)
+        errorHere("@constexpr cannot apply to trait");
       TraitDecl t = parseTrait();
       t.isPub = isPub;
       if (inMod)
@@ -737,8 +936,21 @@ struct Parser {
         prog->traits.push_back(std::move(t));
       return;
     }
+    if (check(Tok::Enum)) {
+      if (attrs.isTest)
+        errorHere("@test cannot apply to enum");
+      if (attrs.isConstexpr)
+        errorHere("@constexpr cannot apply to enum");
+      EnumDecl e = parseEnum();
+      e.isPub = isPub;
+      if (inMod)
+        mod->enums.push_back(std::move(e));
+      else
+        prog->enums.push_back(std::move(e));
+      return;
+    }
     if (check(Tok::Implements)) {
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to impl");
       ImplDecl impl = parseImpl();
       if (inMod)
@@ -748,7 +960,7 @@ struct Parser {
       return;
     }
     if (check(Tok::Signal)) {
-      if (isTest || isDeprecated)
+      if (attrs.any())
         errorHere("attributes cannot apply to signal");
       SignalDecl sig = parseSignal();
       sig.isPub = isPub;
@@ -758,7 +970,7 @@ struct Parser {
         prog->signals.push_back(std::move(sig));
       return;
     }
-    FnDecl fn = parseFn(isTest, isDeprecated, isPub);
+    FnDecl fn = parseFn(attrs, isPub);
     if (inMod)
       mod->fns.push_back(std::move(fn));
     else

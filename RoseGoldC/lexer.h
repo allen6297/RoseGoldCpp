@@ -8,16 +8,19 @@ enum class Tok {
   Identifier,
   //Literals
   Integer,
+  Float,
   String,
   //BLOCKS
   Module,
   Class,
   Trait,
+  Enum,
   Function,
   Struct,
   Implements,
   Extends,
   For,
+  In,
   Super,
   Import,
   From,
@@ -49,6 +52,8 @@ enum class Tok {
   RParen,
   LBrace,
   RBrace,
+  LBracket,
+  RBracket,
   LArrow,
   RArrow,
   //OPERATORS
@@ -69,6 +74,7 @@ struct Token {
   long long number = 0;
   int line = 1;
   int col = 1;
+  double real = 0;
 };
 
 std::vector<Token> tokenize(const std::string &source,

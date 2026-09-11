@@ -106,8 +106,16 @@ struct Lexer {
       t.kind = Tok::Extends;
     else if (text == "for")
       t.kind = Tok::For;
+    else if (text == "in")
+      t.kind = Tok::In;
     else if (text == "super")
       t.kind = Tok::Super;
+    else if (text == "enum")
+      t.kind = Tok::Enum;
+    else if (text == "match")
+      t.kind = Tok::Match;
+    else if (text == "switch")
+      t.kind = Tok::Switch;
     else if (text == "var")
       t.kind = Tok::Variable;
     else if (text == "const")
@@ -193,6 +201,19 @@ struct Lexer {
       std::string digits;
       while (std::isdigit(static_cast<unsigned char>(peek())))
         digits.push_back(advance());
+      if (peek() == '.' &&
+          std::isdigit(static_cast<unsigned char>(peek(1)))) {
+        digits.push_back(advance());
+        while (std::isdigit(static_cast<unsigned char>(peek())))
+          digits.push_back(advance());
+        Token t;
+        t.kind = Tok::Float;
+        t.text = digits;
+        t.real = std::stod(digits);
+        t.line = startLine;
+        t.col = startCol;
+        return t;
+      }
       Token t;
       t.kind = Tok::Integer;
       t.text = digits;
@@ -244,6 +265,10 @@ struct Lexer {
       return make(Tok::LBrace, "{");
     case '}':
       return make(Tok::RBrace, "}");
+    case '[':
+      return make(Tok::LBracket, "[");
+    case ']':
+      return make(Tok::RBracket, "]");
     case '+':
       return make(Tok::Plus, "+");
     case '-':

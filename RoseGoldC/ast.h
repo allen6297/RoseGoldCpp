@@ -6,6 +6,7 @@
 struct Expr {
   enum class Kind {
     Int,
+    Float,
     String,
     Bool,
     Var,
@@ -14,9 +15,13 @@ struct Expr {
     Call,
     MethodCall,
     Member,
+    Index,
+    Array,
+    Map,
     StructLit
   } kind{};
   long long number = 0;
+  double real = 0;
   bool boolean = false;
   std::string text;
   std::string module;
@@ -26,6 +31,20 @@ struct Expr {
   int col = 1;
 };
 
+struct Stmt;
+
+struct MatchArm {
+  enum class Pat { Wildcard, Int, Float, String, Bool, Variant } pat{};
+  std::string name;
+  long long number = 0;
+  double real = 0;
+  bool boolean = false;
+  std::string text;
+  std::vector<std::string> binds;
+  std::vector<std::string> fieldNames;
+  std::vector<Stmt> body;
+};
+
 struct Stmt {
   enum class Kind {
     Expr,
@@ -33,9 +52,12 @@ struct Stmt {
     Const,
     Assign,
     FieldAssign,
+    IndexAssign,
     Return,
     If,
     While,
+    For,
+    Match,
     Pass,
     Break,
     Continue
@@ -45,6 +67,8 @@ struct Stmt {
   Expr target;
   std::vector<Stmt> body;
   std::vector<Stmt> elseBody;
+  std::vector<MatchArm> arms;
+  std::string typeName;
   int line = 1;
   int col = 1;
 };
@@ -52,10 +76,13 @@ struct Stmt {
 struct FnDecl {
   std::string name;
   std::vector<std::string> params;
+  std::vector<std::string> paramTypes;
+  std::string returnType;
   std::vector<Stmt> body;
   std::string module;
   bool isTest = false;
   bool isDeprecated = false;
+  bool isConstexpr = false;
   bool isPub = true;
   int line = 1;
 };
@@ -63,6 +90,7 @@ struct FnDecl {
 struct structDecl {
   std::string name;
   std::vector<std::string> fields;
+  std::vector<std::string> fieldTypes;
   std::vector<FnDecl> methods;
   bool isPub = true;
   int line = 1;
@@ -77,6 +105,7 @@ struct ImplDecl {
 
 struct ClassField {
   std::string name;
+  std::string type;
   bool hasDefault = false;
   Expr defaultValue;
 };
@@ -101,6 +130,8 @@ struct ClassDecl {
 struct TraitMethod {
   std::string name;
   std::vector<std::string> params;
+  std::vector<std::string> paramTypes;
+  std::string returnType;
   int line = 1;
 };
 
@@ -115,6 +146,19 @@ struct TraitDecl {
   std::string name;
   std::vector<TraitMethod> methods;
   std::vector<SignalDecl> signals;
+  bool isPub = true;
+  int line = 1;
+};
+
+struct EnumVariant {
+  std::string name;
+  std::vector<std::string> fieldNames;
+  int arity = 0;
+};
+
+struct EnumDecl {
+  std::string name;
+  std::vector<EnumVariant> variants;
   bool isPub = true;
   int line = 1;
 };
@@ -134,6 +178,7 @@ struct ModDecl {
   std::vector<structDecl> structs;
   std::vector<ClassDecl> classes;
   std::vector<TraitDecl> traits;
+  std::vector<EnumDecl> enums;
   std::vector<ImplDecl> impls;
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;
@@ -147,6 +192,7 @@ struct Program {
   std::vector<structDecl> structs;
   std::vector<ClassDecl> classes;
   std::vector<TraitDecl> traits;
+  std::vector<EnumDecl> enums;
   std::vector<ImplDecl> impls;
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;

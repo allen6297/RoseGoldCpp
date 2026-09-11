@@ -347,3 +347,141 @@ fn implicit_field() {
     checks.eq(e.hurt(3), 7);
     checks.eq(hp, 1);
 }
+
+enum Color {
+    Red,
+    Green,
+}
+
+enum Shape {
+    Circle(Int),
+    Rect(Int, Int),
+}
+
+@test
+fn enum_unit() {
+    var c = Color.Red;
+    checks.that(c == Color.Red);
+    checks.that(c != Color.Green);
+}
+
+@test
+fn switch_int() {
+    var n = 2;
+    var got = 0;
+    switch n {
+        1 { got = 1; }
+        2 { got = 2; }
+        _ { got = 9; }
+    }
+    checks.eq(got, 2);
+}
+
+@test
+fn match_payload() {
+    var s = Shape.Rect(2, 3);
+    var w = 0;
+    var h = 0;
+    match s {
+        Circle(r) { w = r; }
+        Rect(a, b) { w = a; h = b; }
+    }
+    checks.eq(w, 2);
+    checks.eq(h, 3);
+}
+
+@test
+fn array_index() {
+    var xs = [10, 20, 30];
+    checks.eq(xs[1], 20);
+    xs[1] = 21;
+    checks.eq(xs[1], 21);
+    checks.eq(len(xs), 3);
+    checks.eq(xs.len(), 3);
+}
+
+@test
+fn array_push_pop() {
+    var xs = [1];
+    xs.push(2);
+    xs.push(3);
+    checks.eq(xs.pop(), 3);
+    checks.eq(len(xs), 2);
+}
+
+@test
+fn array_match_payload() {
+    var s = Shape.Rect(2, 3);
+    var n = 0;
+    match s {
+        Circle(r) { n = r; }
+        Rect(dims) { n = dims[0] + dims[1]; }
+    }
+    checks.eq(n, 5);
+}
+
+@test
+fn map_index() {
+    var scores = {"ada": 10, "grace": 12};
+    checks.eq(scores["ada"], 10);
+    scores["linus"] = 9;
+    checks.eq(len(scores), 3);
+    checks.that(scores.has("linus"));
+    checks.eq(scores.remove("ada"), 10);
+    checks.that(!scores.has("ada"));
+}
+
+@test
+fn for_array() {
+    var sum = 0;
+    for x in [1, 2, 3] {
+        sum = sum + x;
+    }
+    checks.eq(sum, 6);
+}
+
+@test
+fn for_map_and_int() {
+    var n = 0;
+    for k in {"a": 1} {
+        n = n + 1;
+        checks.eq_string(k, "a");
+    }
+    checks.eq(n, 1);
+    var s = 0;
+    for i in 4 {
+        s = s + i;
+    }
+    checks.eq(s, 6);
+}
+
+@test
+fn float_arith() {
+    checks.eq(1.5 + 1.5, 3);
+    checks.eq(3.0 / 2.0, 1.5);
+    checks.that(1 == 1.0);
+    checks.eq(-0.5 * 2.0, -1);
+}
+
+@constexpr
+fn cx_add(a: Int, b: Int): Int {
+    return a + b;
+}
+
+@test
+fn constexpr_call() {
+    const n = cx_add(2, 40);
+    checks.eq(n, 42);
+    checks.eq(cx_add(1, 2), 3);
+}
+
+fn typed_add(a: Int, b: Int): Int {
+    return a + b;
+}
+
+@test
+fn typecheck_ok() {
+    checks.eq(typed_add(2, 3), 5);
+    checks.eq_string("a" + "b", "ab");
+    checks.eq(1 + 0.5, 1.5);
+}

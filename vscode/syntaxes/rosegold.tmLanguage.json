@@ -45,7 +45,7 @@
       "patterns": [
         {
           "name": "meta.annotation.rosegold",
-          "match": "(@)(test|deprecated|ufcs)\\b",
+          "match": "(@)(test|deprecated|ufcs|constexpr)\\b",
           "captures": {
             "1": { "name": "punctuation.definition.decorator.rosegold" },
             "2": { "name": "keyword.control.directive.rosegold" }
@@ -179,7 +179,7 @@
         },
         {
           "name": "keyword.control.rosegold",
-          "match": "\\b(if|elif|else|while|for|in|match|return|break|continue|pass|spawn|await)\\b"
+          "match": "\\b(if|elif|else|while|for|in|match|switch|return|break|continue|pass|spawn|await)\\b"
         },
         {
           "name": "storage.type.rosegold",

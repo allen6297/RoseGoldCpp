@@ -48,6 +48,12 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe run examples/nested.rg
 .\build\RoseGoldC.exe run examples/stdlib.rg
 .\build\RoseGoldC.exe run examples/class.rg
+.\build\RoseGoldC.exe run examples/enum.rg
+.\build\RoseGoldC.exe run examples/array.rg
+.\build\RoseGoldC.exe run examples/map.rg
+.\build\RoseGoldC.exe run examples/for.rg
+.\build\RoseGoldC.exe run examples/float.rg
+.\build\RoseGoldC.exe run examples/constexpr.rg
 .\build\RoseGoldC.exe test
 .\build\RoseGoldC.exe test examples/tests.rg
 ```
@@ -56,13 +62,13 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 
 ## Language (now)
 
-`fn`, `@test`, `@deprecated`, `import` / `from` / `as`, `pub`, `mod`, `struct`, `class`, `extends`, `trait`, `impl` / `impl Trait for Type`, `super`, `signal`, `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `print`, `assert`, `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `math`, `str`.
+`fn`, `@test`, `@deprecated`, `@constexpr`, typecheck, `import` / `from` / `as`, `pub`, `mod`, `struct`, `class`, `extends`, `trait`, `impl` / `impl Trait for Type`, `super`, `enum`, `match` / `switch`, `signal`, `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `print`, `assert`, `len`, arrays (`[]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `math`, `str`.
 
-Ints, strings, bools, `+ - * / % == != < >`, unary `-` / `!`, user functions.
+Ints, Floats, strings, bools, `+ - * / % == != < >`, unary `-` / `!`, user functions. Int/Int `+ - * / %` stay Int (`3 / 2` is `1`). If either side is Float, the result is Float (`3 / 2.0` is `1.5`). `1 == 1.0` is true.
 
 Comments: `//` and `#` to end of line, `///` for docs, `/# ... #/` for blocks.
 
-**`const` is init-once.** The initializer is any expression: literals, operators, variables, calls. It runs once, then the name cannot be assigned.
+**`const` is init-once.** The initializer is any expression: literals, operators, variables, calls. It runs once, then the name cannot be assigned. `const` does not require a `@constexpr` function.
 
 ```text
 var x = 2;
@@ -70,7 +76,24 @@ const n = add(x, 40);   # n is 42
 n = 1;                  # error: cannot assign to const 'n'
 ```
 
-`if` / `elif` / `else` and `while` take a condition and a `{ ... }` block. No extra parens. `elif` is the keyword; `else if` is not parsed. Conditions use the same truthy rules as `assert` (non-zero, non-empty, `true`). `pass;` does nothing. `break;` / `continue;` only work inside `while`.
+**`@constexpr` is a purity mark.** A function marked `@constexpr` is checked when the file loads. Its body may use literals, operators, `const`, `if` / `match` / `return` / `pass`, `len`, and calls to other `@constexpr` functions. It may not use `var`, assignment, `print` / `assert`, `while` / `for`, or `break` / `continue`. Methods may be `@constexpr` too (their bodies are checked the same way).
+
+```text
+@constexpr
+fn add(a: Int, b: Int): Int {
+    return a + b;
+}
+
+fn main(): Int {
+    const n = add(2, 40);
+    print(n);
+    return 0;
+}
+```
+
+**Typecheck runs when the file loads**, before `main`. Missing annotations stay quiet. Known types are checked: call arity, `1 + "x"`, assigning a String to an `Int`, returning the wrong type, unknown names, unknown methods/fields, and index types (`xs["a"]`, `m[0]`). `Int` and `Float` mix; `"a" + "b"` is a String. Today's `const` and untyped `var` still work.
+
+`if` / `elif` / `else`, `while`, and `for x in xs` take a condition or iterable and a `{ ... }` block. No extra parens. `elif` is the keyword; `else if` is not parsed. Conditions use the same truthy rules as `assert` (non-zero, non-empty, `true`). `pass;` does nothing. `break;` / `continue;` only work inside `while` and `for`.
 
 ```text
 if n > 0 {
@@ -91,6 +114,79 @@ while true {
         break;
     }
     i = i + 1;
+}
+
+var sum = 0;
+for x in [1, 2, 3] {
+    sum = sum + x;
+}
+```
+
+`for x in xs` walks an array, a map's keys, each character of a string, or `0 .. n-1` when `xs` is an Int. The loop variable does not leak; an outer `var` with the same name is restored. `impl Trait for Type` still uses `for` as that keyword.
+
+`match` and `switch` are the same statement. Arms are a pattern plus a `{ ... }` block. No `case` or extra parens. Patterns can be `_`, an Int/string/bool literal, or an enum variant (`Red`, `Color.Red`, `Circle(r)`, `Rect(width: w, height: h)`). The first matching arm runs. A missing arm is a no-op.
+
+```text
+switch n {
+    1 { print("one"); }
+    2 { print("two"); }
+    _ { print("other"); }
+}
+```
+
+**Enums** are variants, optionally with payloads. Unit variants are `Color.Red`. Payload variants are called: `Shape.Circle(5)`.
+
+```text
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+enum Shape {
+    Circle(Int),
+    Rect(width: Int, height: Int),
+}
+
+fn main(): Int {
+    var c = Color.Red;
+    match c {
+        Red { print("red"); }
+        _ { print("other"); }
+    }
+    var s = Shape.Rect(2, 3);
+    match s {
+        Circle(r) { print(r); }
+        Rect(w, h) { print(w); print(h); }
+    }
+    return 0;
+}
+```
+
+**Arrays** are `[1, 2, 3]`. Index with `xs[i]`, length with `len(xs)` or `xs.len()` / `xs.len`. `push` appends, `pop` removes the last element (error if empty). Index assignment is `xs[i] = v`. Copies share the same array, like structs. Strings index to a one-character string: `"hi"[0]` is `"h"`. A match arm can bind a whole payload as one array: `Rect(dims)`.
+
+```text
+fn main(): Int {
+    var xs = [1, 2, 3];
+    print(xs[0]);
+    xs.push(4);
+    xs[1] = 9;
+    print(len(xs));
+    print(xs.pop());
+    return 0;
+}
+```
+
+**Maps** (dictionaries) are `{"a": 1}`. Keys are strings. Read `m[k]`, write `m[k] = v` (inserts if missing). `len(m)` / `m.len()`, `m.has(k)`, `m.keys()`, `m.remove(k)`, `m.insert(k, v)`. Copies share the same map, like arrays. A missing key is an error.
+
+```text
+fn main(): Int {
+    var scores = {"ada": 10, "grace": 12};
+    scores["linus"] = 9;
+    print(scores["grace"]);
+    print(scores.has("ada"));
+    print(len(scores));
+    return 0;
 }
 ```
 
@@ -116,7 +212,7 @@ fn main(): Int {
 
 No deferred emit or signals on structs yet.
 
-No arrays yet, so `run file.rg a b` is indexed: `argv(0)` / `process.argv(0)` is the file path, `argv(1)` is `a`, `argv_len()` / `process.argc()` is the count.
+`run file.rg a b` is indexed: `argv(0)` / `process.argv(0)` is the file path, `argv(1)` is `a`, `argv_len()` / `process.argc()` is the count.
 
 ```text
 fn main(): Int {
@@ -223,7 +319,7 @@ fn main(): Int {
 }
 ```
 
-**Stdlib** lives in `stdlib/` and is resolved from the repo (walk up from the script). `import math;` and `import str;` are required. `math` is Int-only (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`). `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`). `checks` stays a host builtin and does not need import.
+**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `import math;` and `import str;` are required. `math` is written in Int (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`); comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `pow` / `rand_int` stay Int. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`). `checks` stays a host builtin and does not need import.
 
 A **framework** here is an optional stack behind `import`, not new syntax. `ui` / engine hosts are not built yet.
 
@@ -242,10 +338,9 @@ fn main(): Int {
 
 Grow the language before more editor polish.
 
-**Not yet:** constexpr, arrays, Float, `ui` framework, typecheck, LSP diagnostics. Those live in the Rust tree.
+**Not yet:** LSP diagnostics, `ui` framework. Those live in the Rust tree.
 
-## Later: constexpr (not built)
+**Recommended order**
 
-A stricter kind of const, closer to C++ `constexpr`. A function would be marked pure / `@constexpr`. Its body could only use literals, operators, `const`, and calls to other constexpr functions — no `var`, no `print`, no other side effects.
-
-Then `const n = add(2, 40);` would fold at check time only if `add` is constexpr. That is separate from today's `const`, which only freezes the binding.
+1. **LSP** — push type/parse errors into the editor.
+2. Later on purpose: **`ui`**.

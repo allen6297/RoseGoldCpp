@@ -152,7 +152,7 @@ function symbolsInDocument(doc) {
   const lines = doc.getText().split(/\r?\n/);
   const symbols = [];
   const state = { inBlock: false };
-  const declRe = /\b(fn|signal|struct|class|trait)\s+([A-Za-z_][A-Za-z0-9_]*)/;
+  const declRe = /\b(fn|signal|struct|class|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/;
   const bindRe = /\b(var|const)\s+([A-Za-z_][A-Za-z0-9_]*)/;
   for (let line = 0; line < lines.length; line++) {
     const code = codeLine(lines[line], state);
@@ -257,8 +257,12 @@ const KEYWORDS = [
   "class",
   "trait",
   "extends",
+  "enum",
+  "match",
+  "switch",
   "impl",
   "for",
+  "in",
   "super",
   "signal",
   "import",
@@ -274,10 +278,11 @@ const KEYWORDS = [
   "true",
   "false",
 ];
-const TYPES = ["Int", "String", "Bool", "Void"];
+const TYPES = ["Int", "Float", "String", "Bool", "Void", "Array", "Map"];
 const BUILTINS = [
   { label: "print", insert: "print($0)", detail: "print(...)" },
   { label: "assert", insert: "assert($0)", detail: "assert(cond)" },
+  { label: "len", insert: "len($0)", detail: "len(xs) — Array, String, or Map" },
   { label: "checks.eq", insert: "checks.eq($1, $2)", detail: "checks.eq(a, b)" },
   { label: "checks.neq", insert: "checks.neq($1, $2)", detail: "checks.neq(a, b)" },
   { label: "checks.eq_string", insert: "checks.eq_string($1, $2)", detail: "checks.eq_string(a, b)" },
@@ -305,6 +310,7 @@ const KIND_OF = {
   signal: vscode.CompletionItemKind.Event,
   struct: vscode.CompletionItemKind.Struct,
   class: vscode.CompletionItemKind.Class,
+  enum: vscode.CompletionItemKind.Enum,
   trait: vscode.CompletionItemKind.Interface,
   var: vscode.CompletionItemKind.Variable,
   const: vscode.CompletionItemKind.Constant,
@@ -323,6 +329,12 @@ const completionProvider = {
           vscode.CompletionItemKind.Keyword,
           "@deprecated",
           "Warn when this function is called"
+        ),
+        item(
+          "constexpr",
+          vscode.CompletionItemKind.Keyword,
+          "@constexpr",
+          "Mark a pure function (checked at load)"
         ),
       ];
     }
