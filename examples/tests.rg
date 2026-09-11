@@ -1,8 +1,12 @@
 import calc;
 from calc import double;
 import checks;
+import std;
 import math;
 import str;
+import io;
+from vec import Vec2;
+from std import UUID;
 
 struct Point {
     x: Int;
@@ -52,12 +56,42 @@ fn stdlib_math() {
     checks.eq(math.abs(-7), 7);
     checks.eq(math.clamp(5, 0, 3), 3);
     checks.eq(math.pow(2, 10), 1024);
+    checks.eq(math.sqrt(9.0), 3.0);
+    checks.eq(math.lerp(0.0, 10.0, 0.5), 5.0);
 }
 
 @test
 fn stdlib_str() {
     checks.eq_string(str.upper("hi"), "HI");
     checks.eq(str.length("ab"), 2);
+    checks.eq(len(str.split("a,b", ",")), 2);
+    checks.eq_string(str.replace("aa", "a", "b"), "bb");
+}
+
+@test
+fn stdlib_io() {
+    const path = "._rg_io_unit.txt";
+    io.remove(path);
+    try io.write_text(path, "ok");
+    checks.eq_string(try io.read_text(path), "ok");
+    io.remove(path);
+}
+
+@test
+fn stdlib_vec() {
+    var v = Vec2 { x: 3.0, y: 4.0 };
+    checks.eq(v.length(), 5.0);
+}
+
+@test
+fn stdlib_std() {
+    checks.eq(std.math.abs(-7), 7);
+    checks.eq_string(std.str.upper("hi"), "HI");
+    var n = std.nil();
+    checks.that(n.is_nil());
+    var u = try std.parse("550e8400-e29b-41d4-a716-446655440000");
+    checks.eq_string(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+    checks.eq(len(std.v4().to_string()), 36);
 }
 
 @test
@@ -456,6 +490,65 @@ fn for_map_and_int() {
 }
 
 @test
+fn compare_le_ge() {
+    checks.that(1 <= 1);
+    checks.that(!(2 <= 1));
+    checks.that(2 >= 1);
+    checks.that(1.5 >= 1);
+    checks.that(1 <= 1.5);
+}
+
+@test
+fn logic_and_or() {
+    checks.that(true && true);
+    checks.that(!(false && true));
+    checks.that(false || true);
+    checks.that(1 < 2 && 3 > 2);
+    checks.that(1 && "x");
+    checks.that(!(false && (1 / 0 == 1)));
+    checks.that(true || (1 / 0 == 1));
+}
+
+@test
+fn compound_assign() {
+    var n = 1;
+    n += 2;
+    checks.eq(n, 3);
+    n *= 2;
+    checks.eq(n, 6);
+    n -= 1;
+    checks.eq(n, 5);
+    n /= 5;
+    checks.eq(n, 1);
+    var s = "a";
+    s += "b";
+    checks.eq_string(s, "ab");
+    var xs = [1];
+    xs[0] += 4;
+    checks.eq(xs[0], 5);
+}
+
+@test
+fn for_range() {
+    var n = 0;
+    for i in 0..5 {
+        n = n + i;
+    }
+    checks.eq(n, 10);
+    var m = 0;
+    for i in 1..=3 {
+        m = m + i;
+    }
+    checks.eq(m, 6);
+    var r = 0..3;
+    var s = 0;
+    for i in r {
+        s = s + i;
+    }
+    checks.eq(s, 3);
+}
+
+@test
 fn float_arith() {
     checks.eq(1.5 + 1.5, 3);
     checks.eq(3.0 / 2.0, 1.5);
@@ -485,3 +578,129 @@ fn typecheck_ok() {
     checks.eq_string("a" + "b", "ab");
     checks.eq(1 + 0.5, 1.5);
 }
+
+@ufcs
+fn doubled(n: Int): Int {
+    return n * 2;
+}
+
+@test
+fn ufcs_call() {
+    checks.eq((3).doubled(), 6);
+    checks.eq(doubled(4), 8);
+}
+
+fn boom() throws: String {
+    throw "nope";
+}
+
+fn ok_throw() throws: Int {
+    return 7;
+}
+
+@test
+fn try_do_catch() {
+    do {
+        checks.eq(try ok_throw(), 7);
+        try boom();
+        checks.eq(1, 0);
+    } catch e {
+        checks.eq_string(e, "nope");
+    }
+}
+
+struct OptPoint {
+    x: Int;
+    @optional
+    y: Int;
+}
+
+@test
+fn optional_field() {
+    var p = OptPoint { x: 3 };
+    checks.eq(p.x, 3);
+    checks.eq(p.y, 0);
+}
+
+abstract class AbsPet {
+    var hp: Int = 1;
+    abstract fn speak(): String;
+    fn greet(): String {
+        return speak();
+    }
+}
+
+class AbsDog extends AbsPet {
+    fn speak(): String {
+        return "woof";
+    }
+}
+
+final class AbsCat extends AbsPet {
+    fn speak(): String {
+        return "meow";
+    }
+}
+
+@test
+fn abstract_final() {
+    var d = AbsDog {};
+    checks.eq_string(d.speak(), "woof");
+    checks.eq_string(d.greet(), "woof");
+    checks.eq(d.hp, 1);
+    var c = AbsCat {};
+    checks.eq_string(c.speak(), "meow");
+}
+
+class VisAnimal {
+    pub var hp: Int = 1;
+    protected var armor: Int = 0;
+    private var secret: Int = 9;
+
+    pub fn hit(): Int {
+        return hp + key();
+    }
+
+    protected fn soak(): Int {
+        return armor;
+    }
+
+    private fn key(): Int {
+        return secret;
+    }
+}
+
+class VisDog extends VisAnimal {
+    fn speak(): String {
+        soak();
+        return "woof";
+    }
+}
+
+@test
+fn vis_members() {
+    var d = VisDog {};
+    checks.eq(d.hp, 1);
+    checks.eq(d.hit(), 10);
+    checks.eq_string(d.speak(), "woof");
+}
+
+data DPoint {
+    x: Int;
+    y: Int;
+
+    fn mag2(): Int {
+        return x * x + y * y;
+    }
+}
+
+@test
+fn data_ok() {
+    var p = DPoint { x: 3, y: 4 };
+    checks.eq(p.x, 3);
+    checks.eq(p.mag2(), 25);
+    var q = DPoint { x: 3, y: 4 };
+    checks.that(p == q);
+}
+
+

@@ -1,18 +1,40 @@
 const vscode = require("vscode");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
+/** @type {vscode.DiagnosticCollection} */
+let diagnostics;
+/** @type {NodeJS.Timeout | undefined} */
+let diagTimer;
+/** @type {vscode.StatusBarItem} */
+let statusBar;
+/** @type {vscode.OutputChannel | undefined} */
+let lspLog;
+/** @type {{ child: import("child_process").ChildProcess, nextId: number, pending: Map<number, {resolve: Function, reject: Function}>, buf: Buffer, ready: boolean } | null} */
+let rpc = null;
+let lspStopping = false;
+
 function findCli(startDir) {
-  const names =
-    process.platform === "win32"
-      ? ["RoseGoldC.exe", "rosegoldc.exe"]
-      : ["RoseGoldC", "rosegoldc"];
   const found = [];
   let dir = startDir;
   for (let i = 0; i < 12 && dir; i++) {
-    for (const name of names) {
-      const cand = path.join(dir, "build", name);
-      if (fs.existsSync(cand)) found.push(cand);
+    const buildDir = path.join(dir, "build");
+    try {
+      for (const name of fs.readdirSync(buildDir)) {
+        const lower = name.toLowerCase();
+        const isWinExe =
+          process.platform === "win32" &&
+          lower.startsWith("rosegoldc") &&
+          lower.endsWith(".exe");
+        const isUnix =
+          process.platform !== "win32" &&
+          (name === "RoseGoldC" || name === "rosegoldc");
+        if (isWinExe || isUnix)
+          found.push(path.join(buildDir, name));
+      }
+    } catch (_) {
+      /* missing build dir */
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
@@ -101,357 +123,397 @@ async function runCli(subcommand) {
   await vscode.tasks.executeTask(task);
 }
 
-function commentText(line) {
-  const t = line.trim();
-  if (t.startsWith("///")) return t.slice(3).trim();
-  if (t.startsWith("//")) return t.slice(2).trim();
-  if (t.startsWith("##")) return t.slice(2).trim();
-  if (t.startsWith("#") && !t.startsWith("#/")) return t.slice(1).trim();
-  return null;
+function filePathOf(doc) {
+  return doc.uri.scheme === "file" ? doc.uri.fsPath : doc.fileName;
 }
 
-function docsAbove(lines, line) {
-  const docs = [];
-  for (let i = line - 1; i >= 0; i--) {
-    const t = lines[i].trim();
-    if (t.startsWith("@")) continue;
-    const text = commentText(lines[i]);
-    if (text !== null) docs.unshift(text);
-    else if (t === "") {
-      if (docs.length) break;
-    } else break;
+function updateStatus(items) {
+  if (!statusBar) return;
+  const errs = items.filter(
+    (i) => i.severity === vscode.DiagnosticSeverity.Error
+  ).length;
+  const warns = items.length - errs;
+  if (errs) {
+    statusBar.text = `$(error) RoseGoldC ${errs}`;
+    statusBar.tooltip = `${errs} error(s), ${warns} warning(s)`;
+  } else if (warns) {
+    statusBar.text = `$(warning) RoseGoldC ${warns}`;
+    statusBar.tooltip = `${warns} warning(s)`;
+  } else {
+    statusBar.text = "$(check) RoseGoldC";
+    statusBar.tooltip = "No problems";
   }
-  return docs.filter(Boolean).join("\n");
 }
 
-function codeLine(line, state) {
-  let out = "";
-  for (let i = 0; i < line.length; i++) {
-    const a = line[i];
-    const b = line[i + 1];
-    if (state.inBlock) {
-      if (a === "#" && b === "/") {
-        state.inBlock = false;
-        i++;
+function applyPublishDiagnostics(params) {
+  if (!params || !params.uri || !diagnostics) return;
+  const uri = vscode.Uri.parse(params.uri);
+  const items = (params.diagnostics || []).map((d) => {
+    const start =
+      d.range && d.range.start ? d.range.start : { line: 0, character: 0 };
+    const end = d.range && d.range.end ? d.range.end : start;
+    const sev =
+      d.severity === 2
+        ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Error;
+    const diag = new vscode.Diagnostic(
+      new vscode.Range(
+        Math.max(0, start.line || 0),
+        Math.max(0, start.character || 0),
+        Math.max(0, end.line || 0),
+        Math.max(0, end.character || 0)
+      ),
+      d.message || "error",
+      sev
+    );
+    diag.source = d.source || "rosegoldc";
+    return diag;
+  });
+  diagnostics.set(uri, items);
+  const ed = vscode.window.activeTextEditor;
+  if (ed && ed.document.uri.toString() === uri.toString()) {
+    updateStatus(items);
+  } else if (ed && ed.document.languageId === "rosegold") {
+    updateStatus(diagnostics.get(ed.document.uri) || []);
+  }
+}
+
+function pullMessage(state) {
+  const s = state.buf;
+  const sep = s.indexOf("\r\n\r\n");
+  if (sep < 0) return null;
+  const header = s.slice(0, sep).toString("utf8");
+  const m = /Content-Length:\s*(\d+)/i.exec(header);
+  if (!m) {
+    state.buf = s.slice(sep + 4);
+    return null;
+  }
+  const len = Number(m[1]);
+  const start = sep + 4;
+  if (s.length < start + len) return null;
+  const body = s.slice(start, start + len).toString("utf8");
+  state.buf = s.slice(start + len);
+  return JSON.parse(body);
+}
+
+function sendRpc(obj) {
+  if (!rpc || !rpc.child.stdin || !rpc.child.stdin.writable) return;
+  const body = Buffer.from(JSON.stringify(obj), "utf8");
+  const head = Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, "utf8");
+  rpc.child.stdin.write(Buffer.concat([head, body]));
+}
+
+function notify(method, params) {
+  sendRpc({ jsonrpc: "2.0", method, params });
+}
+
+function request(method, params) {
+  if (!rpc) return Promise.reject(new Error("LSP not running"));
+  const id = rpc.nextId++;
+  return new Promise((resolve, reject) => {
+    rpc.pending.set(id, { resolve, reject });
+    sendRpc({ jsonrpc: "2.0", id, method, params });
+  });
+}
+
+function dispatchRpc(msg) {
+  if (msg.id != null && (msg.result !== undefined || msg.error)) {
+    const pending = rpc && rpc.pending.get(msg.id);
+    if (pending) {
+      rpc.pending.delete(msg.id);
+      if (msg.error) pending.reject(new Error(msg.error.message || "LSP error"));
+      else pending.resolve(msg.result);
+    }
+    return;
+  }
+  if (msg.method === "textDocument/publishDiagnostics") {
+    applyPublishDiagnostics(msg.params);
+  }
+}
+
+function didOpen(doc) {
+  if (!rpc || !rpc.ready || doc.languageId !== "rosegold") return;
+  notify("textDocument/didOpen", {
+    textDocument: {
+      uri: doc.uri.toString(),
+      languageId: "rosegold",
+      version: doc.version,
+      text: doc.getText(),
+    },
+  });
+}
+
+function didChange(doc) {
+  if (!rpc || !rpc.ready || doc.languageId !== "rosegold") return;
+  notify("textDocument/didChange", {
+    textDocument: { uri: doc.uri.toString(), version: doc.version },
+    contentChanges: [{ text: doc.getText() }],
+  });
+}
+
+function didClose(doc) {
+  if (!rpc || !rpc.ready || doc.languageId !== "rosegold") return;
+  notify("textDocument/didClose", {
+    textDocument: { uri: doc.uri.toString() },
+  });
+}
+
+function scheduleDiagnostics(doc) {
+  if (doc.languageId !== "rosegold") return;
+  clearTimeout(diagTimer);
+  const delay = vscode.workspace
+    .getConfiguration("rosegoldc")
+    .get("diagnosticsDelayMs", 400);
+  diagTimer = setTimeout(() => didChange(doc), delay);
+}
+
+function refreshDiagnostics(doc) {
+  if (doc.languageId !== "rosegold") return;
+  didChange(doc);
+}
+
+function startLanguageServer() {
+  const hint =
+    (vscode.workspace.workspaceFolders &&
+      vscode.workspace.workspaceFolders[0] &&
+      vscode.workspace.workspaceFolders[0].uri.fsPath) ||
+    "";
+  const cli = resolveCli(hint);
+  if (!lspLog) lspLog = vscode.window.createOutputChannel("RoseGoldC LSP");
+  lspLog.appendLine(`starting ${cli} lsp`);
+  lspStopping = false;
+
+  const child = spawn(cli, ["lsp"], {
+    cwd: hint || undefined,
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  rpc = {
+    child,
+    nextId: 1,
+    pending: new Map(),
+    buf: Buffer.alloc(0),
+    ready: false,
+  };
+
+  child.stdout.on("data", (chunk) => {
+    if (!rpc) return;
+    rpc.buf = Buffer.concat([rpc.buf, chunk]);
+    while (true) {
+      let msg;
+      try {
+        msg = pullMessage(rpc);
+      } catch (err) {
+        lspLog.appendLine(String(err));
+        break;
       }
-      continue;
+      if (!msg) break;
+      dispatchRpc(msg);
     }
-    if (a === "/" && b === "#") {
-      state.inBlock = true;
-      i++;
-      continue;
+  });
+  child.stderr.on("data", (d) => {
+    if (lspLog) lspLog.append(d.toString());
+  });
+  child.on("error", (err) => {
+    if (statusBar) {
+      statusBar.text = "$(error) RoseGoldC";
+      statusBar.tooltip = `${err.message} (cmd=${cli}). Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`;
     }
-    if (a === "/" && b === "/") break;
-    if (a === "#") break;
-    out += a;
-  }
-  return out;
-}
+    lspLog.appendLine(String(err));
+  });
+  child.on("close", (code) => {
+    if (rpc && rpc.child === child) {
+      rpc.ready = false;
+      rpc = null;
+    }
+    lspLog.appendLine(`lsp exited ${code}`);
+    if (lspStopping) return;
+    if (statusBar) {
+      statusBar.text = "$(error) RoseGoldC";
+      statusBar.tooltip = `language server exited (${code ?? "?"})`;
+    }
+  });
 
-function symbolsInDocument(doc) {
-  const lines = doc.getText().split(/\r?\n/);
-  const symbols = [];
-  const state = { inBlock: false };
-  const declRe = /\b(fn|signal|struct|class|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/;
-  const bindRe = /\b(var|const)\s+([A-Za-z_][A-Za-z0-9_]*)/;
-  for (let line = 0; line < lines.length; line++) {
-    const code = codeLine(lines[line], state);
-    const decl = declRe.exec(code);
-    if (decl) {
-      const name = decl[2];
-      const col = lines[line].indexOf(name);
-      const params = [];
-      if (decl[1] === "fn" || decl[1] === "signal") {
-        const paren = code.indexOf("(");
-        const close = code.indexOf(")");
-        if (paren >= 0 && close > paren) {
-          for (const part of code.slice(paren + 1, close).split(",")) {
-            const pm = /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(part);
-            if (pm) params.push(pm[1]);
-          }
-        }
+  const root =
+    vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+  const init = request("initialize", {
+    processId: process.pid,
+    rootUri: root ? root.uri.toString() : null,
+    capabilities: {
+      textDocument: { publishDiagnostics: {} },
+    },
+  });
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("initialize timed out")), 8000)
+  );
+  return Promise.race([init, timeout])
+    .then(() => {
+      if (!rpc || rpc.child !== child) return;
+      notify("initialized", {});
+      rpc.ready = true;
+      if (statusBar) {
+        statusBar.text = "$(check) RoseGoldC";
+        statusBar.tooltip = "Language server ready";
       }
-      symbols.push({
-        name,
-        kind: decl[1],
-        line,
-        col: col < 0 ? 0 : col,
-        doc: docsAbove(lines, line),
-        detail: code.trim(),
-        params,
-      });
-    }
-    const bind = bindRe.exec(code);
-    if (bind) {
-      const name = bind[2];
-      const col = lines[line].indexOf(name);
-      symbols.push({
-        name,
-        kind: bind[1],
-        line,
-        col: col < 0 ? 0 : col,
-        doc: docsAbove(lines, line),
-        detail: code.trim(),
-        params: [],
-      });
-    }
-  }
-  return symbols;
+      for (const doc of vscode.workspace.textDocuments) didOpen(doc);
+    })
+    .catch((err) => {
+      if (statusBar) {
+        statusBar.text = "$(error) RoseGoldC";
+        statusBar.tooltip = String(err.message || err);
+      }
+      lspLog.appendLine(String(err));
+      try {
+        child.kill();
+      } catch (_) {
+        /* ignore */
+      }
+    });
 }
 
-async function allSymbols(doc) {
-  const out = symbolsInDocument(doc);
-  const seen = new Set(out.map((s) => `${doc.uri.fsPath}:${s.name}:${s.kind}`));
-  const files = await vscode.workspace.findFiles("**/*.rg", "**/build/**");
-  for (const uri of files) {
-    if (uri.fsPath === doc.uri.fsPath) continue;
-    const other = await vscode.workspace.openTextDocument(uri);
-    for (const s of symbolsInDocument(other)) {
-      const key = `${uri.fsPath}:${s.name}:${s.kind}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...s, uri });
-    }
+async function stopLanguageServer() {
+  if (!rpc) return;
+  lspStopping = true;
+  const child = rpc.child;
+  const shutdown = request("shutdown", null).catch(() => {});
+  const timeout = new Promise((resolve) => setTimeout(resolve, 800));
+  try {
+    await Promise.race([shutdown, timeout]);
+    notify("exit", undefined);
+  } catch (_) {
+    /* ignore */
   }
-  return out.map((s) => ({ uri: s.uri || doc.uri, ...s }));
+  rpc.ready = false;
+  try {
+    child.kill();
+  } catch (_) {
+    /* ignore */
+  }
+  rpc = null;
+}
+
+function lspRange(r) {
+  if (!r || !r.start) return undefined;
+  const e = r.end || r.start;
+  return new vscode.Range(
+    Math.max(0, r.start.line || 0),
+    Math.max(0, r.start.character || 0),
+    Math.max(0, e.line || 0),
+    Math.max(0, e.character || 0)
+  );
+}
+
+function markupText(contents) {
+  if (!contents) return "";
+  if (typeof contents === "string") return contents;
+  if (Array.isArray(contents)) {
+    return contents
+      .map((c) => (typeof c === "string" ? c : c.value || c.language || ""))
+      .join("\n\n");
+  }
+  return contents.value || "";
 }
 
 const definitionProvider = {
   async provideDefinition(doc, position) {
-    const word = doc.getWordRangeAtPosition(position);
-    if (!word) return;
-    const name = doc.getText(word);
-    const symbols = await allSymbols(doc);
-    const hits = symbols.filter((s) => s.name === name);
-    if (!hits.length) return;
-    return hits.map(
-      (s) =>
-        new vscode.Location(
-          s.uri,
-          new vscode.Position(s.line, s.col)
-        )
-    );
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/definition", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+    });
+    if (!payload) return;
+    const locs = Array.isArray(payload) ? payload : [payload];
+    return locs
+      .filter((l) => l && l.uri && l.range)
+      .map(
+        (l) => new vscode.Location(vscode.Uri.parse(l.uri), lspRange(l.range))
+      );
   },
 };
 
 const hoverProvider = {
   async provideHover(doc, position) {
-    const word = doc.getWordRangeAtPosition(position);
-    if (!word) return;
-    const name = doc.getText(word);
-    const symbols = await allSymbols(doc);
-    const hit = symbols.find((s) => s.name === name);
-    if (!hit) return;
-    const md = new vscode.MarkdownString();
-    md.appendCodeblock(hit.detail || `${hit.kind} ${hit.name}`, "rosegold");
-    if (hit.doc) md.appendMarkdown("\n\n" + hit.doc);
-    return new vscode.Hover(md, word);
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/hover", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+    });
+    if (!payload || !payload.contents) return;
+    const md = new vscode.MarkdownString(markupText(payload.contents));
+    md.supportHtml = false;
+    return new vscode.Hover(md, lspRange(payload.range));
   },
 };
 
-const KEYWORDS = [
-  "fn",
-  "var",
-  "const",
-  "struct",
-  "class",
-  "trait",
-  "extends",
-  "enum",
-  "match",
-  "switch",
-  "impl",
-  "for",
-  "in",
-  "super",
-  "signal",
-  "import",
-  "return",
-  "pass",
-  "break",
-  "continue",
-  "if",
-  "elif",
-  "else",
-  "while",
-  "self",
-  "true",
-  "false",
-];
-const TYPES = ["Int", "Float", "String", "Bool", "Void", "Array", "Map"];
-const BUILTINS = [
-  { label: "print", insert: "print($0)", detail: "print(...)" },
-  { label: "assert", insert: "assert($0)", detail: "assert(cond)" },
-  { label: "len", insert: "len($0)", detail: "len(xs) — Array, String, or Map" },
-  { label: "checks.eq", insert: "checks.eq($1, $2)", detail: "checks.eq(a, b)" },
-  { label: "checks.neq", insert: "checks.neq($1, $2)", detail: "checks.neq(a, b)" },
-  { label: "checks.eq_string", insert: "checks.eq_string($1, $2)", detail: "checks.eq_string(a, b)" },
-  { label: "checks.that", insert: "checks.that($0)", detail: "checks.that(cond)" },
-  { label: "argv", insert: "argv($0)", detail: "argv(i) — script path at 0" },
-  { label: "argv_len", insert: "argv_len()", detail: "argv_len() — argc" },
-];
-
-function item(label, kind, detail, doc, insert) {
-  const it = new vscode.CompletionItem(label, kind);
-  it.detail = detail;
-  if (doc) it.documentation = doc;
-  if (insert) {
-    it.insertText = new vscode.SnippetString(insert);
-  }
-  return it;
-}
-
-function linePrefix(doc, position) {
-  return doc.lineAt(position.line).text.slice(0, position.character);
-}
-
-const KIND_OF = {
-  fn: vscode.CompletionItemKind.Function,
-  signal: vscode.CompletionItemKind.Event,
-  struct: vscode.CompletionItemKind.Struct,
-  class: vscode.CompletionItemKind.Class,
-  enum: vscode.CompletionItemKind.Enum,
-  trait: vscode.CompletionItemKind.Interface,
-  var: vscode.CompletionItemKind.Variable,
-  const: vscode.CompletionItemKind.Constant,
-};
-
 const completionProvider = {
-  async provideCompletionItems(doc, position) {
-    const prefix = linePrefix(doc, position);
-    const symbols = await allSymbols(doc);
-
-    if (/@\w*$/.test(prefix)) {
-      return [
-        item("test", vscode.CompletionItemKind.Keyword, "@test", "Mark a test function"),
-        item(
-          "deprecated",
-          vscode.CompletionItemKind.Keyword,
-          "@deprecated",
-          "Warn when this function is called"
-        ),
-        item(
-          "constexpr",
-          vscode.CompletionItemKind.Keyword,
-          "@constexpr",
-          "Mark a pure function (checked at load)"
-        ),
-      ];
-    }
-
-    const checksDot = /(?:^|[\s,(])checks\.\w*$/.test(prefix);
-    if (checksDot) {
-      return [
-        item("eq", vscode.CompletionItemKind.Method, "checks.eq(a, b)", "", "eq($1, $2)"),
-        item("neq", vscode.CompletionItemKind.Method, "checks.neq(a, b)", "", "neq($1, $2)"),
-        item(
-          "eq_string",
-          vscode.CompletionItemKind.Method,
-          "checks.eq_string(a, b)",
-          "",
-          "eq_string($1, $2)"
-        ),
-        item("that", vscode.CompletionItemKind.Method, "checks.that(cond)", "", "that($0)"),
-        item("truthy", vscode.CompletionItemKind.Method, "checks.truthy(cond)", "", "truthy($0)"),
-      ];
-    }
-
-    const member = /(?:^|[^\w])([A-Za-z_][A-Za-z0-9_]*)\.\w*$/.exec(prefix);
-    if (member) {
-      const recv = member[1];
-      if (recv === "checks") {
-        return [];
-      }
-      const sig = symbols.find((s) => s.name === recv && s.kind === "signal");
-      if (sig) {
-        const args = (sig.params || []).map((p, i) => `\${${i + 1}:${p}}`).join(", ");
-        return [
-          item(
-            "connect",
-            vscode.CompletionItemKind.Method,
-            `${recv}.connect(fn)`,
-            sig.doc,
-            "connect($0)"
-          ),
-          item(
-            "emit",
-            vscode.CompletionItemKind.Method,
-            `${recv}.emit(${(sig.params || []).join(", ")})`,
-            sig.doc,
-            `emit(${args})`
-          ),
-          item(
-            "disconnect",
-            vscode.CompletionItemKind.Method,
-            `${recv}.disconnect(fn)`,
-            sig.doc,
-            "disconnect($0)"
-          ),
-        ];
-      }
-      if (recv === "process") {
-        return [
-          item(
-            "argv",
-            vscode.CompletionItemKind.Method,
-            "process.argv(i)",
-            "Script path at 0, then run args",
-            "argv($0)"
-          ),
-          item(
-            "argc",
-            vscode.CompletionItemKind.Method,
-            "process.argc()",
-            "Number of argv entries",
-            "argc()"
-          ),
-        ];
-      }
-      return [];
-    }
-
-    if (/:\s*[A-Za-z_]*$/.test(prefix)) {
-      return TYPES.map((t) =>
-        item(t, vscode.CompletionItemKind.TypeParameter, "type", "")
+  async provideCompletionItems(doc, position, token, context) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/completion", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+      context: {
+        triggerKind: (context && context.triggerKind) || 1,
+        triggerCharacter: context && context.triggerCharacter,
+      },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : payload.items || [];
+    return raw.map((c) => {
+      const it = new vscode.CompletionItem(
+        c.label,
+        c.kind == null ? vscode.CompletionItemKind.Text : c.kind
       );
-    }
-
-    const items = [];
-    for (const kw of KEYWORDS) {
-      items.push(item(kw, vscode.CompletionItemKind.Keyword, "keyword", ""));
-    }
-    for (const t of TYPES) {
-      items.push(item(t, vscode.CompletionItemKind.TypeParameter, "type", ""));
-    }
-    for (const b of BUILTINS) {
-      items.push(
-        item(b.label, vscode.CompletionItemKind.Function, b.detail, "", b.insert)
-      );
-    }
-    const seen = new Set();
-    for (const s of symbols) {
-      const key = `${s.kind}:${s.name}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const kind = KIND_OF[s.kind] || vscode.CompletionItemKind.Variable;
-      let insert = s.name;
-      if (s.kind === "fn") {
-        const args = (s.params || []).map((p, i) => `\${${i + 1}:${p}}`).join(", ");
-        insert = `${s.name}(${args})`;
-      } else if (s.kind === "signal") {
-        insert = s.name;
+      if (c.detail) it.detail = c.detail;
+      if (c.documentation) {
+        it.documentation =
+          typeof c.documentation === "string"
+            ? c.documentation
+            : new vscode.MarkdownString(c.documentation.value || "");
       }
-      const it = item(s.name, kind, s.detail, s.doc, insert === s.name ? undefined : insert);
-      items.push(it);
-    }
-    return items;
+      if (c.insertText) {
+        it.insertText =
+          c.insertTextFormat === 2
+            ? new vscode.SnippetString(c.insertText)
+            : c.insertText;
+      }
+      return it;
+    });
   },
 };
 
 function activate(context) {
+  diagnostics = vscode.languages.createDiagnosticCollection("rosegoldc");
+  context.subscriptions.push(diagnostics);
+
+  statusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  statusBar.text = "$(loading~spin) RoseGoldC";
+  statusBar.tooltip = "RoseGoldC language status";
+  statusBar.command = "rosegoldc.recheck";
+  statusBar.show();
+  context.subscriptions.push(statusBar);
+
+  startLanguageServer();
+
   context.subscriptions.push(
     vscode.commands.registerCommand("rosegoldc.runFile", () => runCli("run")),
     vscode.commands.registerCommand("rosegoldc.testFile", () => runCli("test")),
+    vscode.commands.registerCommand("rosegoldc.recheck", () => {
+      const ed = vscode.window.activeTextEditor;
+      if (ed && ed.document.languageId === "rosegold")
+        refreshDiagnostics(ed.document);
+    }),
+    vscode.workspace.onDidChangeTextDocument((e) =>
+      scheduleDiagnostics(e.document)
+    ),
+    vscode.workspace.onDidOpenTextDocument((doc) => didOpen(doc)),
+    vscode.workspace.onDidSaveTextDocument((doc) => refreshDiagnostics(doc)),
+    vscode.workspace.onDidCloseTextDocument((doc) => {
+      didClose(doc);
+      diagnostics.delete(doc.uri);
+    }),
     vscode.languages.registerDefinitionProvider("rosegold", definitionProvider),
     vscode.languages.registerHoverProvider("rosegold", hoverProvider),
     vscode.languages.registerCompletionItemProvider(
@@ -464,6 +526,8 @@ function activate(context) {
   );
 }
 
-function deactivate() {}
+async function deactivate() {
+  await stopLanguageServer();
+}
 
 module.exports = { activate, deactivate };

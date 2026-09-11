@@ -2,7 +2,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\vscode\install.ps1
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-$id = "rosegoldc.rosegoldc-0.0.1"
+$id = "rosegoldc.rosegoldc-0.0.2"
 
 $targets = @()
 $cursor = Join-Path $env:USERPROFILE ".cursor\extensions"
@@ -13,6 +13,10 @@ if (-not $targets) { $targets += $cursor }
 
 foreach ($root in $targets) {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $old = Join-Path $root "rosegoldc.rosegoldc-0.0.1"
+    if (Test-Path $old) {
+        Remove-Item -Recurse -Force $old
+    }
     $dest = Join-Path $root $id
     if (Test-Path $dest) {
         Remove-Item -Recurse -Force $dest

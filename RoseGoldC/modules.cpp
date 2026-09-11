@@ -18,7 +18,8 @@
 #include <utility>
 #include <vector>
 
-Interpreter::Interpreter(Program p, std::string f, std::vector<std::string> a)
+Interpreter::Interpreter(Program p, std::string f, std::vector<std::string> a,
+                         bool failFast)
     : program(std::move(p)), file(std::move(f)), argv(std::move(a)) {
   if (argv.empty() && !file.empty())
     argv.push_back(file);
@@ -26,9 +27,12 @@ Interpreter::Interpreter(Program p, std::string f, std::vector<std::string> a)
   loadImports(program, file, nullptr);
   applyInheritance();
   checkTraitImpls();
+  checkAbstractFinal();
   bindTraitSignals();
   checkConstexprFns();
   typecheckAll();
+  if (failFast && !diagnostics.empty())
+    throw std::runtime_error(diagnosticError(diagnostics[0], file));
   env.emplace_back();
 }
 
@@ -36,34 +40,53 @@ void Interpreter::ingestEntry() {
   for (const auto &fn : program.fns)
     fns[fn.name] = &fn;
   for (auto &st : program.structs) {
-    if (structs.count(st.name))
-      initFail("duplicate struct '" + st.name + "'");
-    if (fns.count(st.name))
-      initFail("struct '" + st.name + "' conflicts with a function");
+    if (structs.count(st.name)) {
+      loadFail(file, "duplicate struct '" + st.name + "'", st.line, 1);
+      continue;
+    }
+    if (fns.count(st.name)) {
+      loadFail(file, "struct '" + st.name + "' conflicts with a function",
+               st.line, 1);
+      continue;
+    }
     structs[st.name] = &st;
     allTypes[st.name] = &st;
+    recordFieldAccess(st.name, st.fields, st.fieldVis);
     for (const auto &m : st.methods)
       typeMethods[st.name][m.name] = &m;
+    for (const auto &t : st.implTraits)
+      recordTypeTrait(st.name, t);
   }
   ingestClasses(nullptr, program.classes, false, "", file);
   ingestTraits(program.traits, file);
   ingestEnums(nullptr, program.enums, false, "", file);
   ingestImpls(program.impls, file);
   for (const auto &sig : program.signals) {
-    if (signalArity.count(sig.name))
-      initFail("duplicate signal '" + sig.name + "'");
-    if (fns.count(sig.name))
-      initFail("signal '" + sig.name + "' conflicts with a function");
-    if (structs.count(sig.name) || allTypes.count(sig.name))
-      initFail("signal '" + sig.name + "' conflicts with a struct");
+    if (signalArity.count(sig.name)) {
+      loadFail(file, "duplicate signal '" + sig.name + "'", sig.line, 1);
+      continue;
+    }
+    if (fns.count(sig.name)) {
+      loadFail(file, "signal '" + sig.name + "' conflicts with a function",
+               sig.line, 1);
+      continue;
+    }
+    if (structs.count(sig.name) || allTypes.count(sig.name)) {
+      loadFail(file, "signal '" + sig.name + "' conflicts with a struct",
+               sig.line, 1);
+      continue;
+    }
     signalArity[sig.name] = sig.params.size();
     listeners[sig.name] = {};
   }
   for (auto &m : program.mods) {
     if (fns.count(m.name) || structs.count(m.name) ||
         allTypes.count(m.name) || enums.count(m.name) ||
-        signalArity.count(m.name))
-      initFail("module '" + m.name + "' conflicts with an existing name");
+        signalArity.count(m.name)) {
+      loadFail(file, "module '" + m.name + "' conflicts with an existing name",
+               m.line, 1);
+      continue;
+    }
     registerModShells(m, m.name);
   }
   for (auto &m : program.mods) {
@@ -165,7 +188,14 @@ std::vector<std::string> Interpreter::resolveModule(const std::string &name,
   if (isCrateStdlib(stem)) {
     fs::path root = stdlibRoot();
     if (!root.empty()) {
-      addDir(root / stem);
+      fs::path dir = root;
+      if (stem != "std") {
+        std::string child = stem;
+        if (child.size() > 4 && child.compare(0, 4, "std.") == 0)
+          child = child.substr(4);
+        dir = root / child;
+      }
+      addDir(dir);
       if (!out.empty())
         return out;
     }
@@ -208,11 +238,13 @@ void Interpreter::ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod
                const std::string &modName, const std::string &atFile) {
   for (auto &fn : fns) {
     fn.module = modName;
-    if (m.fns.count(fn.name))
-      runtimeAt(atFile,
+    if (m.fns.count(fn.name)) {
+      loadFail(atFile,
                 "duplicate export '" + fn.name + "' in module '" +
                     modName + "'",
                 fn.line, 1);
+      continue;
+    }
     m.fns[fn.name] = &fn;
     if (!fromMod || fn.isPub)
       m.exports[fn.name] = &fn;
@@ -222,21 +254,26 @@ void Interpreter::ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod
 void Interpreter::ingestStructs(LoadedMod &m, std::vector<structDecl> &items, bool fromMod,
                    const std::string &modName, const std::string &atFile) {
   for (auto &st : items) {
-    if (m.structs.count(st.name))
-      runtimeAt(atFile,
+    if (m.structs.count(st.name)) {
+      loadFail(atFile,
                 "duplicate export '" + st.name + "' in module '" +
                     modName + "'",
                 st.line, 1);
+      continue;
+    }
     m.structs[st.name] = &st;
     allTypes[st.name] = &st;
+    recordFieldAccess(st.name, st.fields, st.fieldVis);
     for (const auto &method : st.methods)
       typeMethods[st.name][method.name] = &method;
+    for (const auto &t : st.implTraits)
+      recordTypeTrait(st.name, t);
     if (!fromMod || st.isPub) {
       m.exportStructs[st.name] = &st;
       if (structs.count(st.name))
-        runtimeAt(atFile, "duplicate struct '" + st.name + "'", st.line, 1);
+        loadFail(atFile, "duplicate struct '" + st.name + "'", st.line, 1);
       if (fns.count(st.name))
-        runtimeAt(atFile,
+        loadFail(atFile,
                   "struct '" + st.name + "' conflicts with a function",
                   st.line, 1);
       structs[st.name] = &st;
@@ -246,8 +283,10 @@ void Interpreter::ingestStructs(LoadedMod &m, std::vector<structDecl> &items, bo
 
 void Interpreter::ingestTraits(std::vector<TraitDecl> &items, const std::string &atFile) {
   for (auto &t : items) {
-    if (traits.count(t.name))
-      runtimeAt(atFile, "duplicate trait '" + t.name + "'", t.line, 1);
+    if (traits.count(t.name)) {
+      loadFail(atFile, "duplicate trait '" + t.name + "'", t.line, 1);
+      continue;
+    }
     traits[t.name] = &t;
   }
 }
@@ -257,23 +296,23 @@ void Interpreter::ingestEnums(LoadedMod *m, std::vector<EnumDecl> &items, bool f
   for (auto &e : items) {
     if (m) {
       if (m->enums.count(e.name))
-        runtimeAt(atFile,
+        loadFail(atFile,
                   "duplicate export '" + e.name + "' in module '" + modName +
                       "'",
                   e.line, 1);
       m->enums[e.name] = &e;
     }
     if (fns.count(e.name))
-      runtimeAt(atFile, "enum '" + e.name + "' conflicts with a function",
+      loadFail(atFile, "enum '" + e.name + "' conflicts with a function",
                 e.line, 1);
     if (structs.count(e.name) || allTypes.count(e.name))
-      runtimeAt(atFile, "enum '" + e.name + "' conflicts with a type", e.line,
+      loadFail(atFile, "enum '" + e.name + "' conflicts with a type", e.line,
                 1);
     if (!m || !fromMod || e.isPub) {
       if (m)
         m->exportEnums[e.name] = &e;
       if (enums.count(e.name))
-        runtimeAt(atFile, "duplicate enum '" + e.name + "'", e.line, 1);
+        loadFail(atFile, "duplicate enum '" + e.name + "'", e.line, 1);
       enums[e.name] = &e;
     }
   }
@@ -294,34 +333,43 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
     c.shape.line = c.line;
     c.shape.fields.clear();
     c.shape.fieldTypes.clear();
+    c.shape.fieldOptional.clear();
     for (const auto &f : c.fields) {
       c.shape.fields.push_back(f.name);
       c.shape.fieldTypes.push_back(f.type);
+      c.shape.fieldOptional.push_back(f.optional ? 1 : 0);
     }
     if (m) {
       if (m->structs.count(c.name))
-        runtimeAt(atFile,
+        loadFail(atFile,
                   "duplicate export '" + c.name + "' in module '" + modName +
                       "'",
                   c.line, 1);
       m->structs[c.name] = &c.shape;
     }
-    if (allTypes.count(c.name))
-      runtimeAt(atFile, "duplicate class '" + c.name + "'", c.line, 1);
-    if (fns.count(c.name))
-      runtimeAt(atFile, "class '" + c.name + "' conflicts with a function",
+    if (allTypes.count(c.name)) {
+      loadFail(atFile, "duplicate class '" + c.name + "'", c.line, 1);
+      continue;
+    }
+    if (fns.count(c.name)) {
+      loadFail(atFile, "class '" + c.name + "' conflicts with a function",
                 c.line, 1);
+      continue;
+    }
     allTypes[c.name] = &c.shape;
     for (const auto &f : c.fields) {
       if (f.hasDefault)
         fieldDefaults[c.name][f.name] = &f.defaultValue;
+      fieldAccess[c.name][f.name] = f.vis;
     }
     if (!c.parent.empty())
       classParents[c.name] = c.parent;
+    classAbstract[c.name] = c.isAbstract;
+    classFinal[c.name] = c.isFinal;
     auto &slot = typeMethods[c.name];
     for (const auto &method : c.methods) {
       if (slot.count(method.name))
-        runtimeAt(atFile,
+        loadFail(atFile,
                   "duplicate method '" + method.name + "' on " + c.name,
                   method.line, 1);
       slot[method.name] = &method;
@@ -330,7 +378,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
       recordTypeTrait(c.name, block.traitName);
       for (auto &method : block.methods) {
         if (slot.count(method.name))
-          runtimeAt(atFile,
+          loadFail(atFile,
                     "duplicate method '" + method.name + "' on " + c.name,
                     method.line, 1);
         slot[method.name] = &method;
@@ -342,7 +390,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
       if (m)
         m->exportStructs[c.name] = &c.shape;
       if (structs.count(c.name))
-        runtimeAt(atFile, "duplicate class '" + c.name + "'", c.line, 1);
+        loadFail(atFile, "duplicate class '" + c.name + "'", c.line, 1);
       structs[c.name] = &c.shape;
     }
   }
@@ -360,28 +408,36 @@ void Interpreter::ingestImpls(std::vector<ImplDecl> &impls, const std::string &a
       if (sit != structs.end())
         st = sit->second;
     }
-    if (!st)
-      runtimeAt(atFile, "undefined struct '" + im.typeName + "'", im.line, 1);
+    if (!st) {
+      loadFail(atFile, "undefined struct '" + im.typeName + "'", im.line, 1);
+      continue;
+    }
     if (!im.traitName.empty()) {
       if (!traits.count(im.traitName))
-        runtimeAt(atFile, "undefined trait '" + im.traitName + "'", im.line,
+        loadFail(atFile, "undefined trait '" + im.traitName + "'", im.line,
                   1);
-      recordTypeTrait(im.typeName, im.traitName);
+      else
+        recordTypeTrait(im.typeName, im.traitName);
     }
     for (auto &method : im.methods) {
       if (st) {
         for (const auto &fld : st->fields) {
           if (fld == method.name)
-            runtimeAt(atFile,
+            loadFail(atFile,
                       "method '" + method.name + "' conflicts with field '" +
                           method.name + "' on " + im.typeName,
                       method.line, 1);
         }
       }
       if (slot.count(method.name))
-        runtimeAt(atFile,
+        loadFail(atFile,
                   "duplicate method '" + method.name + "' on " + im.typeName,
                   method.line, 1);
+      if (method.vis == Vis::Protected && !classAbstract.count(im.typeName))
+        loadFail(atFile,
+                 std::string("protected cannot apply to ") +
+                     (st && st->isData ? "data" : "struct") + " method",
+                 method.line, 1);
       slot[method.name] = &method;
     }
   }
@@ -391,8 +447,17 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
                  std::set<std::string> &done) {
   if (done.count(name))
     return;
-  if (std::find(stack.begin(), stack.end(), name) != stack.end())
-    initFail("cycle in class inheritance at '" + name + "'");
+  auto typeLine = [&]() {
+    auto it = allTypes.find(name);
+    if (it != allTypes.end() && it->second)
+      return it->second->line;
+    return 1;
+  };
+  if (std::find(stack.begin(), stack.end(), name) != stack.end()) {
+    loadFail(file, "cycle in class inheritance at '" + name + "'", typeLine(),
+             1);
+    return;
+  }
   auto pit = classParents.find(name);
   if (pit == classParents.end()) {
     done.insert(name);
@@ -404,7 +469,16 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
       done.insert(name);
       return;
     }
-    initFail("class '" + name + "' extends unknown type '" + parent + "'");
+    loadFail(file,
+             "class '" + name + "' extends unknown type '" + parent + "'",
+             typeLine(), 1);
+    return;
+  }
+  if (allTypes[parent]->isData) {
+    loadFail(file,
+             "class '" + name + "' cannot extend data type '" + parent + "'",
+             typeLine(), 1);
+    return;
   }
   stack.push_back(name);
   flattenType(parent, stack, done);
@@ -412,11 +486,22 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
   structDecl *child = const_cast<structDecl *>(allTypes[name]);
   const structDecl *parentDef = allTypes[parent];
   std::vector<std::string> fields = parentDef->fields;
-  for (const auto &f : child->fields) {
-    if (std::find(fields.begin(), fields.end(), f) == fields.end())
-      fields.push_back(f);
+  std::vector<std::string> types = parentDef->fieldTypes;
+  std::vector<char> opts = parentDef->fieldOptional;
+  types.resize(fields.size());
+  opts.resize(fields.size());
+  for (size_t i = 0; i < child->fields.size(); ++i) {
+    const std::string &f = child->fields[i];
+    if (std::find(fields.begin(), fields.end(), f) != fields.end())
+      continue;
+    fields.push_back(f);
+    types.push_back(i < child->fieldTypes.size() ? child->fieldTypes[i] : "");
+    opts.push_back(i < child->fieldOptional.size() ? child->fieldOptional[i]
+                                                   : 0);
   }
   child->fields = std::move(fields);
+  child->fieldTypes = std::move(types);
+  child->fieldOptional = std::move(opts);
   std::map<std::string, const Expr *> merged;
   auto parentDefs = fieldDefaults.find(parent);
   if (parentDefs != fieldDefaults.end())
@@ -462,17 +547,150 @@ Interpreter::lookupMethod(const std::string &typeName, const std::string &name) 
   return {"", nullptr};
 }
 
+void Interpreter::recordFieldAccess(const std::string &typeName,
+                                    const std::vector<std::string> &fields,
+                                    const std::vector<char> &vis) {
+  auto &slot = fieldAccess[typeName];
+  for (size_t i = 0; i < fields.size(); ++i) {
+    Vis v = Vis::Pub;
+    if (i < vis.size())
+      v = static_cast<Vis>(vis[i]);
+    slot[fields[i]] = v;
+  }
+}
+
+std::pair<std::string, Vis>
+Interpreter::lookupField(const std::string &typeName,
+                         const std::string &name) const {
+  std::string current = typeName;
+  std::set<std::string> seen;
+  while (!current.empty()) {
+    if (!seen.insert(current).second)
+      break;
+    auto typeIt = fieldAccess.find(current);
+    if (typeIt != fieldAccess.end()) {
+      auto fit = typeIt->second.find(name);
+      if (fit != typeIt->second.end())
+        return {current, fit->second};
+    }
+    auto pit = classParents.find(current);
+    if (pit == classParents.end())
+      break;
+    current = pit->second;
+  }
+  return {"", Vis::Pub};
+}
+
 void Interpreter::checkTraitImpls() {
   for (const auto &kv : typeTraits) {
+    int typeLine = 1;
+    auto titType = allTypes.find(kv.first);
+    if (titType != allTypes.end() && titType->second)
+      typeLine = titType->second->line;
     for (const auto &traitName : kv.second) {
       auto tit = traits.find(traitName);
-      if (tit == traits.end())
-        initFail("undefined trait '" + traitName + "'");
+      if (tit == traits.end()) {
+        loadFail(file, "undefined trait '" + traitName + "'", typeLine, 1);
+        continue;
+      }
       for (const auto &m : tit->second->methods) {
         if (!lookupMethod(kv.first, m.name).second)
-          initFail("type '" + kv.first + "' is missing '" + m.name +
-                   "' for trait '" + traitName + "'");
+          loadFail(file,
+                   "type '" + kv.first + "' is missing '" + m.name +
+                       "' for trait '" + traitName + "'",
+                   m.line > 0 ? m.line : typeLine, 1);
       }
+    }
+  }
+}
+
+void Interpreter::checkAbstractFinal() {
+  auto typeLine = [&](const std::string &name) {
+    auto it = allTypes.find(name);
+    if (it != allTypes.end() && it->second)
+      return it->second->line;
+    return 1;
+  };
+
+  for (const auto &kv : classParents) {
+    auto fit = classFinal.find(kv.second);
+    if (fit != classFinal.end() && fit->second)
+      loadFail(file,
+               "class '" + kv.first + "' extends final class '" + kv.second +
+                   "'",
+               typeLine(kv.first), 1);
+  }
+
+  for (const auto &kv : classAbstract) {
+    const std::string &name = kv.first;
+    const bool absClass = kv.second;
+    const bool finClass = classFinal.count(name) && classFinal[name];
+    const int line = typeLine(name);
+    if (absClass && finClass)
+      loadFail(file,
+               "class '" + name + "' cannot be both abstract and final", line,
+               1);
+
+    auto mit = typeMethods.find(name);
+    if (mit != typeMethods.end()) {
+      for (const auto &m : mit->second) {
+        if (m.second->isAbstract && m.second->isFinal)
+          loadFail(file,
+                   "method '" + m.first +
+                       "' cannot be both abstract and final",
+                   m.second->line, 1);
+        if (m.second->isAbstract && !absClass)
+          loadFail(file,
+                   "class '" + name + "' has abstract method '" + m.first +
+                       "' but is not abstract",
+                   m.second->line, 1);
+
+        std::string current =
+            classParents.count(name) ? classParents[name] : "";
+        std::set<std::string> walked;
+        while (!current.empty() && walked.insert(current).second) {
+          auto tmit = typeMethods.find(current);
+          if (tmit != typeMethods.end()) {
+            auto parentM = tmit->second.find(m.first);
+            if (parentM != tmit->second.end()) {
+              if (parentM->second->isFinal)
+                loadFail(file,
+                         "cannot override final method '" + m.first + "'",
+                         m.second->line, 1);
+              break;
+            }
+          }
+          auto pit = classParents.find(current);
+          if (pit == classParents.end())
+            break;
+          current = pit->second;
+        }
+      }
+    }
+
+    if (absClass)
+      continue;
+
+    std::set<std::string> seen;
+    std::string current = name;
+    std::set<std::string> walked;
+    while (!current.empty() && walked.insert(current).second) {
+      auto tmit = typeMethods.find(current);
+      if (tmit != typeMethods.end()) {
+        for (const auto &m : tmit->second) {
+          if (!seen.insert(m.first).second)
+            continue;
+          if (m.second->isAbstract)
+            loadFail(file,
+                     "type '" + name + "' is missing abstract method '" +
+                         m.first + "'",
+                     line, 1);
+        }
+      }
+      auto pit = classParents.find(current);
+      if (pit == classParents.end())
+        break;
+      current = pit->second;
     }
   }
 }
@@ -561,14 +779,35 @@ void Interpreter::ingestModule(Program &p, const std::string &modName, LoadedMod
   }
 }
 
-void Interpreter::loadModule(const std::string &name, const std::string &fromFile, int line,
+void Interpreter::attachStdlibChildren() {
+  auto it = loaded.find("std");
+  if (it == loaded.end())
+    return;
+  static const char *kids[] = {"math", "str", "io", "vec"};
+  for (const char *kid : kids) {
+    const std::string full = std::string("std.") + kid;
+    loadModule(full, file, 1, 1);
+    if (!loaded.count(full))
+      continue;
+    it = loaded.find("std");
+    if (it == loaded.end())
+      return;
+    it->second.modules[kid] = full;
+    it->second.exportMods[kid] = full;
+  }
+}
+
+void Interpreter::loadModule(const std::string &raw, const std::string &fromFile, int line,
                 int col) {
+  const std::string name = canonicalStdlibName(raw);
   if (loaded.count(name) || isHostModule(name))
     return;
   for (const auto &cur : loading) {
-    if (cur == name)
-      runtimeAt(fromFile, "cyclic import of module '" + name + "'", line,
+    if (cur == name) {
+      loadFail(fromFile, "cyclic import of module '" + name + "'", line,
                 col);
+      return;
+    }
   }
   const auto dot = name.rfind('.');
   if (dot != std::string::npos) {
@@ -580,17 +819,22 @@ void Interpreter::loadModule(const std::string &name, const std::string &fromFil
       return;
   }
   const std::vector<std::string> files = resolveModule(name, fromFile);
-  if (files.empty())
-    runtimeAt(fromFile,
+  if (files.empty()) {
+    loadFail(fromFile,
               "module '" + name + "' not found (tried " + name +
                   "/ or mod " + name + ")",
               line, col);
+    return;
+  }
 
   loading.push_back(name);
   LoadedMod m;
   try {
     for (const auto &path : files) {
-      Program *kept = keep(parseSource(readFile(path), path));
+      std::vector<Diagnostic> parseErrs;
+      Program *kept = keep(parseSource(readFile(path), path, &parseErrs));
+      for (const auto &d : parseErrs)
+        recordDiag(d.kind, d.file, d.line, d.col, d.message);
       ingestModule(*kept, name, m, path);
     }
   } catch (...) {
@@ -599,26 +843,34 @@ void Interpreter::loadModule(const std::string &name, const std::string &fromFil
   }
   loading.pop_back();
   loaded[name] = std::move(m);
+  if (name == "std")
+    attachStdlibChildren();
 }
 
 void Interpreter::bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod *owner,
                     const std::string &fromFile) {
-  if (im.path.size() != 2)
-    runtimeAt(fromFile,
+  if (im.path.size() != 2) {
+    loadFail(fromFile,
               "nested from-imports longer than 2 segments are not supported",
               im.line, im.col);
+    return;
+  }
   const std::string &item = im.path[1];
   const std::string alias = im.alias.empty() ? item : im.alias;
   if (FnDecl *fn = mod.exports.count(item) ? mod.exports[item] : nullptr) {
     if (owner) {
-      if (owner->fromFns.count(alias) || owner->fns.count(alias))
-        runtimeAt(fromFile, "duplicate import '" + alias + "'", im.line,
+      if (owner->fromFns.count(alias) || owner->fns.count(alias)) {
+        loadFail(fromFile, "duplicate import '" + alias + "'", im.line,
                   im.col);
+        return;
+      }
       owner->fromFns[alias] = fn;
     } else {
-      if (fns.count(alias))
-        runtimeAt(fromFile, "duplicate import '" + alias + "'", im.line,
+      if (fns.count(alias)) {
+        loadFail(fromFile, "duplicate import '" + alias + "'", im.line,
                   im.col);
+        return;
+      }
       fns[alias] = fn;
     }
     return;
@@ -629,9 +881,11 @@ void Interpreter::bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod
       owner->structs[alias] = st;
       owner->exportStructs[alias] = st;
     } else {
-      if (structs.count(alias) && structs[alias] != st)
-        runtimeAt(fromFile, "duplicate struct '" + alias + "'", im.line,
+      if (structs.count(alias) && structs[alias] != st) {
+        loadFail(fromFile, "duplicate struct '" + alias + "'", im.line,
                   im.col);
+        return;
+      }
       structs[alias] = st;
     }
     return;
@@ -642,9 +896,11 @@ void Interpreter::bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod
       owner->enums[alias] = en;
       owner->exportEnums[alias] = en;
     } else {
-      if (enums.count(alias) && enums[alias] != en)
-        runtimeAt(fromFile, "duplicate enum '" + alias + "'", im.line,
+      if (enums.count(alias) && enums[alias] != en) {
+        loadFail(fromFile, "duplicate enum '" + alias + "'", im.line,
                   im.col);
+        return;
+      }
       enums[alias] = en;
     }
     return;
@@ -657,7 +913,7 @@ void Interpreter::bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod
       moduleBinds[alias] = full;
     return;
   }
-  runtimeAt(fromFile,
+  loadFail(fromFile,
             "module '" + im.path[0] + "' has no export '" + item + "'",
             im.line, im.col);
 }
@@ -672,10 +928,12 @@ void Interpreter::checkDottedExport(const ImportDecl &im, const std::string &fro
       return;
     const std::string &seg = im.path[i];
     if (pit->second.modules.count(seg)) {
-      if (!pit->second.exportMods.count(seg))
-        runtimeAt(fromFile,
+      if (!pit->second.exportMods.count(seg)) {
+        loadFail(fromFile,
                   "module '" + acc + "' has no export '" + seg + "'",
                   im.line, im.col);
+        return;
+      }
     } else {
       return;
     }
@@ -686,13 +944,16 @@ void Interpreter::checkDottedExport(const ImportDecl &im, const std::string &fro
 
 void Interpreter::evalImport(const ImportDecl &im, const std::string &fromFile,
                 LoadedMod *owner) {
-  if (im.path.empty())
-    runtimeAt(fromFile, "empty import", im.line, im.col);
+  if (im.path.empty()) {
+    loadFail(fromFile, "empty import", im.line, im.col);
+    return;
+  }
   if (isHostModule(im.path[0]))
     return;
   if (im.isFrom) {
-    loadModule(im.path[0], fromFile, im.line, im.col);
-    auto it = loaded.find(im.path[0]);
+    const std::string key = canonicalStdlibName(im.path[0]);
+    loadModule(key, fromFile, im.line, im.col);
+    auto it = loaded.find(key);
     if (it == loaded.end())
       return;
     bindFromImport(im, it->second, owner, fromFile);
@@ -706,14 +967,20 @@ void Interpreter::evalImport(const ImportDecl &im, const std::string &fromFile,
     }
     return s;
   }();
-  loadModule(full, fromFile, im.line, im.col);
+  const std::string key = canonicalStdlibName(full);
+  loadModule(key, fromFile, im.line, im.col);
   checkDottedExport(im, fromFile);
   const std::string bind =
       im.alias.empty() ? im.path.back() : im.alias;
-  if (owner)
-    owner->modules[bind] = full;
-  else
-    moduleBinds[bind] = full;
+  auto setBind = [&](const std::string &name, const std::string &target) {
+    if (owner)
+      owner->modules[name] = target;
+    else
+      moduleBinds[name] = target;
+  };
+  setBind(bind, key);
+  if (im.path[0] == "std")
+    setBind("std", "std");
 }
 
 void Interpreter::loadImports(Program &p, const std::string &fromFile, LoadedMod *owner) {

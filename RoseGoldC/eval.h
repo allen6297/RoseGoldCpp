@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lexer.h"
+
 #include <string>
 #include <vector>
 
@@ -15,3 +17,10 @@ RunResult runFile(const std::string &path,
 RunResult testFile(const std::string &path);
 RunResult testSuite(const std::string &root);
 RunResult testLanguage();
+std::vector<Diagnostic> checkSource(const std::string &source,
+                                    const std::string &path);
+std::vector<Diagnostic> checkFile(const std::string &path);
+std::string diagnosticsToJson(const std::vector<Diagnostic> &diags);
+std::string diagnosticToHuman(const Diagnostic &d);
+int runLanguageServer();
+bool jsonRpcSelfTest();

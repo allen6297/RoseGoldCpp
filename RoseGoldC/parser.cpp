@@ -8,13 +8,17 @@
 
 namespace {
 
+struct ParseError {};
+
 struct Parser {
   std::vector<Token> tokens;
   std::string file;
+  std::vector<Diagnostic> *errors = nullptr;
   size_t i = 0;
 
-  explicit Parser(std::vector<Token> t, std::string f)
-      : tokens(std::move(t)), file(std::move(f)) {}
+  explicit Parser(std::vector<Token> t, std::string f,
+                  std::vector<Diagnostic> *e)
+      : tokens(std::move(t)), file(std::move(f)), errors(e) {}
 
   const Token &peek() const { return tokens[i]; }
   const Token &prev() const { return tokens[i - 1]; }
@@ -30,9 +34,61 @@ struct Parser {
 
   const Token &advance() { return tokens[i++]; }
 
-  [[noreturn]] void errorHere(const std::string &msg) const {
-    throw std::runtime_error(
-        locatedError("parse error", file, peek().line, peek().col, msg));
+  void record(const std::string &msg) {
+    Diagnostic d;
+    d.file = file;
+    d.line = peek().line > 0 ? peek().line : 1;
+    d.col = peek().col > 0 ? peek().col : 1;
+    d.severity = "error";
+    d.message = msg;
+    d.kind = "parse error";
+    if (errors) {
+      for (const auto &prev : *errors) {
+        if (prev.file == d.file && prev.line == d.line && prev.col == d.col &&
+            prev.message == d.message)
+          return;
+      }
+      errors->push_back(std::move(d));
+    }
+  }
+
+  [[noreturn]] void errorHere(const std::string &msg) {
+    record(msg);
+    throw ParseError();
+  }
+
+  void errorNote(const std::string &msg) { record(msg); }
+
+  void synchronizeStmt() {
+    while (!check(Tok::Eof) && !check(Tok::RBrace) && !check(Tok::Semi))
+      advance();
+    if (check(Tok::Semi))
+      advance();
+  }
+
+  bool atItemStart() const {
+    return check(Tok::Function) || check(Tok::Struct) || check(Tok::Data) ||
+           check(Tok::Class) ||
+           check(Tok::Trait) || check(Tok::Enum) || check(Tok::Implements) ||
+           check(Tok::Signal) || check(Tok::Module) || check(Tok::Import) ||
+           check(Tok::From) || check(Tok::At) || check(Tok::Pub) ||
+           check(Tok::Private) || check(Tok::Protected) ||
+           check(Tok::Abstract) || check(Tok::Final);
+  }
+
+  void synchronizeItem() {
+    if (check(Tok::Eof))
+      return;
+    advance();
+    while (!check(Tok::Eof)) {
+      if (atItemStart())
+        return;
+      if (check(Tok::RBrace) || check(Tok::Semi)) {
+        advance();
+        return;
+      }
+      advance();
+    }
   }
 
   const Token &expect(Tok k, const std::string &msg) {
@@ -73,7 +129,14 @@ struct Parser {
     bool isTest = false;
     bool isDeprecated = false;
     bool isConstexpr = false;
-    bool any() const { return isTest || isDeprecated || isConstexpr; }
+    bool isUfcs = false;
+    bool isOptional = false;
+    bool any() const {
+      return isTest || isDeprecated || isConstexpr || isUfcs || isOptional;
+    }
+    bool fnLike() const {
+      return isTest || isDeprecated || isConstexpr || isUfcs;
+    }
   };
 
   Expr parsePrimary() {
@@ -219,6 +282,12 @@ struct Parser {
   }
   // MARK: EXPRESSIONS
   Expr parseUnary() {
+    if (match(Tok::Try)) {
+      const Token &op = prev();
+      Expr e = make(Expr::Kind::Try, op.line, op.col);
+      e.kids.push_back(parseUnary());
+      return e;
+    }
     if (match(Tok::Minus) || match(Tok::Bang)) {
       const Token &op = prev();
       Expr e = make(Expr::Kind::Unary, op.line, op.col);
@@ -257,7 +326,8 @@ struct Parser {
 
   Expr parseComparison() {
     Expr left = parseTerm();
-    while (match(Tok::LArrow) || match(Tok::RArrow)) {
+    while (match(Tok::LArrow) || match(Tok::RArrow) || match(Tok::LtEq) ||
+           match(Tok::GtEq)) {
       const Token &op = prev();
       Expr e = make(Expr::Kind::Binary, op.line, op.col);
       e.text = op.text;
@@ -268,7 +338,7 @@ struct Parser {
     return left;
   }
 
-  Expr parseExpr() {
+  Expr parseEquality() {
     Expr left = parseComparison();
     while (match(Tok::EqEq) || match(Tok::NotEq)) {
       const Token &op = prev();
@@ -281,11 +351,58 @@ struct Parser {
     return left;
   }
 
+  Expr parseAnd() {
+    Expr left = parseEquality();
+    while (match(Tok::AndAnd)) {
+      const Token &op = prev();
+      Expr e = make(Expr::Kind::Binary, op.line, op.col);
+      e.text = op.text;
+      e.kids.push_back(std::move(left));
+      e.kids.push_back(parseEquality());
+      left = std::move(e);
+    }
+    return left;
+  }
+
+  Expr parseOr() {
+    Expr left = parseAnd();
+    while (match(Tok::OrOr)) {
+      const Token &op = prev();
+      Expr e = make(Expr::Kind::Binary, op.line, op.col);
+      e.text = op.text;
+      e.kids.push_back(std::move(left));
+      e.kids.push_back(parseAnd());
+      left = std::move(e);
+    }
+    return left;
+  }
+
+  Expr parseRange() {
+    Expr left = parseOr();
+    if (match(Tok::DotDot) || match(Tok::DotDotEq)) {
+      const Token &op = prev();
+      Expr e = make(Expr::Kind::Range, op.line, op.col);
+      e.boolean = op.kind == Tok::DotDotEq;
+      e.text = op.text;
+      e.kids.push_back(std::move(left));
+      e.kids.push_back(parseOr());
+      return e;
+    }
+    return left;
+  }
+
+  Expr parseExpr() { return parseRange(); }
+
   std::vector<Stmt> parseBlock() {
     expect(Tok::LBrace, "expected '{'");
     std::vector<Stmt> stmts;
-    while (!check(Tok::RBrace) && !check(Tok::Eof))
-      stmts.push_back(parseStmt());
+    while (!check(Tok::RBrace) && !check(Tok::Eof)) {
+      try {
+        stmts.push_back(parseStmt());
+      } catch (const ParseError &) {
+        synchronizeStmt();
+      }
+    }
     expect(Tok::RBrace, "expected '}'");
     return stmts;
   }
@@ -310,6 +427,27 @@ struct Parser {
     const Token &t = peek();
     if (match(Tok::If))
       return parseIfAt(t.line, t.col);
+    if (match(Tok::Do)) {
+      Stmt s;
+      s.kind = Stmt::Kind::Do;
+      s.line = t.line;
+      s.col = t.col;
+      s.body = parseBlock();
+      if (match(Tok::Catch)) {
+        s.name = expect(Tok::Identifier, "expected catch binding").text;
+        s.elseBody = parseBlock();
+      }
+      return s;
+    }
+    if (match(Tok::Throw)) {
+      Stmt s;
+      s.kind = Stmt::Kind::Throw;
+      s.line = t.line;
+      s.col = t.col;
+      s.expr = parseExpr();
+      expect(Tok::Semi, "expected ';'");
+      return s;
+    }
     if (match(Tok::While)) {
       Stmt s;
       s.kind = Stmt::Kind::While;
@@ -370,12 +508,35 @@ struct Parser {
       expect(Tok::Semi, "expected ';'");
       return s;
     }
-    if (check(Tok::Identifier) && tokens[i + 1].kind == Tok::Eq) {
-      const Token &name = advance();
+    auto isAssignTok = [](Tok k) {
+      return k == Tok::Eq || k == Tok::PlusEq || k == Tok::MinusEq ||
+             k == Tok::StarEq || k == Tok::SlashEq;
+    };
+    auto assignText = [](Tok k) -> std::string {
+      if (k == Tok::PlusEq)
+        return "+=";
+      if (k == Tok::MinusEq)
+        return "-=";
+      if (k == Tok::StarEq)
+        return "*=";
+      if (k == Tok::SlashEq)
+        return "/=";
+      return "=";
+    };
+    auto matchAssignOp = [&](std::string &op) {
+      if (!isAssignTok(peek().kind))
+        return false;
+      op = assignText(peek().kind);
       advance();
+      return true;
+    };
+    if (check(Tok::Identifier) && isAssignTok(tokens[i + 1].kind)) {
+      const Token &name = advance();
+      const Tok opTok = advance().kind;
       Stmt s;
       s.kind = Stmt::Kind::Assign;
       s.name = name.text;
+      s.op = assignText(opTok);
       s.expr = parseExpr();
       s.line = name.line;
       s.col = name.col;
@@ -387,13 +548,16 @@ struct Parser {
     s.expr = parseExpr();
     s.line = s.expr.line;
     s.col = s.expr.col;
-    if (s.expr.kind == Expr::Kind::Member && match(Tok::Eq)) {
+    std::string op;
+    if (s.expr.kind == Expr::Kind::Member && matchAssignOp(op)) {
       s.kind = Stmt::Kind::FieldAssign;
       s.name = s.expr.text;
+      s.op = std::move(op);
       s.target = std::move(s.expr.kids[0]);
       s.expr = parseExpr();
-    } else if (s.expr.kind == Expr::Kind::Index && match(Tok::Eq)) {
+    } else if (s.expr.kind == Expr::Kind::Index && matchAssignOp(op)) {
       s.kind = Stmt::Kind::IndexAssign;
+      s.op = std::move(op);
       s.target = std::move(s.expr);
       s.expr = parseExpr();
     }
@@ -511,7 +675,7 @@ struct Parser {
       }
       for (const auto &prev : e.variants) {
         if (prev.name == v.name)
-          errorHere("duplicate variant '" + v.name + "'");
+          errorNote("duplicate variant '" + v.name + "'");
       }
       e.variants.push_back(std::move(v));
       if (!match(Tok::Comma))
@@ -521,7 +685,7 @@ struct Parser {
     return e;
   }
 
-  FnDecl parseFn(const FnAttrs &attrs, bool isPub) {
+  FnDecl parseFn(const FnAttrs &attrs, bool isPub, bool abstractMethod = false) {
     const Token &fnTok = expect(Tok::Function, "expected 'fn'");
     const Token &name = expect(Tok::Identifier, "expected function name");
     expect(Tok::LParen, "expected '('");
@@ -530,7 +694,9 @@ struct Parser {
     fn.isTest = attrs.isTest;
     fn.isDeprecated = attrs.isDeprecated;
     fn.isConstexpr = attrs.isConstexpr;
+    fn.isUfcs = attrs.isUfcs;
     fn.isPub = isPub;
+    fn.isAbstract = abstractMethod;
     fn.line = fnTok.line;
     if (!check(Tok::RParen)) {
       do {
@@ -540,7 +706,12 @@ struct Parser {
       } while (match(Tok::Comma));
     }
     expect(Tok::RParen, "expected ')'");
+    fn.throws = match(Tok::Throws);
     fn.returnType = parseOptionalType();
+    if (abstractMethod) {
+      expect(Tok::Semi, "expected ';' after abstract method");
+      return fn;
+    }
     fn.body = parseBlock();
     return fn;
   }
@@ -557,11 +728,11 @@ struct Parser {
                        const std::string &name) {
     for (const auto &f : fields) {
       if (f == name)
-        errorHere("method '" + name + "' conflicts with field '" + name + "'");
+        errorNote("method '" + name + "' conflicts with field '" + name + "'");
     }
     for (const auto &m : methods) {
       if (m.name == name)
-        errorHere("duplicate method '" + name + "'");
+        errorNote("duplicate method '" + name + "'");
     }
   }
 
@@ -575,58 +746,153 @@ struct Parser {
       attrs.isDeprecated = true;
     else if (attr.text == "constexpr")
       attrs.isConstexpr = true;
+    else if (attr.text == "ufcs")
+      attrs.isUfcs = true;
+    else if (attr.text == "optional")
+      attrs.isOptional = true;
     else
-      errorHere("unknown attribute @" + attr.text);
+      errorNote("unknown attribute @" + attr.text);
     return true;
   }
 
-  FnDecl parseMethod() {
-    FnAttrs attrs;
-    while (parseOneAttr(attrs)) {
-    }
+  void rejectMethodAttrs(const FnAttrs &attrs) {
     if (attrs.isTest)
-      errorHere("@test cannot apply to method");
-    FnDecl fn = parseFn(attrs, true);
+      errorNote("@test cannot apply to method");
+    if (attrs.isUfcs)
+      errorNote("@ufcs cannot apply to method");
+    if (attrs.isOptional)
+      errorNote("@optional cannot apply to method");
+  }
+
+  void rejectClassMods(bool isAbstract, bool isFinal, const char *what) {
+    if (isAbstract)
+      errorNote(std::string("abstract cannot apply to ") + what);
+    if (isFinal)
+      errorNote(std::string("final cannot apply to ") + what);
+  }
+
+  void rejectProtected(bool isProtected, const char *what) {
+    if (isProtected)
+      errorNote(std::string("protected cannot apply to ") + what);
+  }
+
+  struct MemberPrefix {
+    FnAttrs attrs;
+    bool isAbstract = false;
+    bool isFinal = false;
+    Vis vis = Vis::Pub;
+    bool sawVis = false;
+  };
+
+  void takeVis(MemberPrefix &p, Vis v) {
+    if (p.sawVis)
+      errorNote("cannot combine visibility modifiers");
+    p.sawVis = true;
+    p.vis = v;
+  }
+
+  void parseMemberPrefix(MemberPrefix &p) {
+    while (true) {
+      if (parseOneAttr(p.attrs))
+        continue;
+      if (match(Tok::Pub)) {
+        takeVis(p, Vis::Pub);
+        continue;
+      }
+      if (match(Tok::Private)) {
+        takeVis(p, Vis::Private);
+        continue;
+      }
+      if (match(Tok::Protected)) {
+        takeVis(p, Vis::Protected);
+        continue;
+      }
+      if (match(Tok::Abstract)) {
+        p.isAbstract = true;
+        continue;
+      }
+      if (match(Tok::Final)) {
+        p.isFinal = true;
+        continue;
+      }
+      break;
+    }
+  }
+
+  FnDecl parseMethod(bool traitImpl = false) {
+    MemberPrefix p;
+    parseMemberPrefix(p);
+    rejectClassMods(p.isAbstract, p.isFinal, "impl method");
+    if (traitImpl && p.vis != Vis::Pub)
+      errorNote("trait impl methods cannot be private or protected");
+    rejectMethodAttrs(p.attrs);
+    FnDecl fn = parseFn(p.attrs, true);
+    fn.vis = p.vis;
     bindSelf(fn);
     return fn;
   }
 
-  structDecl parseStruct() {
-    const Token &structTok = expect(Tok::Struct, "expected 'struct'");
-    const Token &name = expect(Tok::Identifier, "expected struct name");
+  structDecl parseStruct(bool isData) {
+    const Token &tok =
+        isData ? expect(Tok::Data, "expected 'data'")
+               : expect(Tok::Struct, "expected 'struct'");
+    const Token &name = expect(Tok::Identifier, isData ? "expected data name"
+                                                       : "expected struct name");
     structDecl s;
     s.name = name.text;
-    s.line = structTok.line;
+    s.line = tok.line;
+    s.isData = isData;
+    const char *kind = isData ? "data" : "struct";
+    if (match(Tok::Implements)) {
+      do {
+        s.implTraits.push_back(
+            expect(Tok::Identifier, "expected trait name after impl").text);
+      } while (match(Tok::Comma));
+    }
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      FnAttrs attrs;
-      while (parseOneAttr(attrs)) {
+      try {
+        MemberPrefix p;
+        parseMemberPrefix(p);
+        if (check(Tok::Function)) {
+          rejectClassMods(p.isAbstract, p.isFinal,
+                          (std::string(kind) + " method").c_str());
+          if (p.vis == Vis::Protected)
+            errorNote(std::string("protected cannot apply to ") + kind +
+                      " method");
+          rejectMethodAttrs(p.attrs);
+          FnDecl fn = parseFn(p.attrs, true);
+          fn.vis = p.vis;
+          bindSelf(fn);
+          checkMethodName(s.fields, s.methods, fn.name);
+          s.methods.push_back(std::move(fn));
+          continue;
+        }
+        rejectClassMods(p.isAbstract, p.isFinal, "field");
+        if (p.vis == Vis::Protected)
+          errorNote(std::string("protected cannot apply to ") + kind +
+                    " field");
+        if (p.attrs.fnLike())
+          errorNote("attributes cannot apply to field");
+        const Token &field = expect(Tok::Identifier, "expected field name");
+        std::string ty = parseOptionalType();
+        expect(Tok::Semi, "expected ';'");
+        for (const auto &f : s.fields) {
+          if (f == field.text)
+            errorNote("duplicate field '" + field.text + "'");
+        }
+        for (const auto &m : s.methods) {
+          if (m.name == field.text)
+            errorNote("field '" + field.text + "' conflicts with method '" +
+                      field.text + "'");
+        }
+        s.fields.push_back(field.text);
+        s.fieldTypes.push_back(std::move(ty));
+        s.fieldOptional.push_back(p.attrs.isOptional ? 1 : 0);
+        s.fieldVis.push_back(static_cast<char>(p.vis));
+      } catch (const ParseError &) {
+        synchronizeStmt();
       }
-      if (check(Tok::Function)) {
-        if (attrs.isTest)
-          errorHere("@test cannot apply to method");
-        FnDecl fn = parseFn(attrs, true);
-        bindSelf(fn);
-        checkMethodName(s.fields, s.methods, fn.name);
-        s.methods.push_back(std::move(fn));
-        continue;
-      }
-      if (attrs.any())
-        errorHere("attributes cannot apply to field");
-      const Token &field = expect(Tok::Identifier, "expected field name");
-      std::string ty = parseOptionalType();
-      expect(Tok::Semi, "expected ';'");
-      for (const auto &f : s.fields) {
-        if (f == field.text)
-          errorHere("duplicate field '" + field.text + "'");
-      }
-      for (const auto &m : s.methods) {
-        if (m.name == field.text)
-          errorHere("field '" + field.text + "' conflicts with method '" +
-                    field.text + "'");
-      }
-      s.fields.push_back(field.text);
-      s.fieldTypes.push_back(std::move(ty));
     }
     expect(Tok::RBrace, "expected '}'");
     return s;
@@ -647,9 +913,13 @@ struct Parser {
     }
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      FnDecl fn = parseMethod();
-      checkMethodName({}, impl.methods, fn.name);
-      impl.methods.push_back(std::move(fn));
+      try {
+        FnDecl fn = parseMethod(!impl.traitName.empty());
+        checkMethodName({}, impl.methods, fn.name);
+        impl.methods.push_back(std::move(fn));
+      } catch (const ParseError &) {
+        synchronizeStmt();
+      }
     }
     expect(Tok::RBrace, "expected '}'");
     return impl;
@@ -670,6 +940,7 @@ struct Parser {
       } while (match(Tok::Comma));
     }
     expect(Tok::RParen, "expected ')'");
+    m.throws = match(Tok::Throws);
     m.returnType = parseOptionalType();
     expect(Tok::Semi, "expected ';' after trait method (signatures only)");
     if (m.params.empty() || m.params[0] != "self") {
@@ -687,23 +958,30 @@ struct Parser {
     t.line = traitTok.line;
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      match(Tok::Pub);
-      if (check(Tok::Signal)) {
-        t.signals.push_back(parseSignal());
-        continue;
-      }
-      if (check(Tok::Function)) {
-        TraitMethod m = parseTraitMethod();
-        for (const auto &prev : t.methods) {
-          if (prev.name == m.name)
-            errorHere("duplicate method '" + m.name + "'");
+      try {
+        match(Tok::Pub);
+        if (check(Tok::Signal)) {
+          t.signals.push_back(parseSignal());
+          continue;
         }
-        t.methods.push_back(std::move(m));
-        continue;
+        if (check(Tok::Function)) {
+          TraitMethod m = parseTraitMethod();
+          for (const auto &prev : t.methods) {
+            if (prev.name == m.name)
+              errorNote("duplicate method '" + m.name + "'");
+          }
+          t.methods.push_back(std::move(m));
+          continue;
+        }
+        if (check(Tok::Variable) || check(Tok::Constant)) {
+          errorNote("traits cannot declare vars or consts");
+          synchronizeStmt();
+          continue;
+        }
+        errorHere("expected fn signature or signal in trait");
+      } catch (const ParseError &) {
+        synchronizeStmt();
       }
-      if (check(Tok::Variable) || check(Tok::Constant))
-        errorHere("traits cannot declare vars or consts");
-      errorHere("expected fn signature or signal in trait");
     }
     expect(Tok::RBrace, "expected '}'");
     return t;
@@ -728,29 +1006,30 @@ struct Parser {
     expect(Tok::LBrace, "expected '{'");
     std::vector<std::string> fieldNames;
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-      FnAttrs attrs;
-      while (true) {
-        if (parseOneAttr(attrs))
-          continue;
-        if (match(Tok::Pub))
-          continue;
-        break;
+      try {
+      MemberPrefix p;
+      parseMemberPrefix(p);
+      if (check(Tok::Constant)) {
+        errorNote("class const is not v1 (use a module-level const)");
+        synchronizeStmt();
+        continue;
       }
-      if (check(Tok::Constant))
-        errorHere("class const is not v1 (use a module-level const)");
       if (check(Tok::Implements)) {
-        if (attrs.any())
-          errorHere("attributes cannot apply to impl");
+        if (p.attrs.any())
+          errorNote("attributes cannot apply to impl");
+        rejectClassMods(p.isAbstract, p.isFinal, "impl");
+        if (p.sawVis)
+          errorNote("visibility cannot apply to impl");
         expect(Tok::Implements, "expected 'impl'");
         const Token &trait =
             expect(Tok::Identifier, "expected trait name after impl");
         if (match(Tok::For))
-          errorHere("impl inside a class is `impl Trait { … }` (no `for`)");
+          errorNote("impl inside a class is `impl Trait { … }` (no `for`)");
         NestedImpl block;
         block.traitName = trait.text;
         expect(Tok::LBrace, "expected '{' after trait name");
         while (!check(Tok::RBrace) && !check(Tok::Eof)) {
-          FnDecl fn = parseMethod();
+          FnDecl fn = parseMethod(true);
           checkMethodName(fieldNames, c.methods, fn.name);
           for (const auto &b : c.traitImpls) {
             checkMethodName({}, b.methods, fn.name);
@@ -762,9 +1041,14 @@ struct Parser {
         continue;
       }
       if (check(Tok::Function)) {
-        if (attrs.isTest)
-          errorHere("@test cannot apply to method");
-        FnDecl fn = parseFn(attrs, true);
+        rejectMethodAttrs(p.attrs);
+        if (p.isAbstract && p.isFinal)
+          errorNote("method cannot be both abstract and final");
+        if (p.isAbstract && p.attrs.isConstexpr)
+          errorNote("@constexpr cannot apply to abstract method");
+        FnDecl fn = parseFn(p.attrs, true, p.isAbstract);
+        fn.isFinal = p.isFinal;
+        fn.vis = p.vis;
         bindSelf(fn);
         checkMethodName(fieldNames, c.methods, fn.name);
         for (const auto &b : c.traitImpls) {
@@ -775,13 +1059,16 @@ struct Parser {
       }
       if (!check(Tok::Variable))
         errorHere("expected var, fn, or impl in class body");
-      if (attrs.any())
-        errorHere("attributes cannot apply to field");
+      rejectClassMods(p.isAbstract, p.isFinal, "field");
+      if (p.attrs.fnLike())
+        errorNote("attributes cannot apply to field");
       expect(Tok::Variable, "expected 'var'");
       const Token &field = expect(Tok::Identifier, "expected field name");
       ClassField f;
       f.name = field.text;
       f.type = parseOptionalType();
+      f.optional = p.attrs.isOptional;
+      f.vis = p.vis;
       if (match(Tok::Eq)) {
         f.hasDefault = true;
         f.defaultValue = parseExpr();
@@ -789,18 +1076,21 @@ struct Parser {
       expect(Tok::Semi, "expected ';'");
       for (const auto &prev : fieldNames) {
         if (prev == f.name)
-          errorHere("duplicate field '" + f.name + "'");
+          errorNote("duplicate field '" + f.name + "'");
       }
       checkMethodName(fieldNames, c.methods, f.name);
       for (const auto &b : c.traitImpls) {
         for (const auto &m : b.methods) {
           if (m.name == f.name)
-            errorHere("field '" + f.name + "' conflicts with method '" +
+            errorNote("field '" + f.name + "' conflicts with method '" +
                       f.name + "'");
         }
       }
       fieldNames.push_back(f.name);
       c.fields.push_back(std::move(f));
+      } catch (const ParseError &) {
+        synchronizeStmt();
+      }
     }
     expect(Tok::RBrace, "expected '}'");
     c.shape.name = c.name;
@@ -808,6 +1098,7 @@ struct Parser {
     for (const auto &f : c.fields) {
       c.shape.fields.push_back(f.name);
       c.shape.fieldTypes.push_back(f.type);
+      c.shape.fieldOptional.push_back(f.optional ? 1 : 0);
     }
     return c;
   }
@@ -865,19 +1156,51 @@ struct Parser {
   void parseItem(Program *prog, ModDecl *mod) {
     const bool inMod = mod != nullptr;
     bool isPub = !inMod;
+    bool isAbstract = false;
+    bool isFinal = false;
+    bool isProtected = false;
+    bool sawVis = false;
     FnAttrs attrs;
+    auto takeItemVis = [&](bool pub) {
+      if (sawVis)
+        errorNote("cannot combine visibility modifiers");
+      sawVis = true;
+      isPub = pub;
+      isProtected = false;
+    };
     while (true) {
       if (parseOneAttr(attrs))
         continue;
       if (match(Tok::Pub)) {
-        isPub = true;
+        takeItemVis(true);
+        continue;
+      }
+      if (match(Tok::Private)) {
+        takeItemVis(false);
+        continue;
+      }
+      if (match(Tok::Protected)) {
+        if (sawVis)
+          errorNote("cannot combine visibility modifiers");
+        sawVis = true;
+        isProtected = true;
+        continue;
+      }
+      if (match(Tok::Abstract)) {
+        isAbstract = true;
+        continue;
+      }
+      if (match(Tok::Final)) {
+        isFinal = true;
         continue;
       }
       break;
     }
     if (check(Tok::Import) || check(Tok::From)) {
       if (attrs.any())
-        errorHere("attributes cannot apply to import");
+        errorNote("attributes cannot apply to import");
+      rejectClassMods(isAbstract, isFinal, "import");
+      rejectProtected(isProtected, "import");
       ImportDecl im = parseImport();
       if (inMod)
         mod->imports.push_back(std::move(im));
@@ -887,7 +1210,9 @@ struct Parser {
     }
     if (check(Tok::Module)) {
       if (attrs.any())
-        errorHere("attributes cannot apply to mod");
+        errorNote("attributes cannot apply to mod");
+      rejectClassMods(isAbstract, isFinal, "mod");
+      rejectProtected(isProtected, "mod");
       ModDecl nested = parseMod();
       nested.isPub = isPub;
       if (inMod)
@@ -896,12 +1221,20 @@ struct Parser {
         prog->mods.push_back(std::move(nested));
       return;
     }
-    if (check(Tok::Struct)) {
+    if (check(Tok::Struct) || check(Tok::Data)) {
+      const bool isData = check(Tok::Data);
+      const char *kind = isData ? "data" : "struct";
       if (attrs.isTest)
-        errorHere("@test cannot apply to struct");
+        errorNote(std::string("@test cannot apply to ") + kind);
       if (attrs.isConstexpr)
-        errorHere("@constexpr cannot apply to struct");
-      structDecl s = parseStruct();
+        errorNote(std::string("@constexpr cannot apply to ") + kind);
+      if (attrs.isUfcs)
+        errorNote(std::string("@ufcs cannot apply to ") + kind);
+      if (attrs.isOptional)
+        errorNote(std::string("@optional cannot apply to ") + kind);
+      rejectClassMods(isAbstract, isFinal, kind);
+      rejectProtected(isProtected, kind);
+      structDecl s = parseStruct(isData);
       s.isPub = isPub;
       if (inMod)
         mod->structs.push_back(std::move(s));
@@ -911,11 +1244,20 @@ struct Parser {
     }
     if (check(Tok::Class)) {
       if (attrs.isTest)
-        errorHere("@test cannot apply to class");
+        errorNote("@test cannot apply to class");
       if (attrs.isConstexpr)
-        errorHere("@constexpr cannot apply to class");
+        errorNote("@constexpr cannot apply to class");
+      if (attrs.isUfcs)
+        errorNote("@ufcs cannot apply to class");
+      if (attrs.isOptional)
+        errorNote("@optional cannot apply to class");
+      if (isAbstract && isFinal)
+        errorNote("class cannot be both abstract and final");
+      rejectProtected(isProtected, "class");
       ClassDecl c = parseClass();
       c.isPub = isPub;
+      c.isAbstract = isAbstract;
+      c.isFinal = isFinal;
       c.shape.isPub = isPub;
       if (inMod)
         mod->classes.push_back(std::move(c));
@@ -925,9 +1267,15 @@ struct Parser {
     }
     if (check(Tok::Trait)) {
       if (attrs.isTest)
-        errorHere("@test cannot apply to trait");
+        errorNote("@test cannot apply to trait");
       if (attrs.isConstexpr)
-        errorHere("@constexpr cannot apply to trait");
+        errorNote("@constexpr cannot apply to trait");
+      if (attrs.isUfcs)
+        errorNote("@ufcs cannot apply to trait");
+      if (attrs.isOptional)
+        errorNote("@optional cannot apply to trait");
+      rejectClassMods(isAbstract, isFinal, "trait");
+      rejectProtected(isProtected, "trait");
       TraitDecl t = parseTrait();
       t.isPub = isPub;
       if (inMod)
@@ -938,9 +1286,15 @@ struct Parser {
     }
     if (check(Tok::Enum)) {
       if (attrs.isTest)
-        errorHere("@test cannot apply to enum");
+        errorNote("@test cannot apply to enum");
       if (attrs.isConstexpr)
-        errorHere("@constexpr cannot apply to enum");
+        errorNote("@constexpr cannot apply to enum");
+      if (attrs.isUfcs)
+        errorNote("@ufcs cannot apply to enum");
+      if (attrs.isOptional)
+        errorNote("@optional cannot apply to enum");
+      rejectClassMods(isAbstract, isFinal, "enum");
+      rejectProtected(isProtected, "enum");
       EnumDecl e = parseEnum();
       e.isPub = isPub;
       if (inMod)
@@ -951,7 +1305,9 @@ struct Parser {
     }
     if (check(Tok::Implements)) {
       if (attrs.any())
-        errorHere("attributes cannot apply to impl");
+        errorNote("attributes cannot apply to impl");
+      rejectClassMods(isAbstract, isFinal, "impl");
+      rejectProtected(isProtected, "impl");
       ImplDecl impl = parseImpl();
       if (inMod)
         mod->impls.push_back(std::move(impl));
@@ -961,7 +1317,9 @@ struct Parser {
     }
     if (check(Tok::Signal)) {
       if (attrs.any())
-        errorHere("attributes cannot apply to signal");
+        errorNote("attributes cannot apply to signal");
+      rejectClassMods(isAbstract, isFinal, "signal");
+      rejectProtected(isProtected, "signal");
       SignalDecl sig = parseSignal();
       sig.isPub = isPub;
       if (inMod)
@@ -970,7 +1328,11 @@ struct Parser {
         prog->signals.push_back(std::move(sig));
       return;
     }
+    rejectClassMods(isAbstract, isFinal, "function");
+    rejectProtected(isProtected, "function");
     FnDecl fn = parseFn(attrs, isPub);
+    if (attrs.isOptional)
+      errorNote("@optional cannot apply to function");
     if (inMod)
       mod->fns.push_back(std::move(fn));
     else
@@ -984,22 +1346,38 @@ struct Parser {
     m.name = name.text;
     m.line = modTok.line;
     expect(Tok::LBrace, "expected '{' after module name");
-    while (!check(Tok::RBrace) && !check(Tok::Eof))
-      parseItem(nullptr, &m);
+    while (!check(Tok::RBrace) && !check(Tok::Eof)) {
+      try {
+        parseItem(nullptr, &m);
+      } catch (const ParseError &) {
+        synchronizeItem();
+      }
+    }
     expect(Tok::RBrace, "expected '}' after module body");
     return m;
   }
 
   Program parse() {
     Program program;
-    while (!check(Tok::Eof))
-      parseItem(&program, nullptr);
+    while (!check(Tok::Eof)) {
+      try {
+        parseItem(&program, nullptr);
+      } catch (const ParseError &) {
+        synchronizeItem();
+      }
+    }
     return program;
   }
 };
 
 } // namespace
 
-Program parseSource(const std::string &source, const std::string &file) {
-  return Parser(tokenize(source, file), file).parse();
+Program parseSource(const std::string &source, const std::string &file,
+                    std::vector<Diagnostic> *errors) {
+  std::vector<Diagnostic> local;
+  std::vector<Diagnostic> *out = errors ? errors : &local;
+  Program program = Parser(tokenize(source, file, out), file, out).parse();
+  if (!errors && !local.empty())
+    throw std::runtime_error(diagnosticError(local[0], file));
+  return program;
 }

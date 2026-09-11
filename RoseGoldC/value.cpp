@@ -77,6 +77,10 @@ std::string Value::toString() const {
     out += "}";
     return out;
   }
+  case Kind::Range: {
+    long long end = payload.empty() ? 0 : payload[0].i;
+    return std::to_string(i) + (b ? "..=" : "..") + std::to_string(end);
+  }
   case Kind::EnumType:
     return "enum " + s;
   case Kind::Enum: {
@@ -110,6 +114,7 @@ bool Value::truthy() const {
   case Kind::Struct:
   case Kind::Array:
   case Kind::Map:
+  case Kind::Range:
   case Kind::EnumType:
   case Kind::Enum:
     return true;
@@ -190,6 +195,12 @@ bool Value::equals(const Value &other) const {
         return false;
     }
     return true;
+  }
+  case Kind::Range: {
+    long long end = payload.empty() ? 0 : payload[0].i;
+    long long otherEnd =
+        other.payload.empty() ? 0 : other.payload[0].i;
+    return i == other.i && b == other.b && end == otherEnd;
   }
   case Kind::EnumType:
     return s == other.s;

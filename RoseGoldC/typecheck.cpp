@@ -24,12 +24,58 @@ struct TypeChecker {
   std::string currentReturn;
   std::string currentSelf;
   std::string currentSuper;
+  bool currentThrows = false;
+  bool inTry = false;
 
   Interpreter &I() const { return *interp; }
 
-  [[noreturn]] void fail(int line, int col, const std::string &msg) const {
-    throw std::runtime_error(
-        locatedError("type error", I().file, line, col, msg));
+  void fail(int line, int col, const std::string &msg) {
+    I().recordDiag("type error", I().file, line, col, msg);
+  }
+
+  bool isLocal(const std::string &name) const {
+    for (int i = static_cast<int>(scopes.size()) - 1; i >= 0; --i) {
+      if (scopes[static_cast<size_t>(i)].count(name))
+        return true;
+    }
+    return false;
+  }
+
+  bool isSubclassOf(const std::string &child,
+                    const std::string &ancestor) const {
+    if (child == ancestor)
+      return true;
+    std::string current = child;
+    std::set<std::string> seen;
+    while (!current.empty()) {
+      if (!seen.insert(current).second)
+        break;
+      auto pit = I().classParents.find(current);
+      if (pit == I().classParents.end())
+        break;
+      if (pit->second == ancestor)
+        return true;
+      current = pit->second;
+    }
+    return false;
+  }
+
+  void checkAccess(Vis vis, const char *kind, const std::string &name,
+                   const std::string &definedOn, int line, int col) {
+    if (vis == Vis::Pub)
+      return;
+    const bool okSame = !currentSelf.empty() && currentSelf == definedOn;
+    const bool okProt = vis == Vis::Protected && !currentSelf.empty() &&
+                        isSubclassOf(currentSelf, definedOn);
+    if (okSame || okProt)
+      return;
+    fail(line, col, std::string(kind) + " '" + name + "' is " + visName(vis));
+  }
+
+  void requireTry(bool throws, const std::string &name, int line, int col) {
+    if (throws && !inTry)
+      fail(line, col,
+           "call to throwing function '" + name + "' requires 'try'");
   }
 
   static bool known(const std::string &ty) {
@@ -214,7 +260,8 @@ struct TypeChecker {
           isNumeric(l) && isNumeric(r))
         return numericResult(l, r);
       if (e.text == "==" || e.text == "!=" || e.text == "<" ||
-          e.text == ">")
+          e.text == ">" || e.text == "<=" || e.text == ">=" ||
+          e.text == "&&" || e.text == "||")
         return "Bool";
       return "";
     }
@@ -248,8 +295,12 @@ struct TypeChecker {
       return "Array";
     case Expr::Kind::Map:
       return "Map";
+    case Expr::Kind::Range:
+      return "Range";
     case Expr::Kind::StructLit:
       return e.text;
+    case Expr::Kind::Try:
+      return e.kids.empty() ? "" : infer(e.kids[0]);
     }
     return "";
   }
@@ -280,13 +331,34 @@ struct TypeChecker {
         return "String";
       if (recv.text == "process" && e.text == "argc")
         return "Int";
-      if (recv.text == "__math")
+      if (recv.text == "__math") {
+        if (e.text == "sin" || e.text == "cos" || e.text == "atan2" ||
+            e.text == "sqrt" || e.text == "powf" || e.text == "to_float" ||
+            e.text == "floor" || e.text == "ceil" || e.text == "random")
+          return "Float";
         return "Int";
+      }
       if (recv.text == "__str") {
-        if (e.text == "length")
+        if (e.text == "length" || e.text == "find")
           return "Int";
         if (e.text == "contains" || e.text == "starts_with" ||
             e.text == "ends_with" || e.text == "is_empty")
+          return "Bool";
+        if (e.text == "split")
+          return "Array";
+        return "String";
+      }
+      if (recv.text == "__io") {
+        if (e.text == "exists" || e.text == "remove")
+          return "Bool";
+        if (e.text == "read_text")
+          return "String";
+        if (e.text == "read_lines")
+          return "Array";
+        return "Void";
+      }
+      if (recv.text == "__uuid") {
+        if (e.text == "valid")
           return "Bool";
         return "String";
       }
@@ -320,24 +392,29 @@ struct TypeChecker {
         return "Int";
       if (e.text == "pop")
         return "";
-      return "Void";
-    }
-    if (obj == "Map") {
+      if (e.text == "push")
+        return "Void";
+    } else if (obj == "Map") {
       if (e.text == "len")
         return "Int";
       if (e.text == "has")
         return "Bool";
       if (e.text == "keys")
         return "Array";
-      return "";
-    }
-    if (isString(obj) && e.text == "len")
+      if (e.text == "insert")
+        return "Void";
+      if (e.text == "remove")
+        return "";
+    } else if (isString(obj) && e.text == "len") {
       return "Int";
+    }
     if (known(obj)) {
       auto found = I().lookupMethod(obj, e.text);
       if (found.second)
         return found.second->returnType;
     }
+    if (FnDecl *fn = I().findUfcs(e.text))
+      return fn->returnType;
     return "";
   }
 
@@ -350,6 +427,7 @@ struct TypeChecker {
       if ((isNumeric(l) && isNumeric(r)) || (isString(l) && isString(r)))
         return;
       fail(e.line, e.col, "cannot add " + l + " and " + r);
+      return;
     }
     if (e.text == "-" || e.text == "*" || e.text == "/" || e.text == "%") {
       if (isNumeric(l) && isNumeric(r))
@@ -359,11 +437,39 @@ struct TypeChecker {
                          : e.text == "/" ? "divide"
                                          : "modulo";
       fail(e.line, e.col, "cannot " + verb + " " + l + " and " + r);
+      return;
     }
-    if (e.text == "<" || e.text == ">") {
+    if (e.text == "<" || e.text == ">" || e.text == "<=" ||
+        e.text == ">=") {
       if (isNumeric(l) && isNumeric(r))
         return;
       fail(e.line, e.col, "cannot compare " + l + " and " + r);
+    }
+  }
+
+  void checkCompound(const std::string &op, const std::string &lt,
+                     const std::string &rt, int line, int col) {
+    if (op.empty() || op == "=") {
+      if (known(lt) && known(rt) && !compatible(lt, rt))
+        fail(line, col, "cannot assign " + rt + " to " + lt);
+      return;
+    }
+    if (!known(lt) || !known(rt))
+      return;
+    const std::string bin = op.substr(0, op.size() - 1);
+    if (bin == "+") {
+      if ((isNumeric(lt) && isNumeric(rt)) || (isString(lt) && isString(rt)))
+        return;
+      fail(line, col, "cannot add " + lt + " and " + rt);
+      return;
+    }
+    if (bin == "-" || bin == "*" || bin == "/") {
+      if (isNumeric(lt) && isNumeric(rt))
+        return;
+      std::string verb = bin == "-"   ? "subtract"
+                         : bin == "*" ? "multiply"
+                                      : "divide";
+      fail(line, col, "cannot " + verb + " " + lt + " and " + rt);
     }
   }
 
@@ -438,16 +544,19 @@ struct TypeChecker {
     if (FnDecl *fn = I().findLocalFn(name)) {
       checkArity(name, fn->params.size(), n, e.line, e.col);
       checkArgTypes(*fn, e.kids, false, e.line, e.col);
+      requireTry(fn->throws, name, e.line, e.col);
       return;
     }
     if (!currentSelf.empty()) {
       auto found = I().lookupMethod(currentSelf, name);
       if (found.second) {
         const FnDecl &fn = *found.second;
+        checkAccess(fn.vis, "method", name, found.first, e.line, e.col);
         const size_t expect =
             fn.params.empty() ? 0 : fn.params.size() - 1;
         checkArity(currentSelf + "." + name, expect, n, e.line, e.col);
         checkArgTypes(fn, e.kids, true, e.line, e.col);
+        requireTry(fn.throws, name, e.line, e.col);
         return;
       }
     }
@@ -469,6 +578,7 @@ struct TypeChecker {
         return;
       }
       fail(line, col, "unknown function checks." + name);
+      return;
     }
     if (mod == "process") {
       if (name == "argv") {
@@ -480,29 +590,33 @@ struct TypeChecker {
         return;
       }
       fail(line, col, "unknown function process." + name);
+      return;
     }
     if (mod == "__math") {
-      if (name == "pow") {
+      if (name == "pow" || name == "powf" || name == "atan2") {
         arity(2);
         return;
       }
-      if (name == "rand_int") {
+      if (name == "random") {
+        arity(0);
+        return;
+      }
+      if (name == "rand_int" || name == "sin" || name == "cos" ||
+          name == "sqrt" || name == "to_int" || name == "to_float" ||
+          name == "floor" || name == "ceil") {
         arity(1);
         return;
       }
       fail(line, col, "unknown function __math." + name);
+      return;
     }
     if (mod == "__str") {
-      if (name == "slice") {
+      if (name == "slice" || name == "replace") {
         arity(3);
         return;
       }
-      if (name == "repeat") {
-        arity(2);
-        return;
-      }
-      if (name == "contains" || name == "starts_with" ||
-          name == "ends_with") {
+      if (name == "repeat" || name == "contains" || name == "starts_with" ||
+          name == "ends_with" || name == "split" || name == "find") {
         arity(2);
         return;
       }
@@ -512,7 +626,63 @@ struct TypeChecker {
         return;
       }
       fail(line, col, "unknown function __str." + name);
+      return;
     }
+    if (mod == "__io") {
+      if (name == "write_text") {
+        arity(2);
+        requireTry(true, name, line, col);
+        return;
+      }
+      if (name == "read_text" || name == "read_lines") {
+        arity(1);
+        requireTry(true, name, line, col);
+        return;
+      }
+      if (name == "exists" || name == "remove") {
+        arity(1);
+        return;
+      }
+      fail(line, col, "unknown function __io." + name);
+      return;
+    }
+    if (mod == "__uuid") {
+      if (name == "v4") {
+        arity(0);
+        return;
+      }
+      if (name == "parse") {
+        arity(1);
+        requireTry(true, name, line, col);
+        return;
+      }
+      if (name == "valid") {
+        arity(1);
+        return;
+      }
+      fail(line, col, "unknown function __uuid." + name);
+      return;
+    }
+  }
+
+  bool checkUfcs(const Expr &e, size_t n) {
+    FnDecl *fn = I().findUfcs(e.text);
+    if (!fn)
+      return false;
+    std::vector<Expr> args(e.kids.begin() + (e.kids.empty() ? 0 : 1),
+                           e.kids.end());
+    checkArity(e.text, fn->params.size(), n + 1, e.line, e.col);
+    if (!fn->paramTypes.empty()) {
+      const std::string &expect = fn->paramTypes[0];
+      std::string got = infer(e.kids[0]);
+      if (known(expect) && known(got) && !compatible(expect, got))
+        fail(e.line, e.col,
+             "cannot pass " + got + " to '" + fn->name + "', expected " +
+                 expect);
+    }
+    checkArgTypes(*fn, args, true, e.line, e.col);
+    requireTry(fn->throws, fn->name, e.line, e.col);
+    return true;
   }
 
   void checkValueMethod(const std::string &obj, const Expr &e, size_t n) {
@@ -528,7 +698,10 @@ struct TypeChecker {
         arity(1);
         return;
       }
+      if (checkUfcs(e, n))
+        return;
       fail(e.line, e.col, "Array has no method '" + e.text + "'");
+      return;
     }
     if (obj == "Map") {
       if (e.text == "len" || e.text == "keys") {
@@ -543,13 +716,18 @@ struct TypeChecker {
         arity(2);
         return;
       }
+      if (checkUfcs(e, n))
+        return;
       fail(e.line, e.col, "Map has no method '" + e.text + "'");
+      return;
     }
     if (isString(obj)) {
       if (e.text == "len") {
         arity(0);
         return;
       }
+      if (checkUfcs(e, n))
+        return;
       fail(e.line, e.col, "String has no method '" + e.text + "'");
     }
   }
@@ -560,18 +738,28 @@ struct TypeChecker {
     std::vector<Expr> args(e.kids.begin() + (e.kids.empty() ? 0 : 1),
                            e.kids.end());
     if (recv.kind == Expr::Kind::Var && recv.text == "super") {
-      if (currentSuper.empty())
+      if (currentSuper.empty()) {
         fail(e.line, e.col,
              "super is only valid in a method of a class that extends "
              "another");
+        return;
+      }
       auto found = I().lookupMethod(currentSuper, e.text);
-      if (!found.second)
+      if (!found.second) {
         fail(e.line, e.col,
              "struct " + currentSuper + " has no method '" + e.text + "'");
+        return;
+      }
       const FnDecl &fn = *found.second;
+      if (fn.isAbstract) {
+        fail(e.line, e.col, "cannot call abstract method '" + e.text + "'");
+        return;
+      }
+      checkAccess(fn.vis, "method", e.text, found.first, e.line, e.col);
       const size_t expect = fn.params.empty() ? 0 : fn.params.size() - 1;
       checkArity(currentSuper + "." + e.text, expect, n, e.line, e.col);
       checkArgTypes(fn, args, true, e.line, e.col);
+      requireTry(fn.throws, e.text, e.line, e.col);
       return;
     }
     if (recv.kind == Expr::Kind::Var && I().signalArity.count(recv.text)) {
@@ -598,6 +786,7 @@ struct TypeChecker {
       }
       fail(e.line, e.col,
            "signal '" + recv.text + "' has no method '" + e.text + "'");
+      return;
     }
     if (recv.kind == Expr::Kind::Var && isHostModule(recv.text)) {
       checkHostCall(recv.text, e.text, n, e.line, e.col);
@@ -606,15 +795,20 @@ struct TypeChecker {
     if (recv.kind == Expr::Kind::Var) {
       if (const std::string *mod = I().findModuleBind(recv.text)) {
         auto lit = I().loaded.find(*mod);
-        if (lit == I().loaded.end())
+        if (lit == I().loaded.end()) {
           fail(e.line, e.col, "unknown module '" + *mod + "'");
+          return;
+        }
         auto eit = lit->second.exports.find(e.text);
-        if (eit == lit->second.exports.end())
+        if (eit == lit->second.exports.end()) {
           fail(e.line, e.col,
                "module '" + recv.text + "' has no export '" + e.text + "'");
+          return;
+        }
         checkArity(recv.text + "." + e.text, eit->second->params.size(), n,
                    e.line, e.col);
         checkArgTypes(*eit->second, args, false, e.line, e.col);
+        requireTry(eit->second->throws, e.text, e.line, e.col);
         return;
       }
       if (const EnumDecl *en = I().findEnum(recv.text)) {
@@ -625,9 +819,11 @@ struct TypeChecker {
             break;
           }
         }
-        if (!found)
+        if (!found) {
           fail(e.line, e.col,
                "enum " + en->name + " has no variant '" + e.text + "'");
+          return;
+        }
         if (static_cast<int>(n) != found->arity)
           fail(e.line, e.col,
                en->name + "." + e.text + " takes " +
@@ -639,12 +835,15 @@ struct TypeChecker {
       auto lit = I().loaded.find(*mod);
       if (lit != I().loaded.end()) {
         auto eit = lit->second.exports.find(e.text);
-        if (eit == lit->second.exports.end())
+        if (eit == lit->second.exports.end()) {
           fail(e.line, e.col,
                "module '" + *mod + "' has no export '" + e.text + "'");
+          return;
+        }
         checkArity(*mod + "." + e.text, eit->second->params.size(), n,
                    e.line, e.col);
         checkArgTypes(*eit->second, args, false, e.line, e.col);
+        requireTry(eit->second->throws, e.text, e.line, e.col);
         return;
       }
     }
@@ -655,21 +854,43 @@ struct TypeChecker {
     }
     if (known(obj)) {
       auto found = I().lookupMethod(obj, e.text);
-      if (!found.second)
-        fail(e.line, e.col,
-             "struct " + obj + " has no method '" + e.text + "'");
-      const FnDecl &fn = *found.second;
-      const size_t expect = fn.params.empty() ? 0 : fn.params.size() - 1;
-      checkArity(obj + "." + e.text, expect, n, e.line, e.col);
-      checkArgTypes(fn, args, true, e.line, e.col);
+      if (found.second) {
+        const FnDecl &fn = *found.second;
+        checkAccess(fn.vis, "method", e.text, found.first, e.line, e.col);
+        const size_t expect = fn.params.empty() ? 0 : fn.params.size() - 1;
+        checkArity(obj + "." + e.text, expect, n, e.line, e.col);
+        checkArgTypes(fn, args, true, e.line, e.col);
+        requireTry(fn.throws, e.text, e.line, e.col);
+        return;
+      }
+      if (checkUfcs(e, n))
+        return;
+      fail(e.line, e.col,
+           "struct " + obj + " has no method '" + e.text + "'");
       return;
     }
+    checkUfcs(e, n);
   }
 
   void walkExpr(const Expr &e) {
+    if (e.kind == Expr::Kind::Try) {
+      if (e.kids.empty())
+        return;
+      const bool prev = inTry;
+      inTry = true;
+      walkExpr(e.kids[0]);
+      inTry = prev;
+      return;
+    }
     if (e.kind == Expr::Kind::Var) {
       if (!defined(e.text))
         fail(e.line, e.col, "undefined variable '" + e.text + "'");
+      else if (!isLocal(e.text) && !currentSelf.empty()) {
+        auto found = I().lookupField(currentSelf, e.text);
+        if (!found.first.empty())
+          checkAccess(found.second, "field", e.text, found.first, e.line,
+                      e.col);
+      }
       return;
     }
     if (e.kind == Expr::Kind::Call) {
@@ -717,12 +938,31 @@ struct TypeChecker {
       if (known(obj) && !hasField(obj, e.text))
         fail(e.line, e.col,
              "struct " + obj + " has no field '" + e.text + "'");
+      else if (known(obj)) {
+        auto found = I().lookupField(obj, e.text);
+        if (!found.first.empty())
+          checkAccess(found.second, "field", e.text, found.first, e.line,
+                      e.col);
+      }
       return;
     }
     if (e.kind == Expr::Kind::Index) {
       for (const auto &kid : e.kids)
         walkExpr(kid);
       checkIndex(e);
+      return;
+    }
+    if (e.kind == Expr::Kind::Range) {
+      for (const auto &kid : e.kids)
+        walkExpr(kid);
+      if (e.kids.size() >= 2) {
+        std::string start = infer(e.kids[0]);
+        std::string end = infer(e.kids[1]);
+        if (known(start) && start != "Int")
+          fail(e.kids[0].line, e.kids[0].col, "range start must be Int");
+        if (known(end) && end != "Int")
+          fail(e.kids[1].line, e.kids[1].col, "range end must be Int");
+      }
       return;
     }
     if (e.kind == Expr::Kind::StructLit) {
@@ -734,8 +974,15 @@ struct TypeChecker {
         st = tit->second;
       if (!st)
         st = I().findStruct(e.text);
-      if (!st)
+      if (!st) {
         fail(e.line, e.col, "undefined struct '" + e.text + "'");
+        return;
+      }
+      auto absIt = I().classAbstract.find(e.text);
+      if (absIt != I().classAbstract.end() && absIt->second) {
+        fail(e.line, e.col, "cannot construct abstract class '" + e.text + "'");
+        return;
+      }
       std::set<std::string> seen;
       for (const auto &field : e.names) {
         if (std::find(st->fields.begin(), st->fields.end(), field) ==
@@ -746,12 +993,18 @@ struct TypeChecker {
                "duplicate field '" + field + "' on " + st->name);
       }
       auto defIt = I().fieldDefaults.find(st->name);
+      for (const auto &field : e.names) {
+        auto found = I().lookupField(st->name, field);
+        if (!found.first.empty() && found.first != st->name)
+          checkAccess(found.second, "field", field, found.first, e.line,
+                      e.col);
+      }
       for (const auto &field : st->fields) {
         if (std::find(e.names.begin(), e.names.end(), field) != e.names.end())
           continue;
         bool hasDef = defIt != I().fieldDefaults.end() &&
                       defIt->second.count(field);
-        if (!hasDef)
+        if (!hasDef && !st->isOptionalField(field))
           fail(e.line, e.col, "missing field '" + field + "' on " + st->name);
       }
       return;
@@ -773,6 +1026,22 @@ struct TypeChecker {
     case Stmt::Kind::Break:
     case Stmt::Kind::Continue:
       return;
+    case Stmt::Kind::Throw:
+      if (!currentThrows)
+        fail(stmt.line, stmt.col, "throw outside throwing function");
+      walkExpr(stmt.expr);
+      return;
+    case Stmt::Kind::Do:
+      for (const auto &s : stmt.body)
+        walkStmt(s);
+      if (!stmt.name.empty()) {
+        scopes.emplace_back();
+        bind(stmt.name, "");
+        for (const auto &s : stmt.elseBody)
+          walkStmt(s);
+        scopes.pop_back();
+      }
+      return;
     case Stmt::Kind::Expr:
       walkExpr(stmt.expr);
       return;
@@ -790,12 +1059,23 @@ struct TypeChecker {
     }
     case Stmt::Kind::Assign: {
       walkExpr(stmt.expr);
-      if (!defined(stmt.name))
+      if (!defined(stmt.name)) {
         fail(stmt.line, stmt.col, "undefined variable '" + stmt.name + "'");
+        return;
+      }
+      if (!isLocal(stmt.name) && !currentSelf.empty()) {
+        auto found = I().lookupField(currentSelf, stmt.name);
+        if (!found.first.empty()) {
+          checkAccess(found.second, "field", stmt.name, found.first,
+                      stmt.line, stmt.col);
+          if (I().isDataType(found.first) || I().isDataType(currentSelf))
+            fail(stmt.line, stmt.col,
+                 "cannot assign to data field '" + stmt.name + "'");
+        }
+      }
       std::string lt = lookup(stmt.name);
       std::string rt = infer(stmt.expr);
-      if (known(lt) && known(rt) && !compatible(lt, rt))
-        fail(stmt.line, stmt.col, "cannot assign " + rt + " to " + lt);
+      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col);
       return;
     }
     case Stmt::Kind::FieldAssign: {
@@ -805,10 +1085,19 @@ struct TypeChecker {
       if (known(obj) && !hasField(obj, stmt.name))
         fail(stmt.line, stmt.col,
              "struct " + obj + " has no field '" + stmt.name + "'");
+      else if (known(obj)) {
+        auto found = I().lookupField(obj, stmt.name);
+        if (!found.first.empty())
+          checkAccess(found.second, "field", stmt.name, found.first,
+                      stmt.line, stmt.col);
+        if (I().isDataType(obj) ||
+            (!found.first.empty() && I().isDataType(found.first)))
+          fail(stmt.line, stmt.col,
+               "cannot assign to data field '" + stmt.name + "'");
+      }
       std::string lt = known(obj) ? fieldType(obj, stmt.name) : "";
       std::string rt = infer(stmt.expr);
-      if (known(lt) && known(rt) && !compatible(lt, rt))
-        fail(stmt.line, stmt.col, "cannot assign " + rt + " to " + lt);
+      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col);
       return;
     }
     case Stmt::Kind::IndexAssign: {
@@ -868,7 +1157,7 @@ struct TypeChecker {
         std::string it = infer(stmt.expr);
         if (it == "Map" || isString(it))
           item = "String";
-        else if (it == "Int")
+        else if (it == "Int" || it == "Range")
           item = "Int";
       }
       bind(stmt.name, item);
@@ -894,12 +1183,18 @@ struct TypeChecker {
   }
 
   void checkFn(const FnDecl &fn, const std::string &selfType) {
+    if (fn.isAbstract)
+      return;
     const std::string prevRet = currentReturn;
     const std::string prevSelf = currentSelf;
     const std::string prevSuper = currentSuper;
+    const bool prevThrows = currentThrows;
     currentReturn = fn.returnType;
     currentSelf = selfType;
     currentSuper = "";
+    currentThrows = fn.throws;
+    if (fn.isConstexpr && fn.throws)
+      fail(fn.line, 1, "constexpr function cannot throw");
     if (!selfType.empty()) {
       auto pit = I().classParents.find(selfType);
       if (pit != I().classParents.end())
@@ -918,6 +1213,7 @@ struct TypeChecker {
     currentReturn = prevRet;
     currentSelf = prevSelf;
     currentSuper = prevSuper;
+    currentThrows = prevThrows;
   }
 
   void run() {

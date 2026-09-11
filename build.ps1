@@ -28,7 +28,8 @@ $sources = @(
     "RoseGoldC\constexpr.cpp",
     "RoseGoldC\typecheck.cpp",
     "RoseGoldC\eval.cpp",
-    "RoseGoldC\harness.cpp"
+    "RoseGoldC\harness.cpp",
+    "RoseGoldC\lsp.cpp"
 )
 
 $quoted = ($sources | ForEach-Object { "`"$root\$_`"" }) -join " "

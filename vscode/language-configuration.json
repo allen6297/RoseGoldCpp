@@ -28,7 +28,7 @@
   "autoCloseBefore": ";:.,=}])>` \n\t",
   "onEnterRules": [
     {
-      "beforeText": "^\\s*(fn|struct|class|trait|enum|impl|if|elif|else|while|for|match|switch).*\\{\\s*$",
+      "beforeText": "^\\s*(fn|struct|data|class|trait|enum|impl|if|elif|else|while|for|match|switch|do|catch|try).*\\{\\s*$",
       "action": { "indent": "indent" }
     }
   ],

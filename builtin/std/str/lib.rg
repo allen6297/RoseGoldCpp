@@ -37,3 +37,15 @@ fn trim(s: String): String {
 fn slice(s: String, start: Int, end: Int): String {
     return __str.slice(s, start, end);
 }
+
+fn split(s: String, sep: String): Array {
+    return __str.split(s, sep);
+}
+
+fn replace(s: String, old: String, with: String): String {
+    return __str.replace(s, old, with);
+}
+
+fn find(s: String, sub: String): Int {
+    return __str.find(s, sub);
+}

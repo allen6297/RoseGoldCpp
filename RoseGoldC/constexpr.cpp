@@ -22,14 +22,18 @@ void Interpreter::checkConstexprCall(const std::string &name, int line, int col)
   if (name == "len")
     return;
   if (name == "print" || name == "assert" || name == "argv" ||
-      name == "argv_len")
+      name == "argv_len") {
     constexprFail(line, col,
                   "constexpr function cannot call '" + name + "'");
+    return;
+  }
   FnDecl *fn = findLocalFn(name);
-  if (!fn)
+  if (!fn) {
     constexprFail(line, col,
                   "constexpr function can only call constexpr functions ('" +
                       name + "' is unknown)");
+    return;
+  }
   if (!fn->isConstexpr)
     constexprFail(line, col,
                   "constexpr function can only call constexpr functions ('" +
@@ -37,6 +41,8 @@ void Interpreter::checkConstexprCall(const std::string &name, int line, int col)
 }
 
 void Interpreter::checkConstexprExpr(const Expr &e) {
+  if (e.kind == Expr::Kind::Try)
+    constexprFail(e.line, e.col, "constexpr function cannot use 'try'");
   if (e.kind == Expr::Kind::Var && e.text == "super")
     constexprFail(e.line, e.col, "constexpr function cannot use super");
   if (e.kind == Expr::Kind::Call)
@@ -49,17 +55,24 @@ void Interpreter::checkConstexprExpr(const Expr &e) {
         constexprFail(e.line, e.col, "constexpr function cannot use signals");
       if (const std::string *modName = findModuleBind(recv.text)) {
         auto lit = loaded.find(*modName);
-        if (lit == loaded.end())
+        if (lit == loaded.end()) {
           constexprFail(e.line, e.col, "unknown module '" + *modName + "'");
-        auto eit = lit->second.exports.find(e.text);
-        if (eit == lit->second.exports.end() || !eit->second->isConstexpr)
-          constexprFail(e.line, e.col,
-                        "constexpr function can only call constexpr "
-                        "functions ('" +
-                            recv.text + "." + e.text +
-                            "' is not constexpr)");
-        allowed = true;
+        } else {
+          auto eit = lit->second.exports.find(e.text);
+          if (eit == lit->second.exports.end() || !eit->second->isConstexpr)
+            constexprFail(e.line, e.col,
+                          "constexpr function can only call constexpr "
+                          "functions ('" +
+                              recv.text + "." + e.text +
+                              "' is not constexpr)");
+          allowed = true;
+        }
       } else if (findEnum(recv.text))
+        allowed = true;
+    }
+    if (!allowed) {
+      FnDecl *fn = findUfcs(e.text);
+      if (fn && fn->isConstexpr)
         allowed = true;
     }
     if (!allowed && e.text != "len" && e.text != "has" && e.text != "keys")
@@ -75,21 +88,33 @@ void Interpreter::checkConstexprStmt(const Stmt &stmt) {
   switch (stmt.kind) {
   case Stmt::Kind::Var:
     constexprFail(stmt.line, stmt.col, "constexpr function cannot use 'var'");
+    return;
   case Stmt::Kind::Assign:
   case Stmt::Kind::FieldAssign:
   case Stmt::Kind::IndexAssign:
     constexprFail(stmt.line, stmt.col, "constexpr function cannot assign");
+    return;
   case Stmt::Kind::While:
     constexprFail(stmt.line, stmt.col,
                   "constexpr function cannot use 'while'");
+    return;
   case Stmt::Kind::For:
     constexprFail(stmt.line, stmt.col, "constexpr function cannot use 'for'");
+    return;
   case Stmt::Kind::Break:
     constexprFail(stmt.line, stmt.col,
                   "constexpr function cannot use 'break'");
+    return;
   case Stmt::Kind::Continue:
     constexprFail(stmt.line, stmt.col,
                   "constexpr function cannot use 'continue'");
+    return;
+  case Stmt::Kind::Throw:
+    constexprFail(stmt.line, stmt.col, "constexpr function cannot throw");
+    return;
+  case Stmt::Kind::Do:
+    constexprFail(stmt.line, stmt.col, "constexpr function cannot use 'do'");
+    return;
   case Stmt::Kind::Pass:
     return;
   case Stmt::Kind::Expr:

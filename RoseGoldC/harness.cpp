@@ -2,6 +2,7 @@
 #include "parser.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <sstream>
 #include <stdexcept>
@@ -10,7 +11,10 @@
 
 RunResult runFile(const std::string &path, const std::vector<std::string> &argv) {
   try {
-    Program program = parseSource(readFile(path), path);
+    std::vector<Diagnostic> parseErrs;
+    Program program = parseSource(readFile(path), path, &parseErrs);
+    if (!parseErrs.empty())
+      throw std::runtime_error(diagnosticError(parseErrs[0], path));
     Interpreter interp(std::move(program), path, argv);
     Value ret = Value::makeVoid();
     if (interp.fns.count("main"))
@@ -27,7 +31,10 @@ RunResult runFile(const std::string &path, const std::vector<std::string> &argv)
 
 RunResult testFile(const std::string &path) {
   try {
-    Program program = parseSource(readFile(path), path);
+    std::vector<Diagnostic> parseErrs;
+    Program program = parseSource(readFile(path), path, &parseErrs);
+    if (!parseErrs.empty())
+      throw std::runtime_error(diagnosticError(parseErrs[0], path));
     std::vector<std::string> tests;
     for (const auto &fn : program.fns) {
       if (fn.isTest)
@@ -120,7 +127,10 @@ RunResult testSuite(const std::string &root) {
   auto checkPass = [&](const fs::path &path) {
     const std::string name = path.generic_string();
     try {
-      Program program = parseSource(readFile(name), name);
+      std::vector<Diagnostic> parseErrs;
+      Program program = parseSource(readFile(name), name, &parseErrs);
+      if (!parseErrs.empty())
+        throw std::runtime_error(diagnosticError(parseErrs[0], name));
       bool hasMain = false;
       for (const auto &fn : program.fns) {
         if (fn.name == "main") {
@@ -196,6 +206,231 @@ RunResult testSuite(const std::string &root) {
   return result;
 }
 
+static Diagnostic diagnosticFromMessage(const std::string &file,
+                                        const std::string &err) {
+  Diagnostic d;
+  d.file = file;
+  d.line = 1;
+  d.col = 1;
+  d.severity = "error";
+  d.message = err;
+
+  const auto at = err.rfind(" at ");
+  if (at == std::string::npos)
+    return d;
+
+  const std::string after = err.substr(at + 4);
+  size_t i = 0;
+  while (i < after.size() &&
+         std::isdigit(static_cast<unsigned char>(after[i])))
+    ++i;
+  if (i == 0 || i >= after.size() || after[i] != ':')
+    return d;
+  size_t j = i + 1;
+  while (j < after.size() &&
+         std::isdigit(static_cast<unsigned char>(after[j])))
+    ++j;
+  if (j == i + 1)
+    return d;
+
+  d.line = std::stoi(after.substr(0, i));
+  d.col = std::stoi(after.substr(i + 1, j - i - 1));
+  if (d.line < 1)
+    d.line = 1;
+  if (d.col < 1)
+    d.col = 1;
+
+  std::string rest = after.substr(j);
+  if (!rest.empty() && rest[0] == ':') {
+    size_t k = 1;
+    while (k < rest.size() && rest[k] == ' ')
+      ++k;
+    d.message = rest.substr(k);
+  }
+
+  const auto in = err.rfind(" in ", at);
+  if (in != std::string::npos && in < at)
+    d.file = err.substr(in + 4, at - (in + 4));
+  if (d.message.empty())
+    d.message = err;
+  return d;
+}
+
+static std::string jsonEscape(const std::string &s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  const char *hex = "0123456789abcdef";
+  for (unsigned char c : s) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (c < 0x20) {
+        out += "\\u00";
+        out.push_back(hex[c >> 4]);
+        out.push_back(hex[c & 15]);
+      } else {
+        out.push_back(static_cast<char>(c));
+      }
+    }
+  }
+  return out;
+}
+
+std::string diagnosticToHuman(const Diagnostic &d) {
+  std::ostringstream ss;
+  if (!d.file.empty())
+    ss << d.file << ":";
+  ss << d.line << ":" << d.col << ": " << d.severity << ": " << d.message;
+  return ss.str();
+}
+
+std::string diagnosticsToJson(const std::vector<Diagnostic> &diags) {
+  if (diags.empty())
+    return "[]\n";
+  std::ostringstream ss;
+  ss << "[\n";
+  for (size_t i = 0; i < diags.size(); ++i) {
+    const Diagnostic &d = diags[i];
+    if (i)
+      ss << ",\n";
+    ss << "  {\n";
+    ss << "    \"file\": \"" << jsonEscape(d.file) << "\",\n";
+    ss << "    \"line\": " << d.line << ",\n";
+    ss << "    \"col\": " << d.col << ",\n";
+    ss << "    \"severity\": \"" << jsonEscape(d.severity) << "\",\n";
+    ss << "    \"message\": \"" << jsonEscape(d.message) << "\"\n";
+    ss << "  }";
+  }
+  ss << "\n]\n";
+  return ss.str();
+}
+
+std::vector<Diagnostic> checkSource(const std::string &source,
+                                    const std::string &path) {
+  try {
+    std::vector<Diagnostic> diags;
+    Program program = parseSource(source, path, &diags);
+    Interpreter interp(std::move(program), path, {path}, false);
+    diags.insert(diags.end(), interp.diagnostics.begin(),
+                 interp.diagnostics.end());
+    return diags;
+  } catch (const std::exception &ex) {
+    return {diagnosticFromMessage(path, ex.what())};
+  }
+}
+
+std::vector<Diagnostic> checkFile(const std::string &path) {
+  try {
+    return checkSource(readFile(path), path);
+  } catch (const std::exception &ex) {
+    return {diagnosticFromMessage(path, ex.what())};
+  }
+}
+
+static void appendCheckSelfTest(RunResult &result) {
+  auto require = [&](bool ok, const std::string &name,
+                     const std::string &detail) {
+    if (ok) {
+      result.out += "ok   check " + name + "\n";
+      return;
+    }
+    result.ok = false;
+    result.out += "FAIL check " + name + ": " + detail + "\n";
+  };
+
+  std::error_code ec;
+  if (fs::is_regular_file("examples/hello.rg", ec)) {
+    auto d = checkFile("examples/hello.rg");
+    require(d.empty(), "clean",
+            d.empty() ? "" : diagnosticToHuman(d[0]));
+  }
+  if (fs::is_regular_file("tests/fail/type_add.rg", ec)) {
+    auto d = checkFile("tests/fail/type_add.rg");
+    const bool hit =
+        !d.empty() && d[0].message.find("cannot add") != std::string::npos;
+    require(hit, "type_add",
+            d.empty() ? "no diagnostic" : d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/type_multi.rg", ec)) {
+    auto d = checkFile("tests/fail/type_multi.rg");
+    bool add = false;
+    bool cmp = false;
+    for (const auto &x : d) {
+      if (x.message.find("cannot add") != std::string::npos)
+        add = true;
+      if (x.message.find("cannot compare") != std::string::npos)
+        cmp = true;
+    }
+    require(d.size() >= 2 && add && cmp, "type_multi",
+            d.empty() ? "no diagnostic"
+                      : std::to_string(d.size()) + " diags: " + d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/parse_expr.rg", ec)) {
+    auto d = checkFile("tests/fail/parse_expr.rg");
+    const bool hit = !d.empty() &&
+                     d[0].message.find("expected expression") !=
+                         std::string::npos;
+    require(hit, "parse", d.empty() ? "no diagnostic" : d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/parse_multi.rg", ec)) {
+    auto d = checkFile("tests/fail/parse_multi.rg");
+    int n = 0;
+    for (const auto &x : d) {
+      if (x.message.find("expected expression") != std::string::npos)
+        ++n;
+    }
+    require(n >= 2, "parse_multi",
+            d.empty() ? "no diagnostic"
+                      : std::to_string(d.size()) + " diags: " + d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/constexpr_multi.rg", ec)) {
+    auto d = checkFile("tests/fail/constexpr_multi.rg");
+    bool var = false;
+    bool print = false;
+    for (const auto &x : d) {
+      if (x.message.find("var") != std::string::npos)
+        var = true;
+      if (x.message.find("print") != std::string::npos)
+        print = true;
+    }
+    require(d.size() >= 2 && var && print, "constexpr_multi",
+            d.empty() ? "no diagnostic"
+                      : std::to_string(d.size()) + " diags: " + d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/load_multi.rg", ec)) {
+    auto d = checkFile("tests/fail/load_multi.rg");
+    int n = 0;
+    for (const auto &x : d) {
+      if (x.message.find("duplicate struct") != std::string::npos)
+        ++n;
+    }
+    require(n >= 2, "load_multi",
+            d.empty() ? "no diagnostic"
+                      : std::to_string(d.size()) + " diags: " + d[0].message);
+  }
+  require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
+}
+
 RunResult testLanguage() {
   std::error_code ec;
   const bool hasUnit = fs::is_regular_file("examples/tests.rg", ec);
@@ -217,6 +452,7 @@ RunResult testLanguage() {
     if (!files.ok)
       result.ok = false;
   }
+  appendCheckSelfTest(result);
   result.exitCode = result.ok ? 0 : 1;
   if (!result.ok)
     result.message = "tests failed";

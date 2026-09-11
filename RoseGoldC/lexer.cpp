@@ -10,12 +10,34 @@ namespace {
 struct Lexer {
   std::string src;
   std::string file;
+  std::vector<Diagnostic> *errors = nullptr;
   size_t i = 0;
   int line = 1;
   int col = 1;
 
-  explicit Lexer(std::string s, std::string f)
-      : src(std::move(s)), file(std::move(f)) {}
+  explicit Lexer(std::string s, std::string f, std::vector<Diagnostic> *e)
+      : src(std::move(s)), file(std::move(f)), errors(e) {}
+
+  void record(const std::string &msg, int atLine, int atCol) {
+    Diagnostic d;
+    d.file = file;
+    d.line = atLine > 0 ? atLine : 1;
+    d.col = atCol > 0 ? atCol : 1;
+    d.severity = "error";
+    d.message = msg;
+    d.kind = "parse error";
+    if (errors) {
+      for (const auto &prev : *errors) {
+        if (prev.file == d.file && prev.line == d.line && prev.col == d.col &&
+            prev.message == d.message)
+          return;
+      }
+      errors->push_back(std::move(d));
+      return;
+    }
+    throw std::runtime_error(
+        locatedError("parse error", file, atLine, atCol, msg));
+  }
 
   [[noreturn]] void error(const std::string &msg, int atLine, int atCol) const {
     throw std::runtime_error(
@@ -96,6 +118,14 @@ struct Lexer {
       t.kind = Tok::As;
     else if (text == "pub")
       t.kind = Tok::Pub;
+    else if (text == "abstract")
+      t.kind = Tok::Abstract;
+    else if (text == "final")
+      t.kind = Tok::Final;
+    else if (text == "private")
+      t.kind = Tok::Private;
+    else if (text == "protected")
+      t.kind = Tok::Protected;
     else if (text == "mod")
       t.kind = Tok::Module;
     else if (text == "class")
@@ -122,6 +152,8 @@ struct Lexer {
       t.kind = Tok::Constant;
     else if (text == "struct")
       t.kind = Tok::Struct;
+    else if (text == "data")
+      t.kind = Tok::Data;
     else if (text == "impl")
       t.kind = Tok::Implements;
     else if (text == "signal")
@@ -142,6 +174,16 @@ struct Lexer {
       t.kind = Tok::Else;
     else if (text == "while")
       t.kind = Tok::While;
+    else if (text == "try")
+      t.kind = Tok::Try;
+    else if (text == "do")
+      t.kind = Tok::Do;
+    else if (text == "throws")
+      t.kind = Tok::Throws;
+    else if (text == "throw")
+      t.kind = Tok::Throw;
+    else if (text == "catch")
+      t.kind = Tok::Catch;
     else if (text == "true")
       t.kind = Tok::True;
     else if (text == "false")
@@ -245,6 +287,46 @@ struct Lexer {
       advance();
       return make(Tok::NotEq, "!=");
     }
+    if (c == '<' && n == '=') {
+      advance();
+      return make(Tok::LtEq, "<=");
+    }
+    if (c == '>' && n == '=') {
+      advance();
+      return make(Tok::GtEq, ">=");
+    }
+    if (c == '&' && n == '&') {
+      advance();
+      return make(Tok::AndAnd, "&&");
+    }
+    if (c == '|' && n == '|') {
+      advance();
+      return make(Tok::OrOr, "||");
+    }
+    if (c == '+' && n == '=') {
+      advance();
+      return make(Tok::PlusEq, "+=");
+    }
+    if (c == '-' && n == '=') {
+      advance();
+      return make(Tok::MinusEq, "-=");
+    }
+    if (c == '*' && n == '=') {
+      advance();
+      return make(Tok::StarEq, "*=");
+    }
+    if (c == '/' && n == '=') {
+      advance();
+      return make(Tok::SlashEq, "/=");
+    }
+    if (c == '.' && n == '.') {
+      advance();
+      if (peek() == '=') {
+        advance();
+        return make(Tok::DotDotEq, "..=");
+      }
+      return make(Tok::DotDot, "..");
+    }
 
     switch (c) {
     case '@':
@@ -288,16 +370,18 @@ struct Lexer {
     case '!':
       return make(Tok::Bang, "!");
     default:
-      error(std::string("unexpected character '") + c + "'", startLine,
-            startCol);
+      record(std::string("unexpected character '") + c + "'", startLine,
+             startCol);
+      return next();
     }
   }
 };
 
 } // namespace
 
-std::vector<Token> tokenize(const std::string &source, const std::string &file) {
-  Lexer lexer(source, file);
+std::vector<Token> tokenize(const std::string &source, const std::string &file,
+                            std::vector<Diagnostic> *errors) {
+  Lexer lexer(source, file, errors);
   std::vector<Token> tokens;
   while (true) {
     Token t = lexer.next();

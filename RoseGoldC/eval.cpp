@@ -18,6 +18,22 @@
 #include <utility>
 #include <vector>
 
+static Value zeroOfType(const std::string &ty) {
+  if (ty == "Int")
+    return Value::makeInt(0);
+  if (ty == "Float")
+    return Value::makeFloat(0);
+  if (ty == "String" || ty == "Str")
+    return Value::makeString("");
+  if (ty == "Bool")
+    return Value::makeBool(false);
+  if (ty == "Array")
+    return Value::makeArray({});
+  if (ty == "Map")
+    return Value::makeMap(std::make_shared<MapData>());
+  return Value::makeVoid();
+}
+
 const std::string *Interpreter::findModuleBind(const std::string &name) const {
   if (!currentModule.empty()) {
     auto lit = loaded.find(currentModule);
@@ -74,6 +90,14 @@ const structDecl *Interpreter::findStruct(const std::string &name) const {
   return nullptr;
 }
 
+bool Interpreter::isDataType(const std::string &name) const {
+  auto it = allTypes.find(name);
+  if (it != allTypes.end() && it->second)
+    return it->second->isData;
+  const structDecl *st = findStruct(name);
+  return st && st->isData;
+}
+
 const EnumDecl *Interpreter::findEnum(const std::string &name) const {
   if (!currentModule.empty()) {
     auto lit = loaded.find(currentModule);
@@ -106,6 +130,22 @@ FnDecl *Interpreter::findLocalFn(const std::string &name) {
   if (it != fns.end())
     return const_cast<FnDecl *>(it->second);
   return nullptr;
+}
+
+FnDecl *Interpreter::findUfcs(const std::string &name) {
+  FnDecl *fn = findLocalFn(name);
+  if (fn && fn->isUfcs)
+    return fn;
+  return nullptr;
+}
+
+Value Interpreter::callUfcs(const FnDecl &fn, const Value &obj,
+                            const std::vector<Value> &args, int line, int col) {
+  std::vector<Value> all;
+  all.reserve(args.size() + 1);
+  all.push_back(obj);
+  all.insert(all.end(), args.begin(), args.end());
+  return callUser(fn, all, line, col);
 }
 
 Value Interpreter::callModule(const std::string &modName, const std::string &name,
@@ -320,6 +360,19 @@ std::vector<Value> Interpreter::iterItems(const Value &iter, int line, int col) 
       nums.push_back(Value::makeInt(n));
     return nums;
   }
+  if (iter.kind == Value::Kind::Range) {
+    long long start = iter.i;
+    long long end = iter.payload.empty() ? 0 : iter.payload[0].i;
+    std::vector<Value> nums;
+    if (iter.b) {
+      for (long long n = start; n <= end; ++n)
+        nums.push_back(Value::makeInt(n));
+    } else {
+      for (long long n = start; n < end; ++n)
+        nums.push_back(Value::makeInt(n));
+    }
+    return nums;
+  }
   runtime("cannot iterate over " + iter.toString(), line, col);
 }
 
@@ -348,6 +401,8 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
       obj.items->pop_back();
       return v;
     }
+    if (FnDecl *fn = findUfcs(name))
+      return callUfcs(*fn, obj, args, line, col);
     runtime("Array has no method '" + name + "'", line, col);
   }
   if (obj.kind == Value::Kind::Map) {
@@ -397,6 +452,8 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
       obj.dict->fields[key] = args[1];
       return Value::makeVoid();
     }
+    if (FnDecl *fn = findUfcs(name))
+      return callUfcs(*fn, obj, args, line, col);
     runtime("Map has no method '" + name + "'", line, col);
   }
   if (obj.kind == Value::Kind::String) {
@@ -405,8 +462,12 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
         runtime("String.len takes 0 arguments", line, col);
       return Value::makeInt(static_cast<long long>(obj.s.size()));
     }
+    if (FnDecl *fn = findUfcs(name))
+      return callUfcs(*fn, obj, args, line, col);
     runtime("String has no method '" + name + "'", line, col);
   }
+  if (FnDecl *fn = findUfcs(name))
+    return callUfcs(*fn, obj, args, line, col);
   runtime("cannot call method '" + name + "' on " + obj.toString(), line,
           col);
 }
@@ -429,6 +490,86 @@ Value Interpreter::readValueMember(const Value &obj, const std::string &name, in
     runtime("String has no member '" + name + "'", line, col);
   }
   runtime("cannot read field on " + obj.toString(), line, col);
+}
+
+Value Interpreter::applyBinop(const std::string &op, const Value &a, const Value &b,
+                              int line, int col) {
+  if (op == "+" && a.kind == Value::Kind::String &&
+      b.kind == Value::Kind::String)
+    return Value::makeString(a.s + b.s);
+  if (op == "==")
+    return Value::makeBool(a.equals(b));
+  if (op == "!=")
+    return Value::makeBool(!a.equals(b));
+  if (!isNumeric(a) || !isNumeric(b))
+    runtime("operands must be numbers", line, col);
+  const bool bothInt =
+      a.kind == Value::Kind::Int && b.kind == Value::Kind::Int;
+  if (op == "+") {
+    if (bothInt)
+      return Value::makeInt(a.i + b.i);
+    return Value::makeFloat(asF64(a) + asF64(b));
+  }
+  if (op == "-") {
+    if (bothInt)
+      return Value::makeInt(a.i - b.i);
+    return Value::makeFloat(asF64(a) - asF64(b));
+  }
+  if (op == "*") {
+    if (bothInt)
+      return Value::makeInt(a.i * b.i);
+    return Value::makeFloat(asF64(a) * asF64(b));
+  }
+  if (op == "/") {
+    if (bothInt) {
+      if (b.i == 0)
+        runtime("division by zero", line, col);
+      return Value::makeInt(a.i / b.i);
+    }
+    if (asF64(b) == 0.0)
+      runtime("division by zero", line, col);
+    return Value::makeFloat(asF64(a) / asF64(b));
+  }
+  if (op == "%") {
+    if (bothInt) {
+      if (b.i == 0)
+        runtime("modulo by zero", line, col);
+      return Value::makeInt(a.i % b.i);
+    }
+    if (asF64(b) == 0.0)
+      runtime("modulo by zero", line, col);
+    return Value::makeFloat(std::fmod(asF64(a), asF64(b)));
+  }
+  if (op == "<") {
+    if (bothInt)
+      return Value::makeBool(a.i < b.i);
+    return Value::makeBool(asF64(a) < asF64(b));
+  }
+  if (op == ">") {
+    if (bothInt)
+      return Value::makeBool(a.i > b.i);
+    return Value::makeBool(asF64(a) > asF64(b));
+  }
+  if (op == "<=") {
+    if (bothInt)
+      return Value::makeBool(a.i <= b.i);
+    return Value::makeBool(asF64(a) <= asF64(b));
+  }
+  if (op == ">=") {
+    if (bothInt)
+      return Value::makeBool(a.i >= b.i);
+    return Value::makeBool(asF64(a) >= asF64(b));
+  }
+  runtime("unknown operator", line, col);
+}
+
+Value Interpreter::applyAssignOp(const std::string &op, const Value &old,
+                                 const Value &rhs, int line, int col) {
+  if (op.empty() || op == "=")
+    return rhs;
+  if (op.size() < 2 || op.back() != '=')
+    runtime("unknown operator", line, col);
+  return applyBinop(op.substr(0, op.size() - 1), old, rhs, line, col);
 }
 
 Value Interpreter::eval(const Expr &e) {
@@ -460,66 +601,22 @@ Value Interpreter::eval(const Expr &e) {
     return Value::makeBool(!v.truthy());
   }
   case Expr::Kind::Binary: {
-    Value a = eval(e.kids[0]);
-    Value b = eval(e.kids[1]);
-    if (e.text == "+" && a.kind == Value::Kind::String &&
-        b.kind == Value::Kind::String)
-      return Value::makeString(a.s + b.s);
-    if (e.text == "==")
-      return Value::makeBool(a.equals(b));
-    if (e.text == "!=")
-      return Value::makeBool(!a.equals(b));
-    if (!isNumeric(a) || !isNumeric(b))
-      runtime("operands must be numbers", e.line, e.col);
-    const bool bothInt =
-        a.kind == Value::Kind::Int && b.kind == Value::Kind::Int;
-    if (e.text == "+") {
-      if (bothInt)
-        return Value::makeInt(a.i + b.i);
-      return Value::makeFloat(asF64(a) + asF64(b));
+    if (e.text == "&&") {
+      Value a = eval(e.kids[0]);
+      if (!a.truthy())
+        return Value::makeBool(false);
+      return Value::makeBool(eval(e.kids[1]).truthy());
     }
-    if (e.text == "-") {
-      if (bothInt)
-        return Value::makeInt(a.i - b.i);
-      return Value::makeFloat(asF64(a) - asF64(b));
+    if (e.text == "||") {
+      Value a = eval(e.kids[0]);
+      if (a.truthy())
+        return Value::makeBool(true);
+      return Value::makeBool(eval(e.kids[1]).truthy());
     }
-    if (e.text == "*") {
-      if (bothInt)
-        return Value::makeInt(a.i * b.i);
-      return Value::makeFloat(asF64(a) * asF64(b));
-    }
-    if (e.text == "/") {
-      if (bothInt) {
-        if (b.i == 0)
-          runtime("division by zero", e.line, e.col);
-        return Value::makeInt(a.i / b.i);
-      }
-      if (asF64(b) == 0.0)
-        runtime("division by zero", e.line, e.col);
-      return Value::makeFloat(asF64(a) / asF64(b));
-    }
-    if (e.text == "%") {
-      if (bothInt) {
-        if (b.i == 0)
-          runtime("modulo by zero", e.line, e.col);
-        return Value::makeInt(a.i % b.i);
-      }
-      if (asF64(b) == 0.0)
-        runtime("modulo by zero", e.line, e.col);
-      return Value::makeFloat(std::fmod(asF64(a), asF64(b)));
-    }
-    if (e.text == "<") {
-      if (bothInt)
-        return Value::makeBool(a.i < b.i);
-      return Value::makeBool(asF64(a) < asF64(b));
-    }
-    if (e.text == ">") {
-      if (bothInt)
-        return Value::makeBool(a.i > b.i);
-      return Value::makeBool(asF64(a) > asF64(b));
-    }
-    runtime("unknown operator", e.line, e.col);
+    return applyBinop(e.text, eval(e.kids[0]), eval(e.kids[1]), e.line, e.col);
   }
+  case Expr::Kind::Try:
+    return eval(e.kids[0]);
   case Expr::Kind::Call: {
     std::vector<Value> args;
     args.reserve(e.kids.size());
@@ -556,6 +653,8 @@ Value Interpreter::eval(const Expr &e) {
         if (obj.kind == Value::Kind::Array || obj.kind == Value::Kind::String ||
             obj.kind == Value::Kind::Map)
           return callValueMethod(obj, e.text, args, e.line, e.col);
+        if (FnDecl *fn = findUfcs(e.text))
+          return callUfcs(*fn, obj, args, e.line, e.col);
         runtime("cannot call method '" + e.text + "' on " + obj.toString(),
                 e.line, e.col);
       }
@@ -575,6 +674,8 @@ Value Interpreter::eval(const Expr &e) {
     if (obj.kind == Value::Kind::Array || obj.kind == Value::Kind::String ||
         obj.kind == Value::Kind::Map)
       return callValueMethod(obj, e.text, args, e.line, e.col);
+    if (FnDecl *fn = findUfcs(e.text))
+      return callUfcs(*fn, obj, args, e.line, e.col);
     runtime("cannot call method '" + e.text + "' on " + obj.toString(),
             e.line, e.col);
   }
@@ -602,6 +703,10 @@ Value Interpreter::eval(const Expr &e) {
     return it->second;
   }
   case Expr::Kind::StructLit: {
+    auto absIt = classAbstract.find(e.text);
+    if (absIt != classAbstract.end() && absIt->second)
+      runtime("cannot construct abstract class '" + e.text + "'", e.line,
+              e.col);
     const structDecl *st = findStruct(e.text);
     if (!st)
       runtime("undefined struct '" + e.text + "'", e.line, e.col);
@@ -631,6 +736,10 @@ Value Interpreter::eval(const Expr &e) {
           continue;
         }
       }
+      if (decl.isOptionalField(field)) {
+        data->fields[field] = zeroOfType(decl.typeOfField(field));
+        continue;
+      }
       runtime("missing field '" + field + "' on " + decl.name, e.line, e.col);
     }
     return Value::makeStruct(std::move(data));
@@ -641,6 +750,15 @@ Value Interpreter::eval(const Expr &e) {
     for (const auto &kid : e.kids)
       elems.push_back(eval(kid));
     return Value::makeArray(std::move(elems));
+  }
+  case Expr::Kind::Range: {
+    Value a = eval(e.kids[0]);
+    Value b = eval(e.kids[1]);
+    if (a.kind != Value::Kind::Int)
+      runtime("range start must be Int", e.kids[0].line, e.kids[0].col);
+    if (b.kind != Value::Kind::Int)
+      runtime("range end must be Int", e.kids[1].line, e.kids[1].col);
+    return Value::makeRange(a.i, b.i, e.boolean);
   }
   case Expr::Kind::Index:
     return indexGet(eval(e.kids[0]), eval(e.kids[1]), e.line, e.col);
@@ -757,6 +875,12 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
     runtime("unknown function checks." + name, line, col);
   }
   if (module == "__math") {
+    static std::mt19937 rng{std::random_device{}()};
+    auto needNum = [&](size_t i) {
+      if (!isNumeric(args[i]))
+        runtime("__math." + name + " expects Float", line, col);
+      return asF64(args[i]);
+    };
     if (name == "pow") {
       if (args.size() != 2)
         runtime("__math.pow takes 2 arguments", line, col);
@@ -783,9 +907,48 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
         runtime("__math.rand_int expects Int", line, col);
       if (args[0].i <= 0)
         runtime("__math.rand_int expects n > 0", line, col);
-      static std::mt19937 rng{std::random_device{}()};
       std::uniform_int_distribution<long long> dist(0, args[0].i - 1);
       return Value::makeInt(dist(rng));
+    }
+    if (name == "random") {
+      if (!args.empty())
+        runtime("__math.random takes 0 arguments", line, col);
+      std::uniform_real_distribution<double> dist(0.0, 1.0);
+      return Value::makeFloat(dist(rng));
+    }
+    if (name == "sin" || name == "cos" || name == "sqrt" || name == "floor" ||
+        name == "ceil" || name == "to_int" || name == "to_float") {
+      if (args.size() != 1)
+        runtime("__math." + name + " takes 1 argument", line, col);
+      if (name == "to_float") {
+        if (args[0].kind != Value::Kind::Int)
+          runtime("__math.to_float expects Int", line, col);
+        return Value::makeFloat(static_cast<double>(args[0].i));
+      }
+      const double n = needNum(0);
+      if (name == "sin")
+        return Value::makeFloat(std::sin(n));
+      if (name == "cos")
+        return Value::makeFloat(std::cos(n));
+      if (name == "sqrt") {
+        if (n < 0.0)
+          runtime("__math.sqrt expects n >= 0", line, col);
+        return Value::makeFloat(std::sqrt(n));
+      }
+      if (name == "floor")
+        return Value::makeFloat(std::floor(n));
+      if (name == "ceil")
+        return Value::makeFloat(std::ceil(n));
+      return Value::makeInt(static_cast<long long>(n));
+    }
+    if (name == "atan2" || name == "powf") {
+      if (args.size() != 2)
+        runtime("__math." + name + " takes 2 arguments", line, col);
+      const double a = needNum(0);
+      const double b = needNum(1);
+      if (name == "atan2")
+        return Value::makeFloat(std::atan2(a, b));
+      return Value::makeFloat(std::pow(a, b));
     }
     runtime("unknown function __math." + name, line, col);
   }
@@ -888,7 +1051,178 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       return Value::makeString(s.substr(static_cast<size_t>(start),
                                         static_cast<size_t>(end - start)));
     }
+    if (name == "split") {
+      if (args.size() != 2)
+        runtime("str.split takes 2 arguments", line, col);
+      const std::string s = needStr(0);
+      const std::string sep = needStr(1);
+      std::vector<Value> parts;
+      if (sep.empty()) {
+        parts.reserve(s.size());
+        for (char c : s)
+          parts.push_back(Value::makeString(std::string(1, c)));
+      } else {
+        size_t start = 0;
+        while (true) {
+          const size_t pos = s.find(sep, start);
+          if (pos == std::string::npos) {
+            parts.push_back(Value::makeString(s.substr(start)));
+            break;
+          }
+          parts.push_back(Value::makeString(s.substr(start, pos - start)));
+          start = pos + sep.size();
+        }
+      }
+      return Value::makeArray(std::move(parts));
+    }
+    if (name == "replace") {
+      if (args.size() != 3)
+        runtime("str.replace takes 3 arguments", line, col);
+      std::string s = needStr(0);
+      const std::string from = needStr(1);
+      const std::string to = needStr(2);
+      if (!from.empty()) {
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+          s.replace(pos, from.size(), to);
+          pos += to.size();
+        }
+      }
+      return Value::makeString(std::move(s));
+    }
+    if (name == "find") {
+      if (args.size() != 2)
+        runtime("str.find takes 2 arguments", line, col);
+      const size_t pos = needStr(0).find(needStr(1));
+      if (pos == std::string::npos)
+        return Value::makeInt(-1);
+      return Value::makeInt(static_cast<long long>(pos));
+    }
     runtime("unknown function __str." + name, line, col);
+  }
+  if (module == "__io") {
+    namespace fs = std::filesystem;
+    auto needPath = [&](size_t i) {
+      if (args[i].kind != Value::Kind::String)
+        runtime("__io." + name + " expects String", line, col);
+      return args[i].s;
+    };
+    auto ioThrow = [&](const std::string &msg) {
+      throw ThrowEscape{Value::makeString(msg), line, col};
+    };
+    auto readAll = [&](const std::string &path) {
+      std::ifstream in(path, std::ios::binary);
+      if (!in)
+        ioThrow("cannot read '" + path + "'");
+      std::ostringstream ss;
+      ss << in.rdbuf();
+      return ss.str();
+    };
+    if (name == "exists") {
+      if (args.size() != 1)
+        runtime("io.exists takes 1 argument", line, col);
+      std::error_code ec;
+      return Value::makeBool(fs::exists(needPath(0), ec) && !ec);
+    }
+    if (name == "remove") {
+      if (args.size() != 1)
+        runtime("io.remove takes 1 argument", line, col);
+      std::error_code ec;
+      const bool ok = fs::remove(needPath(0), ec);
+      return Value::makeBool(ok && !ec);
+    }
+    if (name == "read_text") {
+      if (args.size() != 1)
+        runtime("io.read_text takes 1 argument", line, col);
+      return Value::makeString(readAll(needPath(0)));
+    }
+    if (name == "read_lines") {
+      if (args.size() != 1)
+        runtime("io.read_lines takes 1 argument", line, col);
+      const std::string text = readAll(needPath(0));
+      std::vector<Value> lines;
+      size_t start = 0;
+      for (size_t i = 0; i <= text.size(); ++i) {
+        if (i != text.size() && text[i] != '\n')
+          continue;
+        if (i == text.size() && start == i)
+          break;
+        std::string line = text.substr(start, i - start);
+        if (!line.empty() && line.back() == '\r')
+          line.pop_back();
+        lines.push_back(Value::makeString(std::move(line)));
+        start = i + 1;
+      }
+      return Value::makeArray(std::move(lines));
+    }
+    if (name == "write_text") {
+      if (args.size() != 2)
+        runtime("io.write_text takes 2 arguments", line, col);
+      if (args[1].kind != Value::Kind::String)
+        runtime("io.write_text expects String", line, col);
+      const std::string path = needPath(0);
+      std::ofstream outf(path, std::ios::binary);
+      if (!outf)
+        ioThrow("cannot write '" + path + "'");
+      outf << args[1].s;
+      if (!outf)
+        ioThrow("cannot write '" + path + "'");
+      return Value::makeVoid();
+    }
+    runtime("unknown function __io." + name, line, col);
+  }
+  if (module == "__uuid") {
+    auto hex32 = [](const std::string &s, std::string &hex) {
+      hex.clear();
+      hex.reserve(32);
+      for (unsigned char c : s) {
+        if (c == '-')
+          continue;
+        if (!std::isxdigit(c))
+          return false;
+        hex.push_back(static_cast<char>(std::tolower(c)));
+      }
+      return hex.size() == 32;
+    };
+    auto dashed = [](const std::string &hex) {
+      return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
+             hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
+             hex.substr(20, 12);
+    };
+    if (name == "v4") {
+      if (!args.empty())
+        runtime("__uuid.v4 takes 0 arguments", line, col);
+      static std::mt19937 rng{std::random_device{}()};
+      std::uniform_int_distribution<int> dist(0, 15);
+      const char *digits = "0123456789abcdef";
+      std::string hex;
+      hex.reserve(32);
+      for (int i = 0; i < 32; ++i) {
+        int n = dist(rng);
+        if (i == 12)
+          n = 4;
+        else if (i == 16)
+          n = (n & 0x3) | 0x8;
+        hex.push_back(digits[n]);
+      }
+      return Value::makeString(dashed(hex));
+    }
+    if (name == "parse" || name == "valid") {
+      if (args.size() != 1)
+        runtime("__uuid." + name + " takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::String)
+        runtime("__uuid." + name + " expects String", line, col);
+      std::string hex;
+      if (!hex32(args[0].s, hex)) {
+        if (name == "valid")
+          return Value::makeBool(false);
+        throw ThrowEscape{Value::makeString("invalid UUID"), line, col};
+      }
+      if (name == "valid")
+        return Value::makeBool(true);
+      return Value::makeString(dashed(hex));
+    }
+    runtime("unknown function __uuid." + name, line, col);
   }
   runtime(module.empty() ? "unknown function '" + name + "'"
                          : "unknown function " + module + "." + name,
@@ -913,17 +1247,23 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
             line, col);
   }
   env.emplace_back();
+  struct EnvPop {
+    Interpreter *self;
+    explicit EnvPop(Interpreter *s) : self(s) {}
+    ~EnvPop() { self->env.pop_back(); }
+  } pop(this);
   for (size_t i = 0; i < fn.params.size(); ++i)
     env.back()[fn.params[i]] = Binding{args[i], false};
   Value ret = Value::makeVoid();
   Flow f = execBlock(fn.body);
+  if (f.kind == Flow::Kind::Throw)
+    throw ThrowEscape{std::move(f.value), line, col};
   if (f.kind == Flow::Kind::Return)
     ret = f.value;
   else if (f.kind == Flow::Kind::Break)
     runtime("break outside loop", fn.line, 1);
   else if (f.kind == Flow::Kind::Continue)
     runtime("continue outside loop", fn.line, 1);
-  env.pop_back();
   return ret;
 }
 
@@ -931,11 +1271,16 @@ Value Interpreter::invokeTypeMethod(const Value &obj, const std::string &startTy
                        const std::string &name,
                        const std::vector<Value> &args, int line, int col) {
   auto found = lookupMethod(startType, name);
-  if (!found.second)
+  if (!found.second) {
+    if (FnDecl *fn = findUfcs(name))
+      return callUfcs(*fn, obj, args, line, col);
     runtime("struct " + startType + " has no method '" + name + "'", line,
             col);
+  }
   const std::string &definedOn = found.first;
   const FnDecl &fn = *found.second;
+  if (fn.isAbstract)
+    runtime("cannot call abstract method '" + name + "'", line, col);
   if (args.size() != fn.params.size() - 1) {
     runtime(startType + "." + name + " takes " +
                 std::to_string(fn.params.size() - 1) + " argument(s)",
@@ -944,13 +1289,18 @@ Value Interpreter::invokeTypeMethod(const Value &obj, const std::string &startTy
   std::string prev = superType;
   auto pit = classParents.find(definedOn);
   superType = pit != classParents.end() ? pit->second : "";
+  struct SuperGuard {
+    Interpreter *self;
+    std::string prev;
+    SuperGuard(Interpreter *s, std::string p)
+        : self(s), prev(std::move(p)) {}
+    ~SuperGuard() { self->superType = std::move(prev); }
+  } guard(this, std::move(prev));
   std::vector<Value> all;
   all.reserve(args.size() + 1);
   all.push_back(obj);
   all.insert(all.end(), args.begin(), args.end());
-  Value result = callUser(fn, all, line, col);
-  superType = std::move(prev);
-  return result;
+  return callUser(fn, all, line, col);
 }
 
 Value Interpreter::callTypeMethod(const Value &obj, const std::string &name,
@@ -1045,15 +1395,26 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
     return Flow::next();
   case Stmt::Kind::Assign: {
     Value rhs = eval(stmt.expr);
+    auto store = [&](Value *slot) {
+      if (stmt.op != "=" && !stmt.op.empty())
+        *slot = applyAssignOp(stmt.op, *slot, rhs, stmt.line, stmt.col);
+      else
+        *slot = std::move(rhs);
+    };
     if (Binding *slot = findLocalBinding(stmt.name)) {
       if (slot->isConst)
         runtime("cannot assign to const '" + stmt.name + "'", stmt.line,
                 stmt.col);
-      slot->value = std::move(rhs);
+      store(&slot->value);
       return Flow::next();
     }
     if (Value *field = fieldOnSelf(stmt.name)) {
-      *field = std::move(rhs);
+      if (StructData *rec = selfRec()) {
+        if (isDataType(rec->name))
+          runtime("cannot assign to data field '" + stmt.name + "'", stmt.line,
+                  stmt.col);
+      }
+      store(field);
       return Flow::next();
     }
     Binding *slot = findGlobalBinding(stmt.name);
@@ -1062,7 +1423,7 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
     if (slot->isConst)
       runtime("cannot assign to const '" + stmt.name + "'", stmt.line,
               stmt.col);
-    slot->value = std::move(rhs);
+    store(&slot->value);
     return Flow::next();
   }
   case Stmt::Kind::FieldAssign: {
@@ -1076,7 +1437,15 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
     if (!obj.rec->fields.count(stmt.name))
       runtime("struct " + obj.rec->name + " has no field '" + stmt.name + "'",
               stmt.line, stmt.col);
-    obj.rec->fields[stmt.name] = eval(stmt.expr);
+    if (isDataType(obj.rec->name))
+      runtime("cannot assign to data field '" + stmt.name + "'", stmt.line,
+              stmt.col);
+    Value rhs = eval(stmt.expr);
+    if (stmt.op != "=" && !stmt.op.empty())
+      obj.rec->fields[stmt.name] = applyAssignOp(
+          stmt.op, obj.rec->fields[stmt.name], rhs, stmt.line, stmt.col);
+    else
+      obj.rec->fields[stmt.name] = std::move(rhs);
     return Flow::next();
   }
   case Stmt::Kind::IndexAssign: {
@@ -1084,7 +1453,11 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
       runtime("invalid index assignment", stmt.line, stmt.col);
     Value obj = eval(stmt.target.kids[0]);
     Value idx = eval(stmt.target.kids[1]);
-    indexSet(obj, idx, eval(stmt.expr), stmt.line, stmt.col);
+    Value rhs = eval(stmt.expr);
+    if (stmt.op != "=" && !stmt.op.empty())
+      rhs = applyAssignOp(stmt.op, indexGet(obj, idx, stmt.line, stmt.col), rhs,
+                          stmt.line, stmt.col);
+    indexSet(obj, idx, std::move(rhs), stmt.line, stmt.col);
     return Flow::next();
   }
   case Stmt::Kind::Return:
@@ -1094,19 +1467,20 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
       return execBlock(stmt.body);
     return execBlock(stmt.elseBody);
   case Stmt::Kind::While: {
-    ++loopDepth;
+    struct DepthGuard {
+      int *d;
+      explicit DepthGuard(int *x) : d(x) { ++*d; }
+      ~DepthGuard() { --*d; }
+    } depth(&loopDepth);
     while (eval(stmt.expr).truthy()) {
       Flow f = execBlock(stmt.body);
       if (f.kind == Flow::Kind::Break)
         break;
       if (f.kind == Flow::Kind::Continue)
         continue;
-      if (f.kind == Flow::Kind::Return) {
-        --loopDepth;
+      if (f.kind == Flow::Kind::Return || f.kind == Flow::Kind::Throw)
         return f;
-      }
     }
-    --loopDepth;
     return Flow::next();
   }
   case Stmt::Kind::For: {
@@ -1115,7 +1489,11 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
     Binding saved;
     if (existed)
       saved = env.back()[stmt.name];
-    ++loopDepth;
+    struct DepthGuard {
+      int *d;
+      explicit DepthGuard(int *x) : d(x) { ++*d; }
+      ~DepthGuard() { --*d; }
+    } depth(&loopDepth);
     Flow result = Flow::next();
     for (const auto &item : items) {
       env.back()[stmt.name] = Binding{item, false};
@@ -1124,12 +1502,11 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
         break;
       if (f.kind == Flow::Kind::Continue)
         continue;
-      if (f.kind == Flow::Kind::Return) {
+      if (f.kind == Flow::Kind::Return || f.kind == Flow::Kind::Throw) {
         result = f;
         break;
       }
     }
-    --loopDepth;
     if (existed)
       env.back()[stmt.name] = saved;
     else
@@ -1234,6 +1611,39 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
   }
   case Stmt::Kind::Pass:
     return Flow::next();
+  case Stmt::Kind::Throw:
+    return Flow::thr(eval(stmt.expr));
+  case Stmt::Kind::Do: {
+    auto handle = [&](Value err) -> Flow {
+      if (stmt.elseBody.empty() && stmt.name.empty())
+        return Flow::thr(std::move(err));
+      std::map<std::string, Binding> saved;
+      bool added = false;
+      if (!stmt.name.empty()) {
+        if (env.back().count(stmt.name))
+          saved[stmt.name] = env.back()[stmt.name];
+        else
+          added = true;
+        env.back()[stmt.name] = Binding{std::move(err), false};
+      }
+      Flow c = execBlock(stmt.elseBody);
+      if (!stmt.name.empty()) {
+        if (!saved.empty())
+          env.back()[stmt.name] = saved[stmt.name];
+        else if (added)
+          env.back().erase(stmt.name);
+      }
+      return c;
+    };
+    try {
+      Flow f = execBlock(stmt.body);
+      if (f.kind == Flow::Kind::Throw)
+        return handle(std::move(f.value));
+      return f;
+    } catch (ThrowEscape &ex) {
+      return handle(std::move(ex.value));
+    }
+  }
   case Stmt::Kind::Break:
     if (loopDepth == 0)
       runtime("break outside loop", stmt.line, stmt.col);
@@ -1252,5 +1662,9 @@ Value Interpreter::callNamed(const std::string &name) {
     throw std::runtime_error(
         locatedError("runtime error", file, 0, 0,
                      "unknown function '" + name + "'"));
-  return callUser(*it->second, {}, it->second->line, 1);
+  try {
+    return callUser(*it->second, {}, it->second->line, 1);
+  } catch (const ThrowEscape &ex) {
+    runtime("uncaught throw: " + ex.value.toString(), ex.line, ex.col);
+  }
 }

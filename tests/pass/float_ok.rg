@@ -10,6 +10,8 @@ fn main(): Int {
     checks.eq(-1.5, 0.0 - 1.5);
     checks.that(1.5 > 1);
     checks.that(1 < 1.5);
+    checks.that(1.5 >= 1);
+    checks.that(1 <= 1.5);
     checks.that(1 == 1.0);
     checks.that(1.0 != 2);
 

@@ -29,6 +29,7 @@ struct Value {
     Struct,
     Array,
     Map,
+    Range,
     EnumType,
     Enum
   } kind = Kind::Void;
@@ -91,6 +92,14 @@ struct Value {
     x.dict = std::move(data);
     return x;
   }
+  static Value makeRange(long long start, long long end, bool inclusive) {
+    Value x;
+    x.kind = Kind::Range;
+    x.i = start;
+    x.b = inclusive;
+    x.payload.push_back(makeInt(end));
+    return x;
+  }
   static Value makeEnumType(std::string name) {
     Value x;
     x.kind = Kind::EnumType;
@@ -137,11 +146,25 @@ struct LoadedMod {
 
 inline bool isHostModule(const std::string &name) {
   return name == "checks" || name == "process" || name == "__math" ||
-         name == "__str";
+         name == "__str" || name == "__io" || name == "__uuid";
+}
+
+inline bool isStdlibChild(const std::string &name) {
+  return name == "math" || name == "str" || name == "io" || name == "vec";
 }
 
 inline bool isCrateStdlib(const std::string &name) {
-  return name == "math" || name == "str";
+  if (name == "std" || isStdlibChild(name))
+    return true;
+  if (name.size() > 4 && name.compare(0, 4, "std.") == 0)
+    return isStdlibChild(name.substr(4));
+  return false;
+}
+
+inline std::string canonicalStdlibName(const std::string &name) {
+  if (isStdlibChild(name))
+    return "std." + name;
+  return name;
 }
 
 inline ModDecl *pickMod(Program &p, const std::string &name) {
@@ -165,8 +188,14 @@ inline ModDecl *pickMod(Program &p, const std::string &name) {
   return nullptr;
 }
 
+struct ThrowEscape {
+  Value value;
+  int line = 1;
+  int col = 1;
+};
+
 struct Flow {
-  enum class Kind { Next, Return, Break, Continue } kind = Kind::Next;
+  enum class Kind { Next, Return, Break, Continue, Throw } kind = Kind::Next;
   Value value;
 
   static Flow next() { return {}; }
@@ -184,6 +213,13 @@ struct Flow {
   static Flow cont() {
     Flow f;
     f.kind = Kind::Continue;
+    return f;
+  }
+
+  static Flow thr(Value v) {
+    Flow f;
+    f.kind = Kind::Throw;
+    f.value = std::move(v);
     return f;
   }
 };
@@ -209,6 +245,9 @@ struct Interpreter {
   std::map<std::string, const TraitDecl *> traits;
   std::map<std::string, const EnumDecl *> enums;
   std::map<std::string, std::string> classParents;
+  std::map<std::string, bool> classAbstract;
+  std::map<std::string, bool> classFinal;
+  std::map<std::string, std::map<std::string, Vis>> fieldAccess;
   std::map<std::string, std::map<std::string, const Expr *>> fieldDefaults;
   std::map<std::string, std::vector<std::string>> typeTraits;
   std::map<std::string, std::map<std::string, const FnDecl *>> typeMethods;
@@ -225,8 +264,10 @@ struct Interpreter {
   std::vector<std::string> loading;
   std::string currentModule;
   std::string superType;
+  std::vector<Diagnostic> diagnostics;
 
-  explicit Interpreter(Program p, std::string f, std::vector<std::string> a);
+  explicit Interpreter(Program p, std::string f, std::vector<std::string> a,
+                       bool failFast = true);
   void ingestEntry();
   Program *keep(Program p);
   bool fileHasMod(const std::string &source, const std::string &name) const;
@@ -250,7 +291,13 @@ struct Interpreter {
   void applyInheritance();
   std::pair<std::string, const FnDecl *>
   lookupMethod(const std::string &typeName, const std::string &name) const;
+  std::pair<std::string, Vis> lookupField(const std::string &typeName,
+                                          const std::string &name) const;
+  void recordFieldAccess(const std::string &typeName,
+                         const std::vector<std::string> &fields,
+                         const std::vector<char> &vis);
   void checkTraitImpls();
+  void checkAbstractFinal();
   void bindTraitSignals();
   void checkConstexprCall(const std::string &name, int line, int col);
   void checkConstexprExpr(const Expr &e);
@@ -268,6 +315,7 @@ struct Interpreter {
                        const std::string &atFile);
   void ingestModule(Program &p, const std::string &modName, LoadedMod &m,
                     const std::string &atFile);
+  void attachStdlibChildren();
   void loadModule(const std::string &name, const std::string &fromFile, int line,
                   int col);
   void bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod *owner,
@@ -279,8 +327,12 @@ struct Interpreter {
   const std::string *findModuleBind(const std::string &name) const;
   std::optional<std::string> modulePath(const Expr &e);
   const structDecl *findStruct(const std::string &name) const;
+  bool isDataType(const std::string &name) const;
   const EnumDecl *findEnum(const std::string &name) const;
   FnDecl *findLocalFn(const std::string &name);
+  FnDecl *findUfcs(const std::string &name);
+  Value callUfcs(const FnDecl &fn, const Value &obj,
+                 const std::vector<Value> &args, int line, int col);
   Value callModule(const std::string &modName, const std::string &name,
                    const std::vector<Value> &args, int line, int col);
   Binding *findVar(const std::string &name);
@@ -306,6 +358,10 @@ struct Interpreter {
                         const std::vector<Value> &args, int line, int col);
   Value readValueMember(const Value &obj, const std::string &name, int line,
                         int col);
+  Value applyBinop(const std::string &op, const Value &a, const Value &b,
+                   int line, int col);
+  Value applyAssignOp(const std::string &op, const Value &old, const Value &rhs,
+                      int line, int col);
   Value eval(const Expr &e);
   Value callBuiltin(const std::string &module, const std::string &name,
                     const std::vector<Value> &args, int line, int col);
@@ -324,8 +380,30 @@ struct Interpreter {
   Flow execStmt(const Stmt &stmt);
   Value callNamed(const std::string &name);
 
-  [[noreturn]] void initFail(const std::string &msg) const {
-    throw std::runtime_error(locatedError("runtime error", file, 0, 0, msg));
+  void recordDiag(const std::string &kind, const std::string &atFile, int line,
+                  int col, const std::string &msg) {
+    Diagnostic d;
+    d.file = atFile.empty() ? file : atFile;
+    d.line = line > 0 ? line : 1;
+    d.col = col > 0 ? col : 1;
+    d.severity = "error";
+    d.message = msg;
+    d.kind = kind;
+    for (const auto &prev : diagnostics) {
+      if (prev.file == d.file && prev.line == d.line && prev.col == d.col &&
+          prev.message == d.message)
+        return;
+    }
+    diagnostics.push_back(std::move(d));
+  }
+
+  void initFail(const std::string &msg) {
+    recordDiag("runtime error", file, 1, 1, msg);
+  }
+
+  void loadFail(const std::string &atFile, const std::string &msg, int line,
+                int col) {
+    recordDiag("runtime error", atFile, line, col, msg);
   }
 
   [[noreturn]] void runtime(const std::string &msg, int line, int col) const {
@@ -339,10 +417,8 @@ struct Interpreter {
         locatedError("runtime error", atFile, line, col, msg));
   }
 
-  [[noreturn]] void constexprFail(int line, int col,
-                                  const std::string &msg) const {
-    throw std::runtime_error(
-        locatedError("constexpr error", file, line, col, msg));
+  void constexprFail(int line, int col, const std::string &msg) {
+    recordDiag("constexpr error", file, line, col, msg);
   }
 };
 

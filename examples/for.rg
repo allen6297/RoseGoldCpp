@@ -12,5 +12,13 @@ fn main(): Int {
     for i in 3 {
         print(i);
     }
+
+    for i in 0..3 {
+        print(i);
+    }
+
+    for i in 1..=2 {
+        print(i);
+    }
     return 0;
 }

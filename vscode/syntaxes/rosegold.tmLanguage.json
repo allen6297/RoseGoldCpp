@@ -45,7 +45,7 @@
       "patterns": [
         {
           "name": "meta.annotation.rosegold",
-          "match": "(@)(test|deprecated|ufcs|constexpr)\\b",
+          "match": "(@)(test|deprecated|ufcs|constexpr|optional)\\b",
           "captures": {
             "1": { "name": "punctuation.definition.decorator.rosegold" },
             "2": { "name": "keyword.control.directive.rosegold" }
@@ -167,7 +167,7 @@
       "patterns": [
         {
           "name": "entity.name.namespace.rosegold",
-          "match": "\\b(str|math|option|result|io|time|process|json|path|http|regex|checks|ui)\\b(?=\\s*\\.)"
+          "match": "\\b(std|str|math|vec|option|result|io|time|process|json|path|http|regex|checks|ui)\\b(?=\\s*\\.)"
         }
       ]
     },
@@ -179,15 +179,15 @@
         },
         {
           "name": "keyword.control.rosegold",
-          "match": "\\b(if|elif|else|while|for|in|match|switch|return|break|continue|pass|spawn|await)\\b"
+          "match": "\\b(if|elif|else|while|for|in|match|switch|return|break|continue|pass|spawn|await|try|do|throws|throw|catch)\\b"
         },
         {
           "name": "storage.type.rosegold",
-          "match": "\\b(struct|class|trait|extends|enum|mod|impl|fn|var|const|signal)\\b"
+          "match": "\\b(struct|data|class|trait|extends|enum|mod|impl|fn|var|const|signal)\\b"
         },
         {
           "name": "storage.modifier.rosegold",
-          "match": "\\b(pub|async)\\b"
+          "match": "\\b(pub|private|protected|async|abstract|final)\\b"
         },
         {
           "name": "variable.language.rosegold",
@@ -199,7 +199,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.rosegold",
-          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Option|Result|Vec2|Vec3|Mutex|Channel|Task|Fn)\\b"
+          "match": "\\b(Void|Bool|Int|Float|String|Str|Array|Map|Range|Option|Result|UUID|Vec2|Vec3|Mutex|Channel|Task|Fn)\\b"
         },
         {
           "name": "entity.name.type.rosegold",

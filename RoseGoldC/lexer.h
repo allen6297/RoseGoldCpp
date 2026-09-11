@@ -3,6 +3,15 @@
 #include <string>
 #include <vector>
 
+struct Diagnostic {
+  std::string file;
+  int line = 1;
+  int col = 1;
+  std::string severity = "error";
+  std::string message;
+  std::string kind = "type error";
+};
+
 enum class Tok {
   Eof,
   Identifier,
@@ -17,6 +26,7 @@ enum class Tok {
   Enum,
   Function,
   Struct,
+  Data,
   Implements,
   Extends,
   For,
@@ -26,6 +36,10 @@ enum class Tok {
   From,
   As,
   Pub,
+  Abstract,
+  Final,
+  Private,
+  Protected,
   Variable,
   Constant,
   Signal,
@@ -40,6 +54,11 @@ enum class Tok {
   Switch,
   Match,
   While,
+  Try,
+  Do,
+  Throws,
+  Throw,
+  Catch,
   True,
   False,
   //SYMBOLS
@@ -56,6 +75,10 @@ enum class Tok {
   RBracket,
   LArrow,
   RArrow,
+  LtEq,
+  GtEq,
+  DotDot,
+  DotDotEq,
   //OPERATORS
   Plus,
   Minus,
@@ -65,6 +88,12 @@ enum class Tok {
   Eq,
   EqEq,
   NotEq,
+  PlusEq,
+  MinusEq,
+  StarEq,
+  SlashEq,
+  AndAnd,
+  OrOr,
   Bang
 };
 
@@ -78,7 +107,8 @@ struct Token {
 };
 
 std::vector<Token> tokenize(const std::string &source,
-                            const std::string &file = "");
+                            const std::string &file = "",
+                            std::vector<Diagnostic> *errors = nullptr);
 
 inline std::string locatedError(const char *kind, const std::string &file,
                                 int line, int col, const std::string &msg) {
@@ -96,4 +126,11 @@ inline std::string locatedError(const char *kind, const std::string &file,
   s += ": ";
   s += msg;
   return s;
+}
+
+inline std::string diagnosticError(const Diagnostic &d,
+                                   const std::string &fallbackFile = "") {
+  const char *kind = d.kind.empty() ? "error" : d.kind.c_str();
+  return locatedError(kind, d.file.empty() ? fallbackFile : d.file, d.line,
+                      d.col, d.message);
 }

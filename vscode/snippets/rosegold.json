@@ -50,6 +50,25 @@
     ],
     "description": "Pure constexpr function"
   },
+  "Ufcs": {
+    "prefix": "@ufcs",
+    "body": [
+      "@ufcs",
+      "fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "UFCS: x.fn(args) means fn(x, args)"
+  },
+  "OptionalField": {
+    "prefix": "@optional",
+    "body": [
+      "@optional",
+      "${1:x}: ${2:Int};"
+    ],
+    "description": "Optional struct/class field"
+  },
   "Doc": {
     "prefix": "///",
     "body": [
@@ -115,6 +134,28 @@
     ],
     "description": "Struct declaration"
   },
+  "Data": {
+    "prefix": "data",
+    "body": [
+      "data ${1:Name} {",
+      "\t${2:field}: ${3:Int};",
+      "\t$0",
+      "}"
+    ],
+    "description": "Data type (frozen fields)"
+  },
+  "Data impl": {
+    "prefix": "dataimpl",
+    "body": [
+      "data ${1:Name} impl ${2:Trait} {",
+      "\t${3:field}: ${4:Int};",
+      "\tfn ${5:name}(): ${6:Int} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Data type that implements a trait"
+  },
   "Class": {
     "prefix": "class",
     "body": [
@@ -126,6 +167,43 @@
       "}"
     ],
     "description": "Class declaration"
+  },
+  "Abstract class": {
+    "prefix": "abstract",
+    "body": [
+      "abstract class ${1:Name} {",
+      "\tabstract fn ${2:name}(): ${3:String};",
+      "\t$0",
+      "}"
+    ],
+    "description": "Abstract class (cannot construct)"
+  },
+  "Final class": {
+    "prefix": "final",
+    "body": [
+      "final class ${1:Name} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Final class (cannot extend)"
+  },
+  "Private method": {
+    "prefix": "private",
+    "body": [
+      "private fn ${1:name}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Private method (this type only)"
+  },
+  "Protected method": {
+    "prefix": "protected",
+    "body": [
+      "protected fn ${1:name}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Protected method (this class and subclasses)"
   },
   "Enum": {
     "prefix": "enum",
@@ -204,12 +282,40 @@
     ],
     "description": "Import module"
   },
+  "Import std": {
+    "prefix": "importstd",
+    "body": [
+      "import std;"
+    ],
+    "description": "Import std (std.math, std.str, std.io, std.vec)"
+  },
+  "Import std.math": {
+    "prefix": "importstdmath",
+    "body": [
+      "import std.math;"
+    ],
+    "description": "Import std.math (binds std and math)"
+  },
   "From import": {
     "prefix": "from",
     "body": [
       "from ${1:module} import ${2:name};"
     ],
     "description": "From-import a name"
+  },
+  "From std": {
+    "prefix": "fromstd",
+    "body": [
+      "from std import ${1:UUID};"
+    ],
+    "description": "From-import a std name (UUID, math, …)"
+  },
+  "UUID v4": {
+    "prefix": "uuid",
+    "body": [
+      "var ${1:id} = std.v4();"
+    ],
+    "description": "Random UUID v4"
   },
   "Mod": {
     "prefix": "mod",
@@ -259,6 +365,42 @@
       "}"
     ],
     "description": "For-in loop"
+  },
+  "DoCatch": {
+    "prefix": "do",
+    "body": [
+      "do {",
+      "\ttry ${1:boom}();",
+      "} catch ${2:e} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "do / catch"
+  },
+  "ThrowsFn": {
+    "prefix": "throws",
+    "body": [
+      "fn ${1:name}(${2:args}) throws: ${3:String} {",
+      "\tthrow ${4:\"error\"};",
+      "}"
+    ],
+    "description": "Throwing function"
+  },
+  "Try": {
+    "prefix": "try",
+    "body": [
+      "try ${1:boom}()"
+    ],
+    "description": "try call"
+  },
+  "For range": {
+    "prefix": "forr",
+    "body": [
+      "for ${1:i} in ${2:0}..${3:n} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For-in exclusive range"
   },
   "Array": {
     "prefix": "arr",

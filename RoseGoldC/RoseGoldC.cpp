@@ -3,6 +3,7 @@
 #include <cctype>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -100,6 +101,10 @@ static DispatchResult dispatch(const Invocation &inv) {
     printAliases("quit");
     printAliases("run");
     std::cout << "      run <file> [args...]\n";
+    printAliases("check");
+    std::cout << "      check [--json] [--stdin] <file>\n";
+    printAliases("lsp");
+    std::cout << "      lsp             language server (stdin/stdout JSON-RPC)\n";
     printAliases("test");
     std::cout << "      test            language suite\n";
     std::cout << "      test <file>     @test functions in one file\n";
@@ -121,6 +126,44 @@ static DispatchResult dispatch(const Invocation &inv) {
     RunResult run = runFile(inv.args[0], inv.args);
     printRunResult(run);
     result.exitCode = run.exitCode;
+    return result;
+  }
+  if (command(inv.cmd, "check")) {
+    bool json = false;
+    bool fromStdin = false;
+    std::string path;
+    for (const auto &a : inv.args) {
+      if (a == "--json" || a == "-j")
+        json = true;
+      else if (a == "--stdin")
+        fromStdin = true;
+      else if (path.empty())
+        path = a;
+    }
+    if (path.empty()) {
+      std::cerr << "Usage: check [--json] [--stdin] <file>\n";
+      result.exitCode = 2;
+      return result;
+    }
+    std::vector<Diagnostic> diags;
+    if (fromStdin) {
+      std::ostringstream ss;
+      ss << std::cin.rdbuf();
+      diags = checkSource(ss.str(), path);
+    } else {
+      diags = checkFile(path);
+    }
+    if (json)
+      std::cout << diagnosticsToJson(diags);
+    else {
+      for (const auto &d : diags)
+        std::cerr << diagnosticToHuman(d) << "\n";
+    }
+    result.exitCode = diags.empty() ? 0 : 1;
+    return result;
+  }
+  if (command(inv.cmd, "lsp")) {
+    result.exitCode = runLanguageServer();
     return result;
   }
   if (command(inv.cmd, "test")) {
