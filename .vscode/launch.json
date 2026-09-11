@@ -1,0 +1,52 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "RoseGoldC",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/RoseGoldC.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "RoseGoldC: run hello",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/RoseGoldC.exe",
+            "args": ["run", "examples/hello.rg"],
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "internalConsoleOptions": "openOnSessionStart",
+            "stopAtEntry": false,
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "RoseGoldC: test",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/RoseGoldC.exe",
+            "args": ["test"],
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "internalConsoleOptions": "openOnSessionStart",
+            "stopAtEntry": false,
+            "preLaunchTask": "build"
+        },
+        {
+            "name": "RoseGoldC: test file",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/RoseGoldC.exe",
+            "args": ["test", "examples/tests.rg"],
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "internalConsoleOptions": "openOnSessionStart",
+            "stopAtEntry": false,
+            "preLaunchTask": "build"
+        }
+    ]
+}

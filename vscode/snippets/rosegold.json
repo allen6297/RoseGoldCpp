@@ -1,0 +1,220 @@
+{
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Function declaration"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "fn main(): ${1:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Entry point fn main"
+  },
+  "Test": {
+    "prefix": "@test",
+    "body": [
+      "@test",
+      "fn ${1:test_name}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "@test function"
+  },
+  "Deprecated": {
+    "prefix": "@deprecated",
+    "body": [
+      "@deprecated",
+      "fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Deprecated function"
+  },
+  "Doc": {
+    "prefix": "///",
+    "body": [
+      "/// ${1:description}"
+    ],
+    "description": "Doc comment"
+  },
+  "Block comment": {
+    "prefix": "/#",
+    "body": [
+      "/# ${1:comment} #/"
+    ],
+    "description": "Block comment"
+  },
+  "Signal": {
+    "prefix": "signal",
+    "body": [
+      "signal ${1:name}(${2:args});"
+    ],
+    "description": "Declare a signal"
+  },
+  "Connect": {
+    "prefix": "connect",
+    "body": [
+      "${1:name}.connect(${2:handler});"
+    ],
+    "description": "Subscribe a function to a signal"
+  },
+  "Emit": {
+    "prefix": "emit",
+    "body": [
+      "${1:name}.emit(${0});"
+    ],
+    "description": "Fire a signal"
+  },
+  "Disconnect": {
+    "prefix": "disconnect",
+    "body": [
+      "${1:name}.disconnect(${2:handler});"
+    ],
+    "description": "Unsubscribe a function from a signal"
+  },
+  "Var": {
+    "prefix": "var",
+    "body": [
+      "var ${1:name} = ${2:0};"
+    ],
+    "description": "Variable binding"
+  },
+  "Const": {
+    "prefix": "const",
+    "body": [
+      "const ${1:name} = ${2:value};"
+    ],
+    "description": "Constant binding (init-once)"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Struct declaration"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} {",
+      "\tvar ${2:field}: ${3:Int} = ${4:0};",
+      "\tfn ${5:name}() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Class declaration"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "\tfn ${2:name}(): ${3:Int};",
+      "}"
+    ],
+    "description": "Trait declaration (signatures only)"
+  },
+  "Impl": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Name} {",
+      "\tfn ${2:name}() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Impl block for type methods"
+  },
+  "Impl trait for": {
+    "prefix": "implfor",
+    "body": [
+      "impl ${1:Trait} for ${2:Type} {",
+      "\tfn ${3:name}() {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Implement a trait for a type"
+  },
+  "Method": {
+    "prefix": "method",
+    "body": [
+      "fn ${1:name}() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Struct method"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:name};"
+    ],
+    "description": "Import module"
+  },
+  "From import": {
+    "prefix": "from",
+    "body": [
+      "from ${1:module} import ${2:name};"
+    ],
+    "description": "From-import a name"
+  },
+  "Mod": {
+    "prefix": "mod",
+    "body": [
+      "mod ${1:name} {",
+      "\tpub fn ${2:name}($3): ${4:Int} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Module block"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if ${1:cond} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If block"
+  },
+  "If else": {
+    "prefix": "ife",
+    "body": [
+      "if ${1:cond} {",
+      "\t$2",
+      "} else {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If / else"
+  },
+  "While": {
+    "prefix": "while",
+    "body": [
+      "while ${1:cond} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "Pass": {
+    "prefix": "pass",
+    "body": [
+      "pass;"
+    ],
+    "description": "No-op statement"
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "name": "rosegoldc",
+  "displayName": "RoseGoldC",
+  "description": "Language support for RoseGoldC: highlighting, completion, go to definition, run, and tests",
+  "version": "0.0.1",
+  "publisher": "rosegoldc",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "rosegold",
+    "rosegoldc",
+    "rg"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rosegold",
+    "workspaceContains:**/*.rg"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rosegold",
+        "aliases": [
+          "RoseGold",
+          "rosegold"
+        ],
+        "extensions": [
+          ".rg"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/rosegold-light.svg",
+          "dark": "./icons/rosegold.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rosegold",
+        "scopeName": "source.rosegold",
+        "path": "./syntaxes/rosegold.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rosegold",
+        "path": "./snippets/rosegold.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "rosegoldc.runFile",
+        "title": "RoseGoldC: Run File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rosegoldc.testFile",
+        "title": "RoseGoldC: Run Tests",
+        "icon": "$(beaker)"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "rosegoldc.runFile",
+          "when": "resourceLangId == rosegold",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rosegoldc.testFile",
+          "when": "resourceLangId == rosegold",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "rosegoldc.runFile",
+          "when": "resourceLangId == rosegold",
+          "group": "rosegoldc@1"
+        },
+        {
+          "command": "rosegoldc.testFile",
+          "when": "resourceLangId == rosegold",
+          "group": "rosegoldc@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rosegoldc.runFile",
+          "when": "resourceLangId == rosegold"
+        },
+        {
+          "command": "rosegoldc.testFile",
+          "when": "resourceLangId == rosegold"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "RoseGoldC",
+      "properties": {
+        "rosegoldc.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to RoseGoldC.exe. Empty = build/RoseGoldC.exe in the workspace, then PATH."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          {
+            "scope": [
+              "punctuation.definition.decorator.rosegold",
+              "keyword.control.directive.rosegold",
+              "entity.name.function.decorator.rosegold"
+            ],
+            "settings": {
+              "foreground": "#E8A0BF",
+              "fontStyle": "bold"
+            }
+          },
+          {
+            "scope": "storage.type.rosegold",
+            "settings": {
+              "foreground": "#F0B27A"
+            }
+          },
+          {
+            "scope": "keyword.control.rosegold",
+            "settings": {
+              "foreground": "#C4B5FD"
+            }
+          },
+          {
+            "scope": "entity.name.function.rosegold",
+            "settings": {
+              "foreground": "#F5D0A9"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+.vs/
+build/
+x64/
+*.vsix
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+*.aps
+*.opendb
