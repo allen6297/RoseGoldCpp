@@ -1,6 +1,7 @@
 #include "eval.h"
 #include "interp.h"
 #include "lexer.h"
+#include "parser.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -657,7 +659,12 @@ struct NavSymbol {
   std::string uri;
   int line = 0;
   int col = 0;
+  int endLine = 0;
+  int endCol = 0;
   std::vector<std::string> params;
+  bool throws = false;
+  bool deprecated = false;
+  bool isTest = false;
 };
 
 const char *declKindName(Tok k) {
@@ -668,12 +675,16 @@ const char *declKindName(Tok k) {
     return "signal";
   case Tok::Struct:
     return "struct";
+  case Tok::Data:
+    return "data";
   case Tok::Class:
     return "class";
   case Tok::Trait:
     return "trait";
   case Tok::Enum:
     return "enum";
+  case Tok::Module:
+    return "mod";
   case Tok::Variable:
     return "var";
   case Tok::Constant:
@@ -681,6 +692,59 @@ const char *declKindName(Tok k) {
   default:
     return nullptr;
   }
+}
+
+bool spanToClose(const std::vector<Token> &tokens, size_t from, int &el,
+                 int &ec) {
+  int depth = 0;
+  bool inBrace = false;
+  for (size_t i = from; i < tokens.size(); ++i) {
+    const Tok k = tokens[i].kind;
+    if (k == Tok::LBrace) {
+      ++depth;
+      inBrace = true;
+    } else if (k == Tok::RBrace) {
+      if (depth > 0)
+        --depth;
+      if (inBrace && depth == 0) {
+        el = tokens[i].line > 0 ? tokens[i].line - 1 : 0;
+        ec = tokens[i].col > 0 ? tokens[i].col : 0;
+        return true;
+      }
+    } else if (!inBrace && k == Tok::Semi) {
+      el = tokens[i].line > 0 ? tokens[i].line - 1 : 0;
+      ec = tokens[i].col > 0 ? tokens[i].col : 0;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool canOutlineParent(const std::string &kind) {
+  return kind == "struct" || kind == "data" || kind == "class" ||
+         kind == "trait" || kind == "enum" || kind == "mod";
+}
+
+int lspSymbolKind(const std::string &kind) {
+  if (kind == "fn")
+    return 12;
+  if (kind == "signal")
+    return 24;
+  if (kind == "struct" || kind == "data")
+    return 23;
+  if (kind == "class")
+    return 5;
+  if (kind == "trait")
+    return 11;
+  if (kind == "enum")
+    return 10;
+  if (kind == "mod")
+    return 2;
+  if (kind == "var")
+    return 13;
+  if (kind == "const")
+    return 14;
+  return 13;
 }
 
 void collectFromSource(const std::string &source, const std::string &uri,
@@ -705,9 +769,38 @@ void collectFromSource(const std::string &source, const std::string &uri,
     s.uri = uri;
     s.line = name.line > 0 ? name.line - 1 : 0;
     s.col = name.col > 0 ? name.col - 1 : 0;
+    s.endLine = s.line;
+    s.endCol = s.col + static_cast<int>(s.name.size());
+    spanToClose(tokens, i, s.endLine, s.endCol);
+    if (s.endLine < s.line ||
+        (s.endLine == s.line && s.endCol < s.col + static_cast<int>(s.name.size()))) {
+      s.endLine = s.line;
+      s.endCol = s.col + static_cast<int>(s.name.size());
+    }
     if (s.line >= 0 && s.line < static_cast<int>(lines.size())) {
       s.detail = codeLine(lines[static_cast<size_t>(s.line)]);
       s.doc = docsAbove(lines, s.line);
+    }
+    if (tokens[i].kind == Tok::Function) {
+      size_t k = i;
+      while (k > 0) {
+        const Tok pk = tokens[k - 1].kind;
+        if (pk == Tok::Pub || pk == Tok::Private || pk == Tok::Protected ||
+            pk == Tok::Abstract || pk == Tok::Final) {
+          --k;
+          continue;
+        }
+        if (k >= 2 && tokens[k - 2].kind == Tok::At &&
+            tokens[k - 1].kind == Tok::Identifier) {
+          if (tokens[k - 1].text == "deprecated")
+            s.deprecated = true;
+          if (tokens[k - 1].text == "test")
+            s.isTest = true;
+          k -= 2;
+          continue;
+        }
+        break;
+      }
     }
     if (s.kind == "fn" || s.kind == "signal") {
       size_t j = i + 2;
@@ -717,10 +810,25 @@ void collectFromSource(const std::string &source, const std::string &uri,
                tokens[j].kind != Tok::LBrace && tokens[j].kind != Tok::Semi) {
           if (tokens[j].kind == Tok::Identifier &&
               tokens[j - 1].kind != Tok::Colon &&
-              tokens[j].text != "self")
-            s.params.push_back(tokens[j].text);
+              tokens[j].text != "self") {
+            std::string p = tokens[j].text;
+            if (j + 2 < tokens.size() && tokens[j + 1].kind == Tok::Colon &&
+                tokens[j + 2].kind == Tok::Identifier) {
+              p += ": " + tokens[j + 2].text;
+              size_t t = j + 3;
+              if (t + 2 < tokens.size() && tokens[t].kind == Tok::LBracket &&
+                  tokens[t + 1].kind == Tok::Identifier &&
+                  tokens[t + 2].kind == Tok::RBracket)
+                p += "[" + tokens[t + 1].text + "]";
+            }
+            s.params.push_back(std::move(p));
+          }
           ++j;
         }
+        if (j < tokens.size() && tokens[j].kind == Tok::RParen)
+          ++j;
+        if (j < tokens.size() && tokens[j].kind == Tok::Throws)
+          s.throws = true;
       }
     }
     out.push_back(std::move(s));
@@ -818,6 +926,545 @@ bool identAt(const std::string &source, int line0, int col0, IdentAt &out) {
   return false;
 }
 
+struct CallSite {
+  std::string name;
+  std::string qualifier;
+  int activeParam = 0;
+};
+
+bool callSiteAt(const std::string &source, int line0, int col0, CallSite &out) {
+  std::vector<Token> tokens;
+  try {
+    tokens = tokenize(source, "");
+  } catch (...) {
+    return false;
+  }
+  const int line1 = line0 + 1;
+  const int col1 = col0 + 1;
+  struct Frame {
+    std::string name;
+    std::string qualifier;
+    int param = 0;
+  };
+  std::vector<Frame> stack;
+  std::string pending;
+  std::string pendingQual;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const Token &t = tokens[i];
+    if (t.kind == Tok::Eof)
+      break;
+    if (t.line > line1 || (t.line == line1 && t.col > col1))
+      break;
+    if (t.kind == Tok::Identifier) {
+      pending = t.text;
+      pendingQual = "";
+      if (i >= 2 && tokens[i - 1].kind == Tok::Dot &&
+          tokens[i - 2].kind == Tok::Identifier)
+        pendingQual = tokens[i - 2].text;
+    } else if (t.kind == Tok::LParen) {
+      stack.push_back({pending, pendingQual, 0});
+      pending.clear();
+      pendingQual.clear();
+    } else if (t.kind == Tok::RParen) {
+      if (!stack.empty())
+        stack.pop_back();
+    } else if (t.kind == Tok::Comma && !stack.empty()) {
+      stack.back().param++;
+    }
+  }
+  if (stack.empty() || stack.back().name.empty())
+    return false;
+  out.name = stack.back().name;
+  out.qualifier = stack.back().qualifier;
+  out.activeParam = stack.back().param;
+  return true;
+}
+
+Json locationPayload(const NavSymbol &s);
+
+struct IdentHit {
+  int line = 0;
+  int col = 0;
+  int endCol = 0;
+  std::string qualifier;
+  bool isWrite = false;
+};
+
+bool isDeclTok(Tok k) {
+  return k == Tok::Function || k == Tok::Struct || k == Tok::Data ||
+         k == Tok::Class || k == Tok::Trait || k == Tok::Enum ||
+         k == Tok::Module || k == Tok::Variable || k == Tok::Constant ||
+         k == Tok::Signal;
+}
+
+bool isAssignTok(Tok k) {
+  return k == Tok::Eq || k == Tok::PlusEq || k == Tok::MinusEq ||
+         k == Tok::StarEq || k == Tok::SlashEq;
+}
+
+std::vector<IdentHit> identHits(const std::string &source,
+                                const std::string &name) {
+  std::vector<IdentHit> out;
+  std::vector<Token> tokens;
+  try {
+    tokens = tokenize(source, "");
+  } catch (...) {
+    return out;
+  }
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const Token &t = tokens[i];
+    if (t.kind != Tok::Identifier || t.text != name)
+      continue;
+    IdentHit h;
+    h.line = t.line > 0 ? t.line - 1 : 0;
+    h.col = t.col > 0 ? t.col - 1 : 0;
+    h.endCol = h.col + static_cast<int>(t.text.size());
+    if (i >= 2 && tokens[i - 1].kind == Tok::Dot &&
+        tokens[i - 2].kind == Tok::Identifier)
+      h.qualifier = tokens[i - 2].text;
+    if (i > 0 && isDeclTok(tokens[i - 1].kind))
+      h.isWrite = true;
+    if (i + 1 < tokens.size() && isAssignTok(tokens[i + 1].kind))
+      h.isWrite = true;
+    out.push_back(std::move(h));
+  }
+  return out;
+}
+
+bool hitMatchesCursor(const IdentAt &ident, const IdentHit &h) {
+  if (!ident.qualifier.empty())
+    return h.qualifier == ident.qualifier || h.isWrite;
+  return true;
+}
+
+bool posInSpan(int line, int col, int sl, int sc, int el, int ec);
+
+Json identLocations(const std::string &source, const std::string &uri,
+                    const std::string &name) {
+  Json arr = Json::array();
+  for (const auto &h : identHits(source, name)) {
+    NavSymbol s;
+    s.name = name;
+    s.uri = uri;
+    s.line = h.line;
+    s.col = h.col;
+    arr.a.push_back(locationPayload(s));
+  }
+  return arr;
+}
+
+std::string lineEnding(const std::string &source) {
+  return source.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+}
+
+std::string lineIndent(const std::string &source, int line0) {
+  auto lines = splitLines(source);
+  if (line0 < 0 || line0 >= static_cast<int>(lines.size()))
+    return "    ";
+  const std::string &line = lines[static_cast<size_t>(line0)];
+  size_t i = 0;
+  while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+    ++i;
+  if (i == 0)
+    return "    ";
+  return line.substr(0, i);
+}
+
+std::vector<std::string> quotedIdents(const std::string &s) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] != '\'')
+      continue;
+    size_t j = i + 1;
+    while (j < s.size() && s[j] != '\'')
+      ++j;
+    if (j >= s.size())
+      break;
+    out.push_back(s.substr(i + 1, j - i - 1));
+    i = j;
+  }
+  return out;
+}
+
+bool isIdentName(const std::string &s) {
+  if (s.empty())
+    return false;
+  const unsigned char c = static_cast<unsigned char>(s[0]);
+  if (!(std::isalpha(c) || s[0] == '_'))
+    return false;
+  for (size_t i = 1; i < s.size(); ++i) {
+    const unsigned char ch = static_cast<unsigned char>(s[i]);
+    if (!(std::isalnum(ch) || s[i] == '_'))
+      return false;
+  }
+  return true;
+}
+
+void leftmostExpr(const Expr &e, int &line, int &col) {
+  if (!e.kids.empty() &&
+      (e.kind == Expr::Kind::MethodCall || e.kind == Expr::Kind::Member ||
+       e.kind == Expr::Kind::Index)) {
+    leftmostExpr(e.kids[0], line, col);
+    return;
+  }
+  line = e.line;
+  col = e.col;
+}
+
+bool findCallAt(const Expr &e, int line, int col, Expr &out) {
+  if ((e.kind == Expr::Kind::Call || e.kind == Expr::Kind::MethodCall) &&
+      e.line == line && e.col == col) {
+    out = e;
+    return true;
+  }
+  for (const auto &k : e.kids) {
+    if (findCallAt(k, line, col, out))
+      return true;
+  }
+  return false;
+}
+
+bool findCallInStmts(const std::vector<Stmt> &stmts, int line, int col,
+                     Expr &out);
+
+bool findCallInFns(const std::vector<FnDecl> &fns, int line, int col,
+                   Expr &out) {
+  for (const auto &fn : fns) {
+    if (findCallInStmts(fn.body, line, col, out))
+      return true;
+  }
+  return false;
+}
+
+bool findCallInStmts(const std::vector<Stmt> &stmts, int line, int col,
+                     Expr &out) {
+  for (const auto &s : stmts) {
+    if (findCallAt(s.expr, line, col, out) ||
+        findCallAt(s.target, line, col, out))
+      return true;
+    if (findCallInStmts(s.body, line, col, out) ||
+        findCallInStmts(s.elseBody, line, col, out))
+      return true;
+    for (const auto &arm : s.arms) {
+      if (findCallInStmts(arm.body, line, col, out))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool findCallInMod(const ModDecl &m, int line, int col, Expr &out) {
+  if (findCallInFns(m.fns, line, col, out))
+    return true;
+  for (const auto &st : m.structs) {
+    if (findCallInFns(st.methods, line, col, out))
+      return true;
+  }
+  for (const auto &c : m.classes) {
+    if (findCallInFns(c.methods, line, col, out))
+      return true;
+    for (const auto &ti : c.traitImpls) {
+      if (findCallInFns(ti.methods, line, col, out))
+        return true;
+    }
+  }
+  for (const auto &im : m.impls) {
+    if (findCallInFns(im.methods, line, col, out))
+      return true;
+  }
+  for (const auto &nested : m.mods) {
+    if (findCallInMod(nested, line, col, out))
+      return true;
+  }
+  return false;
+}
+
+bool findCallInProgram(const Program &p, int line, int col, Expr &out) {
+  if (findCallInFns(p.fns, line, col, out))
+    return true;
+  for (const auto &st : p.structs) {
+    if (findCallInFns(st.methods, line, col, out))
+      return true;
+  }
+  for (const auto &c : p.classes) {
+    if (findCallInFns(c.methods, line, col, out))
+      return true;
+    for (const auto &ti : c.traitImpls) {
+      if (findCallInFns(ti.methods, line, col, out))
+        return true;
+    }
+  }
+  for (const auto &im : p.impls) {
+    if (findCallInFns(im.methods, line, col, out))
+      return true;
+  }
+  for (const auto &m : p.mods) {
+    if (findCallInMod(m, line, col, out))
+      return true;
+  }
+  return false;
+}
+
+const TraitDecl *findTraitInMod(const ModDecl &m, const std::string &name) {
+  for (const auto &t : m.traits) {
+    if (t.name == name)
+      return &t;
+  }
+  for (const auto &nested : m.mods) {
+    if (const TraitDecl *hit = findTraitInMod(nested, name))
+      return hit;
+  }
+  return nullptr;
+}
+
+const TraitDecl *findTraitInProgram(const Program &p, const std::string &name) {
+  const std::string h = typeHead(name);
+  for (const auto &t : p.traits) {
+    if (t.name == h)
+      return &t;
+  }
+  for (const auto &m : p.mods) {
+    if (const TraitDecl *hit = findTraitInMod(m, h))
+      return hit;
+  }
+  return nullptr;
+}
+
+const EnumDecl *findEnumInMod(const ModDecl &m, const std::string &name) {
+  for (const auto &e : m.enums) {
+    if (e.name == name)
+      return &e;
+  }
+  for (const auto &nested : m.mods) {
+    if (const EnumDecl *hit = findEnumInMod(nested, name))
+      return hit;
+  }
+  return nullptr;
+}
+
+const EnumDecl *findEnumInProgram(const Program &p, const std::string &name) {
+  for (const auto &e : p.enums) {
+    if (e.name == name)
+      return &e;
+  }
+  for (const auto &m : p.mods) {
+    if (const EnumDecl *hit = findEnumInMod(m, name))
+      return hit;
+  }
+  return nullptr;
+}
+
+std::string variantArmText(const EnumVariant &v) {
+  if (v.arity <= 0)
+    return v.name + " { pass; }";
+  std::string s = v.name + "(";
+  for (int i = 0; i < v.arity; ++i) {
+    if (i)
+      s += ", ";
+    std::string bind = "p" + std::to_string(i);
+    if (i < static_cast<int>(v.fieldNames.size()) && !v.fieldNames[static_cast<size_t>(i)].empty()) {
+      s += v.fieldNames[static_cast<size_t>(i)] + ": ";
+      bind = v.fieldNames[static_cast<size_t>(i)];
+    }
+    s += bind;
+  }
+  s += ") { pass; }";
+  return s;
+}
+
+std::string defaultTraitBody(const TraitMethod &m) {
+  if (m.throws)
+    return "throw \"todo\";";
+  const std::string &rt = m.returnType;
+  if (rt.empty() || rt == "Void")
+    return "pass;";
+  if (rt == "String" || rt == "Str")
+    return "return \"\";";
+  if (rt == "Int")
+    return "return 0;";
+  if (rt == "Float")
+    return "return 0.0;";
+  if (rt == "Bool")
+    return "return false;";
+  if (rt == "Array" || (rt.size() > 6 && rt.compare(0, 6, "Array[") == 0))
+    return "return [];";
+  if (rt == "Map" || (rt.size() > 4 && rt.compare(0, 4, "Map[") == 0))
+    return "return {};";
+  return "pass;";
+}
+
+std::string stubTraitMethod(const TraitMethod &m, const std::string &indent,
+                            const std::string &nl) {
+  std::string s = indent + "fn " + m.name + "(";
+  for (size_t i = 0; i < m.params.size(); ++i) {
+    if (i)
+      s += ", ";
+    s += m.params[i];
+    if (i < m.paramTypes.size() && !m.paramTypes[i].empty() &&
+        m.params[i] != "self")
+      s += ": " + m.paramTypes[i];
+  }
+  s += ")";
+  if (m.throws)
+    s += " throws";
+  if (!m.returnType.empty())
+    s += ": " + m.returnType;
+  s += " {" + nl;
+  s += indent + "    " + defaultTraitBody(m) + nl;
+  s += indent + "}" + nl;
+  return s;
+}
+
+bool tokenizeOk(const std::string &source, std::vector<Token> &tokens) {
+  try {
+    tokens = tokenize(source, "");
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool findKeywordClose(const std::string &source, Tok kind, int line1, int col1,
+                      int &el, int &ec) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(source, tokens))
+    return false;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind != kind)
+      continue;
+    if (tokens[i].line != line1)
+      continue;
+    if (col1 > 0 && tokens[i].col != col1)
+      continue;
+    return spanToClose(tokens, i, el, ec);
+  }
+  if (col1 > 0) {
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      if (tokens[i].kind == kind && tokens[i].line == line1)
+        return spanToClose(tokens, i, el, ec);
+    }
+  }
+  return false;
+}
+
+bool findTypeBodyClose(const std::string &source, const std::string &typeName,
+                       int &el, int &ec) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(source, tokens))
+    return false;
+  const std::string head = typeHead(typeName);
+  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+    const Tok k = tokens[i].kind;
+    if (k != Tok::Class && k != Tok::Struct && k != Tok::Data &&
+        k != Tok::Trait)
+      continue;
+    if (tokens[i + 1].kind == Tok::Identifier && tokens[i + 1].text == head)
+      return spanToClose(tokens, i, el, ec);
+  }
+  return false;
+}
+
+bool findImplForClose(const std::string &source, const std::string &traitName,
+                      const std::string &typeName, int &el, int &ec) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(source, tokens))
+    return false;
+  const std::string trait = typeHead(traitName);
+  const std::string type = typeHead(typeName);
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind != Tok::Implements)
+      continue;
+    std::string seenTrait;
+    std::string seenType;
+    bool sawFor = false;
+    size_t j = i + 1;
+    while (j < tokens.size() && tokens[j].kind != Tok::LBrace &&
+           tokens[j].kind != Tok::Semi && tokens[j].kind != Tok::Eof) {
+      if (tokens[j].kind == Tok::For)
+        sawFor = true;
+      else if (tokens[j].kind == Tok::Identifier) {
+        if (sawFor)
+          seenType = tokens[j].text;
+        else if (seenTrait.empty())
+          seenTrait = tokens[j].text;
+      }
+      ++j;
+    }
+    if (sawFor && seenTrait == trait && seenType == type)
+      return spanToClose(tokens, i, el, ec);
+  }
+  return false;
+}
+
+bool typeBodyContains(const std::string &source, const std::string &typeName,
+                      int line0, int col0) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(source, tokens))
+    return false;
+  const std::string head = typeHead(typeName);
+  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+    const Tok k = tokens[i].kind;
+    if (k != Tok::Class && k != Tok::Struct && k != Tok::Data &&
+        k != Tok::Trait)
+      continue;
+    if (tokens[i + 1].kind != Tok::Identifier || tokens[i + 1].text != head)
+      continue;
+    int el = 0, ec = 0;
+    if (!spanToClose(tokens, i, el, ec))
+      continue;
+    const int sl = tokens[i].line > 0 ? tokens[i].line - 1 : 0;
+    const int sc = tokens[i].col > 0 ? tokens[i].col - 1 : 0;
+    if (posInSpan(line0, col0, sl, sc, el, ec))
+      return true;
+  }
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind != Tok::Implements)
+      continue;
+    std::string seenType;
+    bool sawFor = false;
+    size_t j = i + 1;
+    while (j < tokens.size() && tokens[j].kind != Tok::LBrace &&
+           tokens[j].kind != Tok::Semi && tokens[j].kind != Tok::Eof) {
+      if (tokens[j].kind == Tok::For)
+        sawFor = true;
+      else if (tokens[j].kind == Tok::Identifier && sawFor)
+        seenType = tokens[j].text;
+      ++j;
+    }
+    if (!sawFor || seenType != head)
+      continue;
+    int el = 0, ec = 0;
+    if (!spanToClose(tokens, i, el, ec))
+      continue;
+    const int sl = tokens[i].line > 0 ? tokens[i].line - 1 : 0;
+    const int sc = tokens[i].col > 0 ? tokens[i].col - 1 : 0;
+    if (posInSpan(line0, col0, sl, sc, el, ec))
+      return true;
+  }
+  return false;
+}
+
+bool matchBodyContains(const std::string &source, int matchLine1, int matchCol1,
+                       int line0, int col0) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(source, tokens))
+    return false;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind != Tok::Match)
+      continue;
+    if (matchLine1 > 0 && tokens[i].line != matchLine1)
+      continue;
+    int el = 0, ec = 0;
+    if (!spanToClose(tokens, i, el, ec))
+      continue;
+    const int sl = tokens[i].line > 0 ? tokens[i].line - 1 : 0;
+    const int sc = tokens[i].col > 0 ? tokens[i].col - 1 : 0;
+    if (posInSpan(line0, col0, sl, sc, el, ec))
+      return true;
+  }
+  return false;
+}
+
 std::string linePrefixAt(const std::string &source, int line0, int char0) {
   auto lines = splitLines(source);
   if (line0 < 0 || line0 >= static_cast<int>(lines.size()))
@@ -866,10 +1513,104 @@ Json lspRange(int sl, int sc, int el, int ec) {
   return range;
 }
 
+Json textEditJson(int sl, int sc, int el, int ec, const std::string &text) {
+  Json edit = Json::object();
+  edit.set("range", lspRange(sl, sc, el, ec));
+  edit.set("newText", Json::str(text));
+  return edit;
+}
+
+Json workspaceEditJson(const std::string &uri, Json edits) {
+  Json changes = Json::object();
+  changes.set(uri, std::move(edits));
+  Json edit = Json::object();
+  edit.set("changes", std::move(changes));
+  return edit;
+}
+
+Json codeActionJson(const std::string &title, const std::string &kind,
+                    Json edit, bool preferred) {
+  Json a = Json::object();
+  a.set("title", Json::str(title));
+  a.set("kind", Json::str(kind));
+  a.set("edit", std::move(edit));
+  if (preferred)
+    a.set("isPreferred", Json::boolean(true));
+  return a;
+}
+
+bool rangesOverlap(int asl, int asc, int ael, int aec, int bsl, int bsc,
+                   int bel, int bec) {
+  if (ael < bsl || bel < asl)
+    return false;
+  if (ael == bsl && aec < bsc)
+    return false;
+  if (bel == asl && bec < asc)
+    return false;
+  return true;
+}
+
+bool posInSpan(int line, int col, int sl, int sc, int el, int ec) {
+  if (line < sl || line > el)
+    return false;
+  if (line == sl && col < sc)
+    return false;
+  if (line == el && col > ec)
+    return false;
+  return true;
+}
+
+Json workspaceEditFromHits(
+    const std::map<std::string, std::vector<IdentHit>> &byUri,
+    const std::string &newName) {
+  Json changes = Json::object();
+  for (const auto &kv : byUri) {
+    Json edits = Json::array();
+    for (const auto &h : kv.second)
+      edits.a.push_back(
+          textEditJson(h.line, h.col, h.line, h.endCol, newName));
+    if (!edits.a.empty())
+      changes.set(kv.first, std::move(edits));
+  }
+  Json edit = Json::object();
+  edit.set("changes", std::move(changes));
+  return edit;
+}
+
+bool skipWalkDir(const std::string &name) {
+  return name == "build" || name == ".git" || name == "node_modules" ||
+         name == ".cursor";
+}
+
+std::string normPath(std::string p) {
+#ifdef _WIN32
+  for (char &c : p)
+    if (c == '/')
+      c = '\\';
+  for (char &c : p)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+#endif
+  return p;
+}
+
+bool pathHasBuiltin(const std::string &path) {
+  std::string n = path;
+  for (char &c : n)
+    if (c == '\\')
+      c = '/';
+  return n.find("/builtin/") != std::string::npos ||
+         n.rfind("builtin/", 0) == 0;
+}
+
 Json hoverPayload(const NavSymbol &s, const IdentAt *ident) {
-  std::string md = "```rosegold\n" +
-                   (s.detail.empty() ? s.kind + " " + s.name : s.detail) +
-                   "\n```";
+  std::string sig = s.detail.empty() ? s.kind + " " + s.name : s.detail;
+  std::string md = "```rosegold\n";
+  if (s.deprecated)
+    md += "@deprecated\n";
+  md += sig;
+  if (s.throws && sig.find("throws") == std::string::npos)
+    md += " throws";
+  md += "\n```";
   if (!s.doc.empty())
     md += "\n\n" + s.doc;
   Json contents = Json::object();
@@ -947,6 +1688,13 @@ const Builtin kBuiltins[] = {
     {"argv", "argv($0)", "argv(i) — script path at 0"},
     {"argv_len", "argv_len()", "argv_len() — argc"},
 };
+
+bool isKeywordName(const std::string &s) {
+  for (const char *kw : kKeywords)
+    if (s == kw)
+      return true;
+  return false;
+}
 
 Json pos(int line, int character) {
   Json p = Json::object();
@@ -1076,6 +1824,13 @@ Json initializeResult() {
   caps.set("positionEncoding", Json::str("utf-16"));
   caps.set("hoverProvider", Json::boolean(true));
   caps.set("definitionProvider", Json::boolean(true));
+  caps.set("referencesProvider", Json::boolean(true));
+  Json signature = Json::object();
+  Json sigTriggers = Json::array();
+  sigTriggers.a.push_back(Json::str("("));
+  sigTriggers.a.push_back(Json::str(","));
+  signature.set("triggerCharacters", std::move(sigTriggers));
+  caps.set("signatureHelpProvider", std::move(signature));
   Json completion = Json::object();
   Json triggers = Json::array();
   triggers.a.push_back(Json::str("."));
@@ -1083,6 +1838,17 @@ Json initializeResult() {
   triggers.a.push_back(Json::str(":"));
   completion.set("triggerCharacters", std::move(triggers));
   caps.set("completionProvider", std::move(completion));
+  caps.set("documentSymbolProvider", Json::boolean(true));
+  caps.set("documentHighlightProvider", Json::boolean(true));
+  Json rename = Json::object();
+  rename.set("prepareProvider", Json::boolean(true));
+  caps.set("renameProvider", std::move(rename));
+  Json codeAction = Json::object();
+  Json actionKinds = Json::array();
+  actionKinds.a.push_back(Json::str("quickfix"));
+  codeAction.set("codeActionKinds", std::move(actionKinds));
+  caps.set("codeActionProvider", std::move(codeAction));
+  caps.set("codeLensProvider", Json::boolean(true));
   Json info = Json::object();
   info.set("name", Json::str("RoseGoldC"));
   info.set("version", Json::str(version));
@@ -1169,6 +1935,68 @@ struct Server {
     return out;
   }
 
+  void forEachRg(
+      const std::function<void(const std::string &uri, const std::string &text)>
+          &fn,
+      bool skipBuiltin) const {
+    std::set<std::string> seen;
+    for (const auto &kv : docs) {
+      if (skipBuiltin && pathHasBuiltin(uriToPath(kv.first)))
+        continue;
+      fn(kv.first, kv.second);
+      seen.insert(normPath(uriToPath(kv.first)));
+    }
+    if (rootPath.empty())
+      return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path root(rootPath);
+    if (!fs::is_directory(root, ec))
+      return;
+    fs::recursive_directory_iterator it(
+        root, fs::directory_options::skip_permission_denied, ec);
+    fs::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+      if (ec) {
+        ec.clear();
+        continue;
+      }
+      const auto name = it->path().filename().string();
+      if (it->is_directory(ec) && skipWalkDir(name)) {
+        it.disable_recursion_pending();
+        continue;
+      }
+      if (!it->is_regular_file(ec) || it->path().extension() != ".rg")
+        continue;
+      const std::string path = it->path().string();
+      if (skipBuiltin && pathHasBuiltin(path))
+        continue;
+      if (seen.count(normPath(path)))
+        continue;
+      try {
+        fn(pathToUri(path), readFile(path));
+      } catch (...) {
+      }
+    }
+  }
+
+  std::map<std::string, std::vector<IdentHit>>
+  collectRefHits(const IdentAt &ident, bool skipBuiltin) const {
+    std::map<std::string, std::vector<IdentHit>> out;
+    forEachRg(
+        [&](const std::string &uri, const std::string &text) {
+          std::vector<IdentHit> hits;
+          for (const auto &h : identHits(text, ident.name)) {
+            if (hitMatchesCursor(ident, h))
+              hits.push_back(h);
+          }
+          if (!hits.empty())
+            out[uri] = std::move(hits);
+        },
+        skipBuiltin);
+    return out;
+  }
+
   Json hover(const Json &params) {
     const Json *td = params.getObj("textDocument");
     const Json *position = params.getObj("position");
@@ -1196,6 +2024,22 @@ struct Server {
       s.name = ident.name;
       s.kind = "fn";
       s.detail = "process." + ident.name;
+      return hoverPayload(s, &ident);
+    }
+    if (ident.qualifier == "io" || ident.qualifier == "time" ||
+        ident.qualifier == "path" || ident.qualifier == "math" ||
+        ident.qualifier == "str" || ident.qualifier == "json" ||
+        ident.qualifier == "std") {
+      NavSymbol s;
+      s.name = ident.name;
+      s.kind = "fn";
+      s.detail = ident.qualifier + "." + ident.name;
+      if (ident.name == "read_text" || ident.name == "read_lines" ||
+          ident.name == "write_text" || ident.name == "parse")
+        s.throws = true;
+      if (ident.name == "read_text" || ident.name == "read_lines" ||
+          ident.name == "write_text" || ident.name == "parse")
+        s.detail += " throws";
       return hoverPayload(s, &ident);
     }
     for (const auto &b : kBuiltins) {
@@ -1240,6 +2084,106 @@ struct Server {
     for (const auto &s : symbols()) {
       if (s.name == ident.name)
         arr.a.push_back(locationPayload(s));
+    }
+    if (arr.a.empty())
+      return Json::null();
+    return arr;
+  }
+
+  Json signatureHelp(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *position = params.getObj("position");
+    if (!td || !position)
+      return Json::null();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    CallSite site;
+    if (!callSiteAt(text, jsonInt(position, "line"),
+                    jsonInt(position, "character"), site))
+      return Json::null();
+    const NavSymbol *hit = nullptr;
+    for (const auto &s : symbols()) {
+      if (s.name != site.name || s.kind != "fn")
+        continue;
+      if (!site.qualifier.empty() &&
+          s.detail.find(site.qualifier) == std::string::npos &&
+          s.uri.find(site.qualifier) == std::string::npos)
+        continue;
+      hit = &s;
+      if (s.uri == uri)
+        break;
+    }
+    std::string label = site.name + "(";
+    Json parr = Json::array();
+    std::vector<std::string> ps;
+    bool throws = false;
+    std::string doc;
+    if (hit) {
+      ps = hit->params;
+      throws = hit->throws;
+      doc = hit->doc;
+    } else if (site.name == "print") {
+      ps = {"..."};
+    } else if (site.name == "len") {
+      ps = {"xs"};
+    } else if (site.name == "assert") {
+      ps = {"cond"};
+    }
+    for (size_t i = 0; i < ps.size(); ++i) {
+      if (i)
+        label += ", ";
+      label += ps[i];
+      Json p = Json::object();
+      p.set("label", Json::str(ps[i]));
+      parr.a.push_back(std::move(p));
+    }
+    label += ")";
+    if (throws)
+      label += " throws";
+    Json sig = Json::object();
+    sig.set("label", Json::str(label));
+    sig.set("parameters", std::move(parr));
+    if (!doc.empty()) {
+      Json d = Json::object();
+      d.set("kind", Json::str("markdown"));
+      d.set("value", Json::str(doc));
+      sig.set("documentation", std::move(d));
+    }
+    Json sigs = Json::array();
+    sigs.a.push_back(std::move(sig));
+    Json help = Json::object();
+    help.set("signatures", std::move(sigs));
+    help.set("activeSignature", Json::num(0));
+    int active = site.activeParam;
+    if (active < 0)
+      active = 0;
+    if (!ps.empty() && active >= static_cast<int>(ps.size()))
+      active = static_cast<int>(ps.size()) - 1;
+    help.set("activeParameter", Json::num(active));
+    return help;
+  }
+
+  Json references(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *position = params.getObj("position");
+    if (!td || !position)
+      return Json::null();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    IdentAt ident;
+    if (!identAt(text, jsonInt(position, "line"),
+                 jsonInt(position, "character"), ident))
+      return Json::null();
+    Json arr = Json::array();
+    for (const auto &kv : collectRefHits(ident, false)) {
+      for (const auto &h : kv.second) {
+        NavSymbol s;
+        s.name = ident.name;
+        s.uri = kv.first;
+        s.line = h.line;
+        s.col = h.col;
+        arr.a.push_back(locationPayload(s));
+      }
     }
     if (arr.a.empty())
       return Json::null();
@@ -1326,6 +2270,13 @@ struct Server {
         items.a.push_back(
             completionItem("vec", 9, "std.vec", "Vec2 / Vec3", "vec"));
         items.a.push_back(
+            completionItem("time", 9, "std.time", "now / sleep", "time"));
+        items.a.push_back(
+            completionItem("path", 9, "std.path", "join / parent / stem",
+                           "path"));
+        items.a.push_back(
+            completionItem("json", 9, "std.json", "parse / stringify", "json"));
+        items.a.push_back(
             completionItem("v4", 3, "std.v4()", "Random UUID v4", "v4()"));
         items.a.push_back(
             completionItem("nil", 3, "std.nil()", "All-zero UUID", "nil()"));
@@ -1396,6 +2347,30 @@ struct Server {
         items.a.push_back(completionItem(
             "write_text", 2, "io.write_text(path, content) throws", "",
             "write_text($1, $2)"));
+      } else if (recv == "time") {
+        items.a.push_back(
+            completionItem("now", 2, "time.now()", "Unix epoch milliseconds",
+                           "now()"));
+        items.a.push_back(completionItem(
+            "sleep", 2, "time.sleep(ms)", "Sleep milliseconds", "sleep($0)"));
+      } else if (recv == "path") {
+        items.a.push_back(completionItem(
+            "join", 2, "path.join(a, b)", "Join path segments", "join($1, $2)"));
+        items.a.push_back(completionItem(
+            "parent", 2, "path.parent(p)", "Parent directory", "parent($0)"));
+        items.a.push_back(
+            completionItem("stem", 2, "path.stem(p)", "Filename without extension",
+                           "stem($0)"));
+      } else if (recv == "json") {
+        items.a.push_back(completionItem(
+            "parse", 2, "json.parse(s) throws", "Parse JSON to Map/Array/value",
+            "parse($0)"));
+        items.a.push_back(completionItem(
+            "stringify", 2, "json.stringify(v)", "Encode a value as JSON",
+            "stringify($0)"));
+        items.a.push_back(completionItem(
+            "valid", 2, "json.valid(s)", "True if s is JSON this crate can parse",
+            "valid($0)"));
       } else if (recv == "vec") {
         items.a.push_back(
             completionItem("Vec2", 7, "class Vec2", "Vec2 { x, y }", "Vec2"));
@@ -1425,6 +2400,10 @@ struct Server {
                                              "connect($0)"));
             items.a.push_back(completionItem(
                 "emit", 2, recv + ".emit()", s.doc, fnSnippet("emit", s.params)));
+            items.a.push_back(completionItem(
+                "emit_deferred", 2, recv + ".emit_deferred()",
+                "Queue emit until the current function returns",
+                fnSnippet("emit_deferred", s.params)));
             items.a.push_back(completionItem("disconnect", 2,
                                              recv + ".disconnect(fn)", s.doc,
                                              "disconnect($0)"));
@@ -1468,6 +2447,366 @@ struct Server {
     list.set("isIncomplete", Json::boolean(false));
     list.set("items", std::move(items));
     return list;
+  }
+
+  Json documentSymbols(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<NavSymbol> syms;
+    collectFromSource(text, uri, syms);
+    const int n = static_cast<int>(syms.size());
+    std::vector<int> parent(static_cast<size_t>(n), -1);
+    auto contains = [&](int outer, int inner) {
+      if (outer == inner)
+        return false;
+      if (!canOutlineParent(syms[static_cast<size_t>(outer)].kind))
+        return false;
+      const NavSymbol &a = syms[static_cast<size_t>(outer)];
+      const NavSymbol &b = syms[static_cast<size_t>(inner)];
+      if (b.line < a.line || b.line > a.endLine)
+        return false;
+      if (b.line == a.line && b.col < a.col)
+        return false;
+      if (b.line == a.endLine && b.col > a.endCol)
+        return false;
+      return true;
+    };
+    for (int i = 0; i < n; ++i) {
+      int best = -1;
+      for (int j = 0; j < n; ++j) {
+        if (!contains(j, i))
+          continue;
+        if (best < 0 || contains(best, j))
+          best = j;
+      }
+      parent[static_cast<size_t>(i)] = best;
+    }
+    std::function<Json(int)> emit = [&](int i) -> Json {
+      Json kids = Json::array();
+      for (int c = 0; c < n; ++c) {
+        if (parent[static_cast<size_t>(c)] == i)
+          kids.a.push_back(emit(c));
+      }
+      const NavSymbol &s = syms[static_cast<size_t>(i)];
+      Json o = Json::object();
+      o.set("name", Json::str(s.name));
+      o.set("detail", Json::str(s.kind));
+      o.set("kind", Json::num(lspSymbolKind(s.kind)));
+      o.set("range", lspRange(s.line, s.col, s.endLine, s.endCol));
+      o.set("selectionRange",
+            lspRange(s.line, s.col, s.line,
+                     s.col + static_cast<int>(s.name.size())));
+      if (!kids.a.empty())
+        o.set("children", std::move(kids));
+      if (s.deprecated) {
+        Json tags = Json::array();
+        tags.a.push_back(Json::num(1));
+        o.set("tags", std::move(tags));
+      }
+      return o;
+    };
+    Json arr = Json::array();
+    for (int i = 0; i < n; ++i) {
+      if (parent[static_cast<size_t>(i)] < 0)
+        arr.a.push_back(emit(i));
+    }
+    return arr;
+  }
+
+  Json documentHighlight(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *position = params.getObj("position");
+    if (!td || !position)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    IdentAt ident;
+    if (!identAt(text, jsonInt(position, "line"),
+                 jsonInt(position, "character"), ident))
+      return Json::array();
+    Json arr = Json::array();
+    for (const auto &h : identHits(text, ident.name)) {
+      if (!hitMatchesCursor(ident, h))
+        continue;
+      Json item = Json::object();
+      item.set("range", lspRange(h.line, h.col, h.line, h.endCol));
+      item.set("kind", Json::num(h.isWrite ? 3 : 2));
+      arr.a.push_back(std::move(item));
+    }
+    return arr;
+  }
+
+  Json prepareRename(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *position = params.getObj("position");
+    if (!td || !position)
+      return Json::null();
+    const std::string text = docText(td->getStr("uri"));
+    IdentAt ident;
+    if (!identAt(text, jsonInt(position, "line"),
+                 jsonInt(position, "character"), ident))
+      return Json::null();
+    if (isKeywordName(ident.name))
+      return Json::null();
+    return lspRange(ident.line, ident.col, ident.line, ident.endCol);
+  }
+
+  Json rename(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *position = params.getObj("position");
+    if (!td || !position)
+      return Json::null();
+    const std::string newName = params.getStr("newName");
+    if (!isIdentName(newName) || isKeywordName(newName))
+      return Json::null();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    IdentAt ident;
+    if (!identAt(text, jsonInt(position, "line"),
+                 jsonInt(position, "character"), ident))
+      return Json::null();
+    if (ident.name == newName)
+      return Json::null();
+    if (isKeywordName(ident.name))
+      return Json::null();
+    const bool skipBuiltin = !pathHasBuiltin(uriToPath(uri));
+    auto hits = collectRefHits(ident, skipBuiltin);
+    if (hits.empty())
+      return Json::null();
+    return workspaceEditFromHits(hits, newName);
+  }
+
+  Json codeLens(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<NavSymbol> all;
+    collectFromSource(text, uri, all);
+    std::vector<NavSymbol> containers;
+    for (const auto &s : all) {
+      if (canOutlineParent(s.kind))
+        containers.push_back(s);
+    }
+    auto nested = [&](const NavSymbol &s) {
+      for (const auto &c : containers) {
+        if (s.line < c.line || s.line > c.endLine)
+          continue;
+        if (s.line == c.line && s.col < c.col)
+          continue;
+        if (s.line == c.endLine && s.col > c.endCol)
+          continue;
+        if (s.line != c.line || s.col != c.col)
+          return true;
+      }
+      return false;
+    };
+    Json arr = Json::array();
+    for (const auto &s : all) {
+      if (s.kind != "fn" || nested(s))
+        continue;
+      const bool runMain = s.name == "main";
+      const bool runTest = s.isTest;
+      if (!runMain && !runTest)
+        continue;
+      Json cmd = Json::object();
+      cmd.set("title", Json::str(runTest ? "Run Test" : "Run"));
+      cmd.set("command",
+              Json::str(runTest ? "rosegoldc.testFile" : "rosegoldc.runFile"));
+      Json args = Json::array();
+      args.a.push_back(Json::str(uri));
+      cmd.set("arguments", std::move(args));
+      Json lens = Json::object();
+      lens.set("range", lspRange(s.line, s.col, s.line,
+                                 s.col + static_cast<int>(s.name.size())));
+      lens.set("command", std::move(cmd));
+      arr.a.push_back(std::move(lens));
+    }
+    return arr;
+  }
+
+  Json codeAction(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    const Json *range = params.getObj("range");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    int sl = 0, sc = 0, el = 0, ec = 0;
+    if (range) {
+      const Json *start = range->getObj("start");
+      const Json *end = range->getObj("end");
+      sl = jsonInt(start, "line");
+      sc = jsonInt(start, "character");
+      el = jsonInt(end, "line", sl);
+      ec = jsonInt(end, "character", sc);
+    }
+    auto diags = checkSource(text, uriToPath(uri));
+    std::vector<Diagnostic> hit;
+    for (const auto &d : diags) {
+      int dsl = 0, dsc = 0, del = 0, dec = 0;
+      tokenRange(text, d.line, d.col, dsl, dsc, del, dec);
+      bool keep = rangesOverlap(dsl, dsc, del, dec, sl, sc, el, ec) ||
+                  (d.line > 0 && d.line - 1 >= sl && d.line - 1 <= el);
+      if (!keep && d.message.find(" is missing '") != std::string::npos &&
+          d.message.find(" for trait '") != std::string::npos) {
+        auto qs = quotedIdents(d.message);
+        if (!qs.empty() && typeBodyContains(text, qs[0], sl, sc))
+          keep = true;
+      }
+      if (!keep && d.message.find("match of ") != std::string::npos &&
+          d.message.find("missing variant") != std::string::npos) {
+        if (matchBodyContains(text, d.line, d.col, sl, sc))
+          keep = true;
+      }
+      if (keep)
+        hit.push_back(d);
+    }
+    Program program;
+    {
+      std::vector<Diagnostic> parseErrs;
+      program = parseSource(text, uriToPath(uri), &parseErrs);
+    }
+    Json actions = Json::array();
+    const std::string nl = lineEnding(text);
+
+    for (const auto &d : hit) {
+      if (d.message.find("requires 'try'") == std::string::npos)
+        continue;
+      Expr call;
+      if (!findCallInProgram(program, d.line, d.col, call))
+        continue;
+      int line = call.line;
+      int col = call.col;
+      leftmostExpr(call, line, col);
+      const int il = line > 0 ? line - 1 : 0;
+      const int ic = col > 0 ? col - 1 : 0;
+      Json edits = Json::array();
+      edits.a.push_back(textEditJson(il, ic, il, ic, "try "));
+      actions.a.push_back(codeActionJson("Wrap with try", "quickfix",
+                                         workspaceEditJson(uri, std::move(edits)),
+                                         true));
+    }
+
+    for (const auto &d : hit) {
+      if (d.message.find("match of ") == std::string::npos ||
+          d.message.find("missing variant") == std::string::npos)
+        continue;
+      const std::string prefix = "match of ";
+      const size_t a = d.message.find(prefix);
+      const size_t b = d.message.find(" is missing", a);
+      if (a == std::string::npos || b == std::string::npos)
+        continue;
+      const std::string enumName =
+          d.message.substr(a + prefix.size(), b - a - prefix.size());
+      const EnumDecl *en = findEnumInProgram(program, enumName);
+      auto missing = quotedIdents(d.message);
+      if (missing.empty())
+        continue;
+      int closeL = 0, closeC = 0;
+      if (!findKeywordClose(text, Tok::Match, d.line, d.col, closeL, closeC))
+        continue;
+      const std::string indent = lineIndent(text, closeL);
+      const std::string inner = indent + "    ";
+      std::string insert;
+      for (const auto &name : missing) {
+        EnumVariant var;
+        var.name = name;
+        if (en) {
+          for (const auto &v : en->variants) {
+            if (v.name == name) {
+              var = v;
+              break;
+            }
+          }
+        }
+        insert += inner + variantArmText(var) + nl;
+      }
+      Json edits = Json::array();
+      edits.a.push_back(textEditJson(closeL, closeC, closeL, closeC, insert));
+      actions.a.push_back(codeActionJson(
+          "Add missing match arms", "quickfix",
+          workspaceEditJson(uri, std::move(edits)), true));
+    }
+
+    struct MissingTrait {
+      std::string typeName;
+      std::string traitName;
+      std::vector<std::string> methods;
+    };
+    std::vector<MissingTrait> missingTraits;
+    auto addMissing = [&](const std::string &typeName,
+                          const std::string &traitName,
+                          const std::string &method) {
+      for (auto &m : missingTraits) {
+        if (m.typeName == typeName && m.traitName == traitName) {
+          if (std::find(m.methods.begin(), m.methods.end(), method) ==
+              m.methods.end())
+            m.methods.push_back(method);
+          return;
+        }
+      }
+      missingTraits.push_back({typeName, traitName, {method}});
+    };
+    for (const auto &d : hit) {
+      const std::string &msg = d.message;
+      if (msg.find(" is missing '") == std::string::npos ||
+          msg.find(" for trait '") == std::string::npos)
+        continue;
+      auto qs = quotedIdents(msg);
+      if (qs.size() < 3)
+        continue;
+      addMissing(qs[0], qs[2], qs[1]);
+    }
+    for (const auto &m : missingTraits) {
+      const TraitDecl *tr = findTraitInProgram(program, m.traitName);
+      int closeL = 0, closeC = 0;
+      if (!findImplForClose(text, m.traitName, m.typeName, closeL, closeC) &&
+          !findTypeBodyClose(text, m.typeName, closeL, closeC))
+        continue;
+      const std::string indent = lineIndent(text, closeL) + "    ";
+      auto methodOf = [&](const std::string &name) -> const TraitMethod * {
+        if (!tr)
+          return nullptr;
+        for (const auto &tm : tr->methods) {
+          if (tm.name == name)
+            return &tm;
+        }
+        return nullptr;
+      };
+      auto stubOne = [&](const std::string &name) {
+        if (const TraitMethod *tm = methodOf(name))
+          return stubTraitMethod(*tm, indent, nl);
+        TraitMethod fake;
+        fake.name = name;
+        fake.params = {"self"};
+        return stubTraitMethod(fake, indent, nl);
+      };
+      if (m.methods.size() > 1) {
+        std::string insert;
+        for (const auto &name : m.methods)
+          insert += stubOne(name);
+        Json edits = Json::array();
+        edits.a.push_back(
+            textEditJson(closeL, closeC, closeL, closeC, insert));
+        actions.a.push_back(codeActionJson(
+            "Implement missing methods for " + m.traitName, "quickfix",
+            workspaceEditJson(uri, std::move(edits)), true));
+      }
+      for (const auto &name : m.methods) {
+        Json edits = Json::array();
+        edits.a.push_back(textEditJson(closeL, closeC, closeL, closeC,
+                                       stubOne(name)));
+        actions.a.push_back(codeActionJson(
+            "Add method '" + name + "'", "quickfix",
+            workspaceEditJson(uri, std::move(edits)), false));
+      }
+    }
+    return actions;
   }
 
   void didOpen(const Json &params) {
@@ -1554,8 +2893,40 @@ struct Server {
       writeResponse(id, definition(p));
       return;
     }
+    if (method == "textDocument/signatureHelp") {
+      writeResponse(id, signatureHelp(p));
+      return;
+    }
+    if (method == "textDocument/references") {
+      writeResponse(id, references(p));
+      return;
+    }
     if (method == "textDocument/completion") {
       writeResponse(id, completion(p));
+      return;
+    }
+    if (method == "textDocument/documentSymbol") {
+      writeResponse(id, documentSymbols(p));
+      return;
+    }
+    if (method == "textDocument/documentHighlight") {
+      writeResponse(id, documentHighlight(p));
+      return;
+    }
+    if (method == "textDocument/prepareRename") {
+      writeResponse(id, prepareRename(p));
+      return;
+    }
+    if (method == "textDocument/rename") {
+      writeResponse(id, rename(p));
+      return;
+    }
+    if (method == "textDocument/codeLens") {
+      writeResponse(id, codeLens(p));
+      return;
+    }
+    if (method == "textDocument/codeAction") {
+      writeResponse(id, codeAction(p));
       return;
     }
     if (isReq)
@@ -1596,12 +2967,166 @@ bool jsonRpcSelfTest() {
     collectFromSource("/// add two numbers\nfn add(a: Int, b: Int): Int {\n    return a + b;\n}\n",
                       "file:///t.rg", syms);
     if (syms.size() != 1 || syms[0].name != "add" || syms[0].kind != "fn" ||
-        syms[0].params.size() != 2 || syms[0].params[0] != "a" ||
+        syms[0].params.size() != 2 || syms[0].params[0] != "a: Int" ||
+        syms[0].params[1] != "b: Int" ||
         syms[0].doc.find("add two") == std::string::npos)
       return false;
     IdentAt ident;
     if (!identAt("fn main(): Int { return add(1, 2); }\n", 0, 24, ident) ||
         ident.name != "add")
+      return false;
+    CallSite site;
+    if (!callSiteAt("add(1, 2)", 0, 7, site) || site.name != "add" ||
+        site.activeParam != 1)
+      return false;
+    std::vector<NavSymbol> boom;
+    collectFromSource("@deprecated\nfn boom() throws {\n    throw \"x\";\n}\n",
+                      "file:///boom.rg", boom);
+    if (boom.size() != 1 || !boom[0].deprecated || !boom[0].throws)
+      return false;
+    Json locs = identLocations("fn add(): Int { return add(); }\n",
+                               "file:///t.rg", "add");
+    if (locs.a.size() < 2)
+      return false;
+    std::vector<NavSymbol> tests;
+    collectFromSource("@test\nfn t() {\n}\nfn main(): Int {\n    return 0;\n}\n",
+                      "file:///t.rg", tests);
+    bool sawTest = false;
+    bool sawMain = false;
+    for (const auto &s : tests) {
+      if (s.name == "t" && s.isTest)
+        sawTest = true;
+      if (s.name == "main" && s.kind == "fn")
+        sawMain = true;
+    }
+    if (!sawTest || !sawMain)
+      return false;
+    if (quotedIdents("type 'Point' is missing 'label' for trait 'Named'")
+            .size() != 3)
+      return false;
+    Server srv;
+    srv.docs["file:///t.rg"] =
+        "struct Point {\n    x: Int;\n    fn mag(): Int { return x; }\n}\nfn "
+        "main(): Int { return 0; }\n";
+    Json p = Json::object();
+    Json td2 = Json::object();
+    td2.set("uri", Json::str("file:///t.rg"));
+    p.set("textDocument", std::move(td2));
+    Json outline = srv.documentSymbols(p);
+    if (outline.a.size() < 2)
+      return false;
+    Json lenses = srv.codeLens(p);
+    bool hasRun = false;
+    for (const auto &l : lenses.a) {
+      const Json *cmd = l.getObj("command");
+      if (cmd && cmd->getStr("title") == "Run")
+        hasRun = true;
+    }
+    if (!hasRun)
+      return false;
+    srv.docs["file:///r.rg"] = "fn add(): Int { return add(); }\n";
+    Json rp = Json::object();
+    Json rtd = Json::object();
+    rtd.set("uri", Json::str("file:///r.rg"));
+    rp.set("textDocument", std::move(rtd));
+    Json posj = Json::object();
+    posj.set("line", Json::num(0));
+    posj.set("character", Json::num(3));
+    rp.set("position", posj);
+    Json hl = srv.documentHighlight(rp);
+    if (hl.a.size() < 2)
+      return false;
+    const Json *hk = hl.a[0].get("kind");
+    if (!hk || !hk->integer || hk->i != 3)
+      return false;
+    rp.set("newName", Json::str("sum"));
+    Json renamed = srv.rename(rp);
+    if (!renamed.getObj("changes") || !renamed.getObj("changes")->get("file:///r.rg"))
+      return false;
+    srv.docs["file:///a.rg"] = "fn add(): Int { return 1; }\n";
+    srv.docs["file:///b.rg"] = "fn main(): Int { return add(); }\n";
+    Json xp = Json::object();
+    Json xtd = Json::object();
+    xtd.set("uri", Json::str("file:///a.rg"));
+    xp.set("textDocument", std::move(xtd));
+    Json xpos = Json::object();
+    xpos.set("line", Json::num(0));
+    xpos.set("character", Json::num(3));
+    xp.set("position", xpos);
+    xp.set("newName", Json::str("sum"));
+    Json xren = srv.rename(xp);
+    const Json *xch = xren.getObj("changes");
+    if (!xch || !xch->get("file:///a.rg") || !xch->get("file:///b.rg"))
+      return false;
+    Json hrefs = srv.references(xp);
+    if (hrefs.a.size() < 2)
+      return false;
+    srv.docs["file:///try.rg"] =
+        "fn boom() throws {\n    throw \"x\";\n}\nfn main(): Int {\n    "
+        "boom();\n    return 0;\n}\n";
+    Json ap = Json::object();
+    Json atd = Json::object();
+    atd.set("uri", Json::str("file:///try.rg"));
+    ap.set("textDocument", std::move(atd));
+    Json ast = Json::object();
+    ast.set("line", Json::num(4));
+    ast.set("character", Json::num(4));
+    Json ar = Json::object();
+    ar.set("start", ast);
+    ar.set("end", ast);
+    ap.set("range", std::move(ar));
+    Json acts = srv.codeAction(ap);
+    bool wrap = false;
+    for (const auto &a : acts.a) {
+      if (a.getStr("title") == "Wrap with try")
+        wrap = true;
+    }
+    if (!wrap)
+      return false;
+    srv.docs["file:///m.rg"] =
+        "enum Color {\n    Red,\n    Green,\n}\nfn main(): Int {\n    var c = "
+        "Color.Red;\n    match c {\n        Red { pass; }\n    }\n    return "
+        "0;\n}\n";
+    Json mp = Json::object();
+    Json mtd = Json::object();
+    mtd.set("uri", Json::str("file:///m.rg"));
+    mp.set("textDocument", std::move(mtd));
+    Json mst = Json::object();
+    mst.set("line", Json::num(6));
+    mst.set("character", Json::num(4));
+    Json mr = Json::object();
+    mr.set("start", mst);
+    mr.set("end", mst);
+    mp.set("range", std::move(mr));
+    Json macts = srv.codeAction(mp);
+    bool fill = false;
+    for (const auto &a : macts.a) {
+      if (a.getStr("title") == "Add missing match arms")
+        fill = true;
+    }
+    if (!fill)
+      return false;
+    srv.docs["file:///tr.rg"] =
+        "trait Named {\n    fn label(self): String;\n}\nclass Point impl Named "
+        "{\n    var x: Int = 0;\n}\nfn main(): Int {\n    return 0;\n}\n";
+    Json tp = Json::object();
+    Json ttd = Json::object();
+    ttd.set("uri", Json::str("file:///tr.rg"));
+    tp.set("textDocument", std::move(ttd));
+    Json tst = Json::object();
+    tst.set("line", Json::num(3));
+    tst.set("character", Json::num(6));
+    Json tr = Json::object();
+    tr.set("start", tst);
+    tr.set("end", tst);
+    tp.set("range", std::move(tr));
+    Json tacts = srv.codeAction(tp);
+    bool stub = false;
+    for (const auto &a : tacts.a) {
+      if (a.getStr("title") == "Add method 'label'")
+        stub = true;
+    }
+    if (!stub)
       return false;
     return true;
   } catch (...) {

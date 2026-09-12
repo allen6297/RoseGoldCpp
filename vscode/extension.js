@@ -88,9 +88,26 @@ async function activeRgFile() {
   return null;
 }
 
-async function runCli(subcommand) {
-  const file = await activeRgFile();
-  if (!file) return;
+async function runCli(subcommand, filePath) {
+  let file = filePath;
+  if (file && typeof file !== "string")
+    file = file.fsPath || (file.toString && file.toString()) || "";
+  if (file && /^file:/i.test(file)) {
+    try {
+      file = vscode.Uri.parse(file).fsPath;
+    } catch (_) {
+      /* keep */
+    }
+  }
+  if (!file) {
+    file = await activeRgFile();
+    if (!file) return;
+  } else {
+    const open = vscode.workspace.textDocuments.find(
+      (d) => d.uri.fsPath === file || d.uri.toString() === String(filePath)
+    );
+    if (open && open.isDirty) await open.save();
+  }
 
   const cli = resolveCli(file);
   const abs = path.isAbsolute(cli) ? cli : cli;
@@ -120,6 +137,7 @@ async function runCli(subcommand) {
     panel: vscode.TaskPanelKind.Dedicated,
     clear: true,
   };
+  task.problemMatchers = ["$rosegoldc", "$rosegoldc-located"];
   await vscode.tasks.executeTask(task);
 }
 
@@ -445,6 +463,59 @@ const hoverProvider = {
   },
 };
 
+const signatureHelpProvider = {
+  async provideSignatureHelp(doc, position) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/signatureHelp", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+    });
+    if (!payload || !payload.signatures) return;
+    const help = new vscode.SignatureHelp();
+    help.activeSignature = payload.activeSignature || 0;
+    help.activeParameter = payload.activeParameter || 0;
+    help.signatures = payload.signatures.map((s) => {
+      const info = new vscode.SignatureInformation(s.label || "");
+      if (s.documentation) {
+        info.documentation =
+          typeof s.documentation === "string"
+            ? s.documentation
+            : new vscode.MarkdownString(
+                (s.documentation && s.documentation.value) || ""
+              );
+      }
+      info.parameters = (s.parameters || []).map(
+        (p) =>
+          new vscode.ParameterInformation(
+            typeof p.label === "string" ? p.label : p.label[0] || ""
+          )
+      );
+      return info;
+    });
+    return help;
+  },
+};
+
+const referenceProvider = {
+  async provideReferences(doc, position, context) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/references", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+      context: {
+        includeDeclaration: !context || context.includeDeclaration !== false,
+      },
+    });
+    if (!payload) return;
+    const locs = Array.isArray(payload) ? payload : [payload];
+    return locs
+      .filter((l) => l && l.uri && l.range)
+      .map(
+        (l) => new vscode.Location(vscode.Uri.parse(l.uri), lspRange(l.range))
+      );
+  },
+};
+
 const completionProvider = {
   async provideCompletionItems(doc, position, token, context) {
     if (!rpc || !rpc.ready) return;
@@ -481,6 +552,156 @@ const completionProvider = {
   },
 };
 
+function lspWorkspaceEdit(edit) {
+  const we = new vscode.WorkspaceEdit();
+  if (!edit || !edit.changes) return we;
+  for (const [uri, edits] of Object.entries(edit.changes)) {
+    const u = vscode.Uri.parse(uri);
+    for (const e of edits || []) {
+      const r = lspRange(e.range);
+      if (r) we.replace(u, r, e.newText || "");
+    }
+  }
+  return we;
+}
+
+function lspDocumentSymbol(s) {
+  const sel = lspRange(s.selectionRange || s.range);
+  const range = lspRange(s.range) || sel;
+  const it = new vscode.DocumentSymbol(
+    s.name,
+    s.detail || "",
+    s.kind == null ? vscode.SymbolKind.Function : s.kind,
+    range,
+    sel || range
+  );
+  it.children = (s.children || []).map(lspDocumentSymbol);
+  return it;
+}
+
+const documentSymbolProvider = {
+  async provideDocumentSymbols(doc) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/documentSymbol", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw.filter((s) => s && s.name).map(lspDocumentSymbol);
+  },
+};
+
+const documentHighlightProvider = {
+  async provideDocumentHighlights(doc, position) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/documentHighlight", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((h) => h && h.range)
+      .map(
+        (h) =>
+          new vscode.DocumentHighlight(
+            lspRange(h.range),
+            h.kind === 3
+              ? vscode.DocumentHighlightKind.Write
+              : h.kind === 2
+                ? vscode.DocumentHighlightKind.Read
+                : vscode.DocumentHighlightKind.Text
+          )
+      );
+  },
+};
+
+const renameProvider = {
+  async prepareRename(doc, position) {
+    if (!rpc || !rpc.ready) throw new Error("Language server not ready");
+    const payload = await request("textDocument/prepareRename", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+    });
+    if (!payload) throw new Error("Cannot rename this symbol");
+    const r = payload.range || payload;
+    const range = lspRange(r);
+    if (!range) throw new Error("Cannot rename this symbol");
+    return payload.placeholder
+      ? { range, placeholder: payload.placeholder }
+      : range;
+  },
+  async provideRenameEdits(doc, position, newName) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/rename", {
+      textDocument: { uri: doc.uri.toString() },
+      position: { line: position.line, character: position.character },
+      newName,
+    });
+    if (!payload) return;
+    return lspWorkspaceEdit(payload);
+  },
+};
+
+const codeActionProvider = {
+  async provideCodeActions(doc, range, context) {
+    if (!rpc || !rpc.ready) return;
+    const diags = ((context && context.diagnostics) || []).map((d) => ({
+      range: {
+        start: { line: d.range.start.line, character: d.range.start.character },
+        end: { line: d.range.end.line, character: d.range.end.character },
+      },
+      message: d.message,
+      severity:
+        d.severity === vscode.DiagnosticSeverity.Warning ? 2 : 1,
+    }));
+    const payload = await request("textDocument/codeAction", {
+      textDocument: { uri: doc.uri.toString() },
+      range: {
+        start: { line: range.start.line, character: range.start.character },
+        end: { line: range.end.line, character: range.end.character },
+      },
+      context: { diagnostics: diags },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((a) => a && a.title && a.edit)
+      .map((a) => {
+        const item = new vscode.CodeAction(
+          a.title,
+          a.kind === "quickfix"
+            ? vscode.CodeActionKind.QuickFix
+            : vscode.CodeActionKind.QuickFix
+        );
+        item.edit = lspWorkspaceEdit(a.edit);
+        item.isPreferred = !!a.isPreferred;
+        return item;
+      });
+  },
+};
+
+const codeLensProvider = {
+  async provideCodeLenses(doc) {
+    if (!rpc || !rpc.ready) return [];
+    const payload = await request("textDocument/codeLens", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+    if (!payload) return [];
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((l) => l && l.range)
+      .map((l) => {
+        const cmd = l.command || {};
+        return new vscode.CodeLens(lspRange(l.range), {
+          title: cmd.title || "Run",
+          command: cmd.command,
+          arguments: cmd.arguments || [doc.uri.toString()],
+        });
+      });
+  },
+};
+
 function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("rosegoldc");
   context.subscriptions.push(diagnostics);
@@ -498,8 +719,12 @@ function activate(context) {
   startLanguageServer();
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("rosegoldc.runFile", () => runCli("run")),
-    vscode.commands.registerCommand("rosegoldc.testFile", () => runCli("test")),
+    vscode.commands.registerCommand("rosegoldc.runFile", (uri) =>
+      runCli("run", uri)
+    ),
+    vscode.commands.registerCommand("rosegoldc.testFile", (uri) =>
+      runCli("test", uri)
+    ),
     vscode.commands.registerCommand("rosegoldc.recheck", () => {
       const ed = vscode.window.activeTextEditor;
       if (ed && ed.document.languageId === "rosegold")
@@ -516,13 +741,35 @@ function activate(context) {
     }),
     vscode.languages.registerDefinitionProvider("rosegold", definitionProvider),
     vscode.languages.registerHoverProvider("rosegold", hoverProvider),
+    vscode.languages.registerSignatureHelpProvider(
+      "rosegold",
+      signatureHelpProvider,
+      "(",
+      ","
+    ),
+    vscode.languages.registerReferenceProvider("rosegold", referenceProvider),
     vscode.languages.registerCompletionItemProvider(
       "rosegold",
       completionProvider,
       ".",
       "@",
       ":"
-    )
+    ),
+    vscode.languages.registerDocumentSymbolProvider(
+      "rosegold",
+      documentSymbolProvider
+    ),
+    vscode.languages.registerDocumentHighlightProvider(
+      "rosegold",
+      documentHighlightProvider
+    ),
+    vscode.languages.registerRenameProvider("rosegold", renameProvider),
+    vscode.languages.registerCodeActionsProvider(
+      "rosegold",
+      codeActionProvider,
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+    ),
+    vscode.languages.registerCodeLensProvider("rosegold", codeLensProvider)
   );
 }
 

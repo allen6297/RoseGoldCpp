@@ -10,7 +10,7 @@ fn read_text(path: String) throws: String {
     return try __io.read_text(path);
 }
 
-fn read_lines(path: String) throws: Array {
+fn read_lines(path: String) throws: Array[String] {
     return try __io.read_lines(path);
 }
 

@@ -102,7 +102,23 @@
     "body": [
       "${1:name}.emit(${0});"
     ],
-    "description": "Fire a signal"
+    "description": "Fire a signal now"
+  },
+  "Emit deferred": {
+    "prefix": "emit_deferred",
+    "body": [
+      "${1:name}.emit_deferred(${0});"
+    ],
+    "description": "Fire a signal after the current function returns"
+  },
+  "Lambda": {
+    "prefix": "lambda",
+    "body": [
+      "fn (${1:args}): ${2:Int} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Anonymous function"
   },
   "Disconnect": {
     "prefix": "disconnect",
@@ -133,6 +149,25 @@
       "}"
     ],
     "description": "Struct declaration"
+  },
+  "Generic struct": {
+    "prefix": "structT",
+    "body": [
+      "struct ${1:Name}[${2:T}] {",
+      "\t${3:value}: ${2:T};",
+      "\t$0",
+      "}"
+    ],
+    "description": "Generic struct"
+  },
+  "Generic function": {
+    "prefix": "fnT",
+    "body": [
+      "fn ${1:name}[${2:T}](${3:x}: ${2:T}): ${2:T} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Generic function"
   },
   "Data": {
     "prefix": "data",
@@ -244,6 +279,15 @@
     ],
     "description": "Trait declaration (signatures only)"
   },
+  "Generic trait": {
+    "prefix": "traitT",
+    "body": [
+      "trait ${1:Name}[${2:T}] {",
+      "\tfn ${3:name}(self): ${2:T};",
+      "}"
+    ],
+    "description": "Generic trait"
+  },
   "Impl": {
     "prefix": "impl",
     "body": [
@@ -254,6 +298,17 @@
       "}"
     ],
     "description": "Impl block for type methods"
+  },
+  "Generic impl": {
+    "prefix": "implT",
+    "body": [
+      "impl[${1:T}] ${2:Trait}[${1:T}] for ${3:Type}[${1:T}] {",
+      "\tfn ${4:name}(self): ${1:T} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Generic impl Trait for Type"
   },
   "Impl trait for": {
     "prefix": "implfor",
@@ -287,7 +342,7 @@
     "body": [
       "import std;"
     ],
-    "description": "Import std (std.math, std.str, std.io, std.vec)"
+    "description": "Import std (std.math, std.str, std.io, std.vec, std.time, std.path, std.json)"
   },
   "Import std.math": {
     "prefix": "importstdmath",
@@ -295,6 +350,27 @@
       "import std.math;"
     ],
     "description": "Import std.math (binds std and math)"
+  },
+  "Import std.time": {
+    "prefix": "importstdtime",
+    "body": [
+      "import std.time;"
+    ],
+    "description": "Import std.time (now, sleep)"
+  },
+  "Import std.path": {
+    "prefix": "importstdpath",
+    "body": [
+      "import std.path;"
+    ],
+    "description": "Import std.path (join, parent, stem)"
+  },
+  "Import std.json": {
+    "prefix": "importstdjson",
+    "body": [
+      "import std.json;"
+    ],
+    "description": "Import std.json (parse, stringify, valid)"
   },
   "From import": {
     "prefix": "from",

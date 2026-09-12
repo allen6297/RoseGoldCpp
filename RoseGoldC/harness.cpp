@@ -428,6 +428,17 @@ static void appendCheckSelfTest(RunResult &result) {
             d.empty() ? "no diagnostic"
                       : std::to_string(d.size()) + " diags: " + d[0].message);
   }
+  if (fs::is_regular_file("tests/fail/match_multi.rg", ec)) {
+    auto d = checkFile("tests/fail/match_multi.rg");
+    int n = 0;
+    for (const auto &x : d) {
+      if (x.message.find("missing variant") != std::string::npos)
+        ++n;
+    }
+    require(n >= 2, "match_multi",
+            d.empty() ? "no diagnostic"
+                      : std::to_string(d.size()) + " diags: " + d[0].message);
+  }
   require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
 }
 

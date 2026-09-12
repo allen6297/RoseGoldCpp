@@ -34,7 +34,7 @@ std::string Value::toString() const {
   case Kind::String:
     return s;
   case Kind::FnRef:
-    return s;
+    return clo ? "<fn>" : s;
   case Kind::Struct: {
     if (!rec)
       return "{}";
@@ -96,6 +96,10 @@ std::string Value::toString() const {
     out += ")";
     return out;
   }
+  case Kind::SignalRef:
+    if (rec)
+      return rec->name + "." + s;
+    return s;
   }
   return "";
 }
@@ -117,6 +121,7 @@ bool Value::truthy() const {
   case Kind::Range:
   case Kind::EnumType:
   case Kind::Enum:
+  case Kind::SignalRef:
     return true;
   default:
     return false;
@@ -151,7 +156,10 @@ bool Value::equals(const Value &other) const {
   case Kind::Float:
     return numericEq(real, other.real);
   case Kind::String:
+    return s == other.s;
   case Kind::FnRef:
+    if (clo || other.clo)
+      return clo.get() == other.clo.get();
     return s == other.s;
   case Kind::Struct: {
     if (rec == other.rec)
@@ -214,6 +222,8 @@ bool Value::equals(const Value &other) const {
     }
     return true;
   }
+  case Kind::SignalRef:
+    return s == other.s && rec == other.rec;
   }
   return false;
 }

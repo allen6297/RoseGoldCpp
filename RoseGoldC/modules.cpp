@@ -55,7 +55,9 @@ void Interpreter::ingestEntry() {
     for (const auto &m : st.methods)
       typeMethods[st.name][m.name] = &m;
     for (const auto &t : st.implTraits)
-      recordTypeTrait(st.name, t);
+      recordTraitImpl(selfApplied(st.name, st.typeParams), t, st.typeParams,
+                      st.line);
+    registerTypeSignals(st.name, st.signals, file);
   }
   ingestClasses(nullptr, program.classes, false, "", file);
   ingestTraits(program.traits, file);
@@ -267,7 +269,9 @@ void Interpreter::ingestStructs(LoadedMod &m, std::vector<structDecl> &items, bo
     for (const auto &method : st.methods)
       typeMethods[st.name][method.name] = &method;
     for (const auto &t : st.implTraits)
-      recordTypeTrait(st.name, t);
+      recordTraitImpl(selfApplied(st.name, st.typeParams), t, st.typeParams,
+                      st.line);
+    registerTypeSignals(st.name, st.signals, atFile);
     if (!fromMod || st.isPub) {
       m.exportStructs[st.name] = &st;
       if (structs.count(st.name))
@@ -288,6 +292,7 @@ void Interpreter::ingestTraits(std::vector<TraitDecl> &items, const std::string 
       continue;
     }
     traits[t.name] = &t;
+    registerTypeSignals(t.name, t.signals, atFile);
   }
 }
 
@@ -320,9 +325,97 @@ void Interpreter::ingestEnums(LoadedMod *m, std::vector<EnumDecl> &items, bool f
 
 void Interpreter::recordTypeTrait(const std::string &typeName,
                      const std::string &traitName) {
-  auto &list = typeTraits[typeName];
+  auto &list = typeTraits[typeHead(typeName)];
   if (std::find(list.begin(), list.end(), traitName) == list.end())
     list.push_back(traitName);
+}
+
+void Interpreter::recordTraitImpl(const std::string &typeName,
+                                  const std::string &traitName,
+                                  const std::vector<TypeParam> &params,
+                                  int line) {
+  recordTypeTrait(typeName, traitName);
+  TraitImplInfo info;
+  info.typeParams = params;
+  info.typeName = typeName;
+  info.traitName = traitName;
+  info.line = line;
+  traitImpls.push_back(std::move(info));
+}
+
+void Interpreter::registerTypeSignals(const std::string &typeName,
+                                      const std::vector<SignalDecl> &sigs,
+                                      const std::string &atFile) {
+  const structDecl *st = nullptr;
+  auto tit = allTypes.find(typeName);
+  if (tit != allTypes.end())
+    st = tit->second;
+  auto mit = typeMethods.find(typeName);
+  for (const auto &sig : sigs) {
+    if (st) {
+      for (const auto &f : st->fields) {
+        if (f == sig.name)
+          loadFail(atFile,
+                   "signal '" + sig.name + "' conflicts with field '" +
+                       sig.name + "' on " + typeName,
+                   sig.line, 1);
+      }
+    }
+    if (mit != typeMethods.end() && mit->second.count(sig.name))
+      loadFail(atFile,
+               "signal '" + sig.name + "' conflicts with method '" +
+                   sig.name + "' on " + typeName,
+               sig.line, 1);
+    auto &slot = typeSignals[typeName];
+    if (slot.count(sig.name)) {
+      loadFail(atFile, "duplicate signal '" + sig.name + "' on " + typeName,
+               sig.line, 1);
+      continue;
+    }
+    slot[sig.name] = sig.params.size();
+  }
+}
+
+std::optional<std::size_t>
+Interpreter::lookupTypeSignal(const std::string &typeName,
+                              const std::string &name) const {
+  std::string current = typeHead(typeName);
+  std::set<std::string> seen;
+  while (!current.empty()) {
+    if (!seen.insert(current).second)
+      break;
+    auto it = typeSignals.find(current);
+    if (it != typeSignals.end()) {
+      auto sit = it->second.find(name);
+      if (sit != it->second.end())
+        return sit->second;
+    }
+    auto pit = classParents.find(current);
+    if (pit == classParents.end())
+      break;
+    current = typeHead(pit->second);
+  }
+  return std::nullopt;
+}
+
+void Interpreter::initInstanceSignals(StructData &data) const {
+  std::string current = data.name;
+  std::set<std::string> seen;
+  while (!current.empty()) {
+    if (!seen.insert(current).second)
+      break;
+    auto it = typeSignals.find(current);
+    if (it != typeSignals.end()) {
+      for (const auto &kv : it->second) {
+        if (!data.listeners.count(kv.first))
+          data.listeners[kv.first] = {};
+      }
+    }
+    auto pit = classParents.find(current);
+    if (pit == classParents.end())
+      break;
+    current = typeHead(pit->second);
+  }
 }
 
 void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, bool fromMod,
@@ -331,6 +424,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
     c.shape.name = c.name;
     c.shape.isPub = c.isPub;
     c.shape.line = c.line;
+    c.shape.typeParams = c.typeParams;
     c.shape.fields.clear();
     c.shape.fieldTypes.clear();
     c.shape.fieldOptional.clear();
@@ -375,7 +469,11 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
       slot[method.name] = &method;
     }
     for (auto &block : c.traitImpls) {
-      recordTypeTrait(c.name, block.traitName);
+      std::vector<TypeParam> params = c.typeParams;
+      params.insert(params.end(), block.typeParams.begin(),
+                    block.typeParams.end());
+      recordTraitImpl(selfApplied(c.name, c.typeParams), block.traitName,
+                      params, c.line);
       for (auto &method : block.methods) {
         if (slot.count(method.name))
           loadFail(atFile,
@@ -385,7 +483,10 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
       }
     }
     for (const auto &t : c.implTraits)
-      recordTypeTrait(c.name, t);
+      recordTraitImpl(selfApplied(c.name, c.typeParams), t, c.typeParams,
+                      c.line);
+    c.shape.signals = c.signals;
+    registerTypeSignals(c.name, c.signals, atFile);
     if (!m || !fromMod || c.isPub) {
       if (m)
         m->exportStructs[c.name] = &c.shape;
@@ -398,26 +499,31 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
 
 void Interpreter::ingestImpls(std::vector<ImplDecl> &impls, const std::string &atFile) {
   for (auto &im : impls) {
-    auto &slot = typeMethods[im.typeName];
+    const std::string head = typeHead(im.typeName);
+    auto &slot = typeMethods[head];
     const structDecl *st = nullptr;
-    auto git = allTypes.find(im.typeName);
+    auto git = allTypes.find(head);
     if (git != allTypes.end())
       st = git->second;
     else {
-      auto sit = structs.find(im.typeName);
+      auto sit = structs.find(head);
       if (sit != structs.end())
         st = sit->second;
     }
     if (!st) {
-      loadFail(atFile, "undefined struct '" + im.typeName + "'", im.line, 1);
+      loadFail(atFile, "undefined struct '" + head + "'", im.line, 1);
       continue;
     }
     if (!im.traitName.empty()) {
-      if (!traits.count(im.traitName))
-        loadFail(atFile, "undefined trait '" + im.traitName + "'", im.line,
-                  1);
-      else
-        recordTypeTrait(im.typeName, im.traitName);
+      if (!traits.count(typeHead(im.traitName)))
+        loadFail(atFile, "undefined trait '" + typeHead(im.traitName) + "'",
+                  im.line, 1);
+      else {
+        std::vector<TypeParam> params = im.typeParams;
+        if (params.empty())
+          params = st->typeParams;
+        recordTraitImpl(im.typeName, im.traitName, params, im.line);
+      }
     }
     for (auto &method : im.methods) {
       if (st) {
@@ -425,15 +531,15 @@ void Interpreter::ingestImpls(std::vector<ImplDecl> &impls, const std::string &a
           if (fld == method.name)
             loadFail(atFile,
                       "method '" + method.name + "' conflicts with field '" +
-                          method.name + "' on " + im.typeName,
+                          method.name + "' on " + head,
                       method.line, 1);
         }
       }
       if (slot.count(method.name))
         loadFail(atFile,
-                  "duplicate method '" + method.name + "' on " + im.typeName,
+                  "duplicate method '" + method.name + "' on " + head,
                   method.line, 1);
-      if (method.vis == Vis::Protected && !classAbstract.count(im.typeName))
+      if (method.vis == Vis::Protected && !classAbstract.count(head))
         loadFail(atFile,
                  std::string("protected cannot apply to ") +
                      (st && st->isData ? "data" : "struct") + " method",
@@ -463,14 +569,16 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
     done.insert(name);
     return;
   }
-  const std::string &parent = pit->second;
+  const std::string parentApplied = pit->second;
+  const std::string parent = typeHead(parentApplied);
   if (!allTypes.count(parent)) {
     if (typeMethods.count(parent)) {
       done.insert(name);
       return;
     }
     loadFail(file,
-             "class '" + name + "' extends unknown type '" + parent + "'",
+             "class '" + name + "' extends unknown type '" + parentApplied +
+                 "'",
              typeLine(), 1);
     return;
   }
@@ -485,9 +593,15 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
   stack.pop_back();
   structDecl *child = const_cast<structDecl *>(allTypes[name]);
   const structDecl *parentDef = allTypes[parent];
+  const auto env =
+      typeEnvFrom(parentDef->typeParams, typeArgList(parentApplied));
   std::vector<std::string> fields = parentDef->fields;
   std::vector<std::string> types = parentDef->fieldTypes;
   std::vector<char> opts = parentDef->fieldOptional;
+  types.resize(fields.size());
+  opts.resize(fields.size());
+  for (auto &ty : types)
+    ty = substType(ty, env);
   types.resize(fields.size());
   opts.resize(fields.size());
   for (size_t i = 0; i < child->fields.size(); ++i) {
@@ -528,7 +642,7 @@ void Interpreter::applyInheritance() {
 
 std::pair<std::string, const FnDecl *>
 Interpreter::lookupMethod(const std::string &typeName, const std::string &name) const {
-  std::string current = typeName;
+  std::string current = typeHead(typeName);
   std::set<std::string> seen;
   while (!current.empty()) {
     if (!seen.insert(current).second)
@@ -542,7 +656,7 @@ Interpreter::lookupMethod(const std::string &typeName, const std::string &name) 
     auto pit = classParents.find(current);
     if (pit == classParents.end())
       break;
-    current = pit->second;
+    current = typeHead(pit->second);
   }
   return {"", nullptr};
 }
@@ -562,7 +676,7 @@ void Interpreter::recordFieldAccess(const std::string &typeName,
 std::pair<std::string, Vis>
 Interpreter::lookupField(const std::string &typeName,
                          const std::string &name) const {
-  std::string current = typeName;
+  std::string current = typeHead(typeName);
   std::set<std::string> seen;
   while (!current.empty()) {
     if (!seen.insert(current).second)
@@ -576,7 +690,7 @@ Interpreter::lookupField(const std::string &typeName,
     auto pit = classParents.find(current);
     if (pit == classParents.end())
       break;
-    current = pit->second;
+    current = typeHead(pit->second);
   }
   return {"", Vis::Pub};
 }
@@ -588,10 +702,25 @@ void Interpreter::checkTraitImpls() {
     if (titType != allTypes.end() && titType->second)
       typeLine = titType->second->line;
     for (const auto &traitName : kv.second) {
-      auto tit = traits.find(traitName);
+      auto tit = traits.find(typeHead(traitName));
       if (tit == traits.end()) {
-        loadFail(file, "undefined trait '" + traitName + "'", typeLine, 1);
+        loadFail(file, "undefined trait '" + typeHead(traitName) + "'",
+                 typeLine, 1);
         continue;
+      }
+      const auto targs = typeArgList(traitName);
+      if (!targs.empty()) {
+        if (tit->second->typeParams.empty())
+          loadFail(file,
+                   "'" + typeHead(traitName) + "' does not take type arguments",
+                   typeLine, 1);
+        else if (targs.size() != tit->second->typeParams.size())
+          loadFail(file,
+                   "'" + typeHead(traitName) + "' expected " +
+                       std::to_string(tit->second->typeParams.size()) +
+                       " type argument(s), got " +
+                       std::to_string(targs.size()),
+                   typeLine, 1);
       }
       for (const auto &m : tit->second->methods) {
         if (!lookupMethod(kv.first, m.name).second)
@@ -613,11 +742,11 @@ void Interpreter::checkAbstractFinal() {
   };
 
   for (const auto &kv : classParents) {
-    auto fit = classFinal.find(kv.second);
+    auto fit = classFinal.find(typeHead(kv.second));
     if (fit != classFinal.end() && fit->second)
       loadFail(file,
-               "class '" + kv.first + "' extends final class '" + kv.second +
-                   "'",
+               "class '" + kv.first + "' extends final class '" +
+                   typeHead(kv.second) + "'",
                typeLine(kv.first), 1);
   }
 
@@ -646,7 +775,7 @@ void Interpreter::checkAbstractFinal() {
                    m.second->line, 1);
 
         std::string current =
-            classParents.count(name) ? classParents[name] : "";
+            classParents.count(name) ? typeHead(classParents[name]) : "";
         std::set<std::string> walked;
         while (!current.empty() && walked.insert(current).second) {
           auto tmit = typeMethods.find(current);
@@ -663,7 +792,7 @@ void Interpreter::checkAbstractFinal() {
           auto pit = classParents.find(current);
           if (pit == classParents.end())
             break;
-          current = pit->second;
+          current = typeHead(pit->second);
         }
       }
     }
@@ -690,25 +819,49 @@ void Interpreter::checkAbstractFinal() {
       auto pit = classParents.find(current);
       if (pit == classParents.end())
         break;
-      current = pit->second;
+      current = typeHead(pit->second);
     }
   }
 }
 
 void Interpreter::bindTraitSignals() {
   for (const auto &kv : typeTraits) {
+    int typeLine = 1;
+    auto titType = allTypes.find(kv.first);
+    if (titType != allTypes.end() && titType->second)
+      typeLine = titType->second->line;
     for (const auto &traitName : kv.second) {
-      auto tit = traits.find(traitName);
+      auto tit = traits.find(typeHead(traitName));
       if (tit == traits.end())
         continue;
       for (const auto &sig : tit->second->signals) {
-        if (signalArity.count(sig.name))
+        auto &slot = typeSignals[kv.first];
+        if (slot.count(sig.name)) {
+          if (slot[sig.name] != sig.params.size())
+            loadFail(file,
+                     "signal '" + sig.name + "' on " + kv.first +
+                         " conflicts with trait '" + traitName + "'",
+                     sig.line, 1);
           continue;
-        if (fns.count(sig.name) || structs.count(sig.name) ||
-            allTypes.count(sig.name))
-          continue;
-        signalArity[sig.name] = sig.params.size();
-        listeners[sig.name] = {};
+        }
+        auto mit = typeMethods.find(kv.first);
+        if (mit != typeMethods.end() && mit->second.count(sig.name))
+          loadFail(file,
+                   "signal '" + sig.name + "' conflicts with method '" +
+                       sig.name + "' on " + kv.first,
+                   typeLine, 1);
+        const structDecl *st =
+            titType != allTypes.end() ? titType->second : nullptr;
+        if (st) {
+          for (const auto &f : st->fields) {
+            if (f == sig.name)
+              loadFail(file,
+                       "signal '" + sig.name + "' conflicts with field '" +
+                           sig.name + "' on " + kv.first,
+                       typeLine, 1);
+          }
+        }
+        slot[sig.name] = sig.params.size();
       }
     }
   }
@@ -783,7 +936,8 @@ void Interpreter::attachStdlibChildren() {
   auto it = loaded.find("std");
   if (it == loaded.end())
     return;
-  static const char *kids[] = {"math", "str", "io", "vec"};
+  static const char *kids[] = {"math", "str", "io", "vec", "time", "path",
+                               "json"};
   for (const char *kid : kids) {
     const std::string full = std::string("std.") + kid;
     loadModule(full, file, 1, 1);

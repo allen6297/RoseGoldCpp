@@ -2,6 +2,7 @@
 #include "ast.h"
 #include "lexer.h"
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -100,15 +101,75 @@ struct Parser {
   std::string parseType() {
     const Token &name = expect(Tok::Identifier, "expected type name");
     std::string t = name.text;
+    auto wrap = [&](const std::vector<std::string> &args) {
+      if (args.empty())
+        return;
+      t += "[";
+      for (size_t i = 0; i < args.size(); ++i) {
+        if (i)
+          t += ", ";
+        t += args[i];
+      }
+      t += "]";
+    };
     if (match(Tok::LArrow)) {
+      std::vector<std::string> args;
       if (!check(Tok::RArrow)) {
-        do {
-          parseType();
-        } while (match(Tok::Comma));
+        args.push_back(parseType());
+        while (match(Tok::Comma))
+          args.push_back(parseType());
       }
       expect(Tok::RArrow, "expected '>'");
+      wrap(args);
+    } else if (match(Tok::LBracket)) {
+      std::vector<std::string> args;
+      if (!check(Tok::RBracket)) {
+        args.push_back(parseType());
+        while (match(Tok::Comma))
+          args.push_back(parseType());
+      } else
+        errorNote("expected type argument");
+      expect(Tok::RBracket, "expected ']' after type argument");
+      wrap(args);
     }
     return t;
+  }
+
+  std::vector<TypeParam> parseTypeParams() {
+    if (!check(Tok::LBracket) && !check(Tok::LArrow))
+      return {};
+    const bool angle = match(Tok::LArrow);
+    if (!angle)
+      expect(Tok::LBracket, "expected '['");
+    std::vector<TypeParam> out;
+    if ((angle && check(Tok::RArrow)) || (!angle && check(Tok::RBracket))) {
+      errorNote("expected type parameter");
+      if (angle)
+        expect(Tok::RArrow, "expected '>'");
+      else
+        expect(Tok::RBracket, "expected ']'");
+      return out;
+    }
+    do {
+      const Token &name = expect(Tok::Identifier, "expected type parameter");
+      TypeParam p;
+      p.name = name.text;
+      if (match(Tok::Colon)) {
+        p.bounds.push_back(parseType());
+        while (match(Tok::Plus))
+          p.bounds.push_back(parseType());
+      }
+      for (const auto &prev : out) {
+        if (prev.name == p.name)
+          errorNote("duplicate type parameter '" + p.name + "'");
+      }
+      out.push_back(std::move(p));
+    } while (match(Tok::Comma));
+    if (angle)
+      expect(Tok::RArrow, "expected '>' after type parameters");
+    else
+      expect(Tok::RBracket, "expected ']' after type parameters");
+    return out;
   }
 
   std::string parseOptionalType() {
@@ -197,7 +258,50 @@ struct Parser {
       expect(Tok::RBrace, "expected '}' after map");
       return e;
     }
+    if (check(Tok::Function) && i + 1 < tokens.size()) {
+      const Tok n = tokens[i + 1].kind;
+      if (n == Tok::LParen || n == Tok::LBracket || n == Tok::LArrow)
+        return parseLambda();
+    }
     errorHere("expected expression");
+  }
+
+  bool looksLikeGenericApply() const {
+    if (!check(Tok::LBracket) || i + 1 >= tokens.size())
+      return false;
+    if (tokens[i + 1].kind != Tok::Identifier)
+      return false;
+    size_t j = i + 1;
+    int depth = 1;
+    ++j;
+    while (j < tokens.size() && depth > 0) {
+      const Tok k = tokens[j].kind;
+      if (k == Tok::LBracket)
+        ++depth;
+      else if (k == Tok::RBracket)
+        --depth;
+      else if (k != Tok::Identifier && k != Tok::Comma && k != Tok::LArrow &&
+               k != Tok::RArrow)
+        return false;
+      ++j;
+    }
+    if (depth != 0 || j >= tokens.size())
+      return false;
+    return tokens[j].kind == Tok::LBrace || tokens[j].kind == Tok::LParen;
+  }
+
+  std::vector<std::string> parseBracketTypeArgs() {
+    expect(Tok::LBracket, "expected '['");
+    std::vector<std::string> args;
+    if (check(Tok::RBracket))
+      errorNote("expected type argument");
+    else {
+      args.push_back(parseType());
+      while (match(Tok::Comma))
+        args.push_back(parseType());
+    }
+    expect(Tok::RBracket, "expected ']' after type arguments");
+    return args;
   }
 
   bool isStructLitStart() const {
@@ -237,9 +341,13 @@ struct Parser {
     while (true) {
       if (match(Tok::Dot)) {
         const Token &name = expect(Tok::Identifier, "expected name after '.'");
+        std::vector<std::string> targs;
+        if (looksLikeGenericApply())
+          targs = parseBracketTypeArgs();
         if (match(Tok::LParen)) {
           Expr call = make(Expr::Kind::MethodCall, name.line, name.col);
           call.text = name.text;
+          call.typeArgs = std::move(targs);
           call.kids.push_back(std::move(expr));
           if (!check(Tok::RParen)) {
             do {
@@ -248,17 +356,46 @@ struct Parser {
           }
           expect(Tok::RParen, "expected ')'");
           expr = std::move(call);
+        } else if (!targs.empty()) {
+          errorHere("expected '(' after type arguments");
         } else {
           Expr mem = make(Expr::Kind::Member, name.line, name.col);
           mem.text = name.text;
           mem.kids.push_back(std::move(expr));
           expr = std::move(mem);
         }
+      } else if ((expr.kind == Expr::Kind::Var ||
+                  expr.kind == Expr::Kind::Lambda) &&
+                 looksLikeGenericApply()) {
+        std::vector<std::string> args = parseBracketTypeArgs();
+        if (expr.kind == Expr::Kind::Var && isStructLitStart()) {
+          Expr lit = parseStructLit(std::move(expr));
+          lit.typeArgs = std::move(args);
+          expr = std::move(lit);
+        } else if (match(Tok::LParen)) {
+          Expr call = make(Expr::Kind::Call, expr.line, expr.col);
+          call.typeArgs = std::move(args);
+          if (expr.kind == Expr::Kind::Var)
+            call.text = expr.text;
+          else
+            call.kids.push_back(std::move(expr));
+          if (!check(Tok::RParen)) {
+            do {
+              call.kids.push_back(parseExpr());
+            } while (match(Tok::Comma));
+          }
+          expect(Tok::RParen, "expected ')'");
+          expr = std::move(call);
+        } else {
+          errorHere("expected '(' or '{' after type arguments");
+        }
       } else if (match(Tok::LParen)) {
-        if (expr.kind != Expr::Kind::Var)
-          errorHere("can only call a name");
         Expr call = make(Expr::Kind::Call, expr.line, expr.col);
-        call.text = expr.text;
+        if (expr.kind == Expr::Kind::Var) {
+          call.text = expr.text;
+        } else {
+          call.kids.push_back(std::move(expr));
+        }
         if (!check(Tok::RParen)) {
           do {
             call.kids.push_back(parseExpr());
@@ -567,6 +704,8 @@ struct Parser {
 
   MatchArm parseMatchArm() {
     MatchArm arm;
+    arm.line = peek().line;
+    arm.col = peek().col;
     if (check(Tok::Integer)) {
       arm.pat = MatchArm::Pat::Int;
       arm.number = advance().number;
@@ -688,7 +827,6 @@ struct Parser {
   FnDecl parseFn(const FnAttrs &attrs, bool isPub, bool abstractMethod = false) {
     const Token &fnTok = expect(Tok::Function, "expected 'fn'");
     const Token &name = expect(Tok::Identifier, "expected function name");
-    expect(Tok::LParen, "expected '('");
     FnDecl fn;
     fn.name = name.text;
     fn.isTest = attrs.isTest;
@@ -698,6 +836,18 @@ struct Parser {
     fn.isPub = isPub;
     fn.isAbstract = abstractMethod;
     fn.line = fnTok.line;
+    fn.typeParams = parseTypeParams();
+    fillFnSig(fn);
+    if (abstractMethod) {
+      expect(Tok::Semi, "expected ';' after abstract method");
+      return fn;
+    }
+    fn.body = parseBlock();
+    return fn;
+  }
+
+  void fillFnSig(FnDecl &fn) {
+    expect(Tok::LParen, "expected '('");
     if (!check(Tok::RParen)) {
       do {
         const Token &param = expect(Tok::Identifier, "expected parameter name");
@@ -708,12 +858,19 @@ struct Parser {
     expect(Tok::RParen, "expected ')'");
     fn.throws = match(Tok::Throws);
     fn.returnType = parseOptionalType();
-    if (abstractMethod) {
-      expect(Tok::Semi, "expected ';' after abstract method");
-      return fn;
-    }
+  }
+
+  Expr parseLambda() {
+    const Token &fnTok = expect(Tok::Function, "expected 'fn'");
+    FnDecl fn;
+    fn.name = "<fn>";
+    fn.line = fnTok.line;
+    fn.typeParams = parseTypeParams();
+    fillFnSig(fn);
     fn.body = parseBlock();
-    return fn;
+    Expr e = make(Expr::Kind::Lambda, fnTok.line, fnTok.col);
+    e.lambda = std::make_shared<FnDecl>(std::move(fn));
+    return e;
   }
 
   void bindSelf(FnDecl &fn) {
@@ -733,6 +890,24 @@ struct Parser {
     for (const auto &m : methods) {
       if (m.name == name)
         errorNote("duplicate method '" + name + "'");
+    }
+  }
+
+  void checkSignalDecl(const std::vector<std::string> &fields,
+                       const std::vector<FnDecl> &methods,
+                       const std::vector<SignalDecl> &signals,
+                       const std::string &name) {
+    for (const auto &f : fields) {
+      if (f == name)
+        errorNote("signal '" + name + "' conflicts with field '" + name + "'");
+    }
+    for (const auto &m : methods) {
+      if (m.name == name)
+        errorNote("signal '" + name + "' conflicts with method '" + name + "'");
+    }
+    for (const auto &s : signals) {
+      if (s.name == name)
+        errorNote("duplicate signal '" + name + "'");
     }
   }
 
@@ -842,11 +1017,11 @@ struct Parser {
     s.name = name.text;
     s.line = tok.line;
     s.isData = isData;
+    s.typeParams = parseTypeParams();
     const char *kind = isData ? "data" : "struct";
     if (match(Tok::Implements)) {
       do {
-        s.implTraits.push_back(
-            expect(Tok::Identifier, "expected trait name after impl").text);
+        s.implTraits.push_back(parseType());
       } while (match(Tok::Comma));
     }
     expect(Tok::LBrace, "expected '{'");
@@ -865,7 +1040,25 @@ struct Parser {
           fn.vis = p.vis;
           bindSelf(fn);
           checkMethodName(s.fields, s.methods, fn.name);
+          for (const auto &sig : s.signals) {
+            if (sig.name == fn.name)
+              errorNote("method '" + fn.name + "' conflicts with signal '" +
+                        fn.name + "'");
+          }
           s.methods.push_back(std::move(fn));
+          continue;
+        }
+        if (check(Tok::Signal)) {
+          rejectClassMods(p.isAbstract, p.isFinal, "signal");
+          rejectProtected(p.vis == Vis::Protected, "signal");
+          if (p.attrs.any())
+            errorNote("attributes cannot apply to signal");
+          if (isData)
+            errorNote("data cannot declare signals");
+          SignalDecl sig = parseSignal();
+          checkSignalDecl(s.fields, s.methods, s.signals, sig.name);
+          if (!isData)
+            s.signals.push_back(std::move(sig));
           continue;
         }
         rejectClassMods(p.isAbstract, p.isFinal, "field");
@@ -886,6 +1079,11 @@ struct Parser {
             errorNote("field '" + field.text + "' conflicts with method '" +
                       field.text + "'");
         }
+        for (const auto &sig : s.signals) {
+          if (sig.name == field.text)
+            errorNote("field '" + field.text + "' conflicts with signal '" +
+                      field.text + "'");
+        }
         s.fields.push_back(field.text);
         s.fieldTypes.push_back(std::move(ty));
         s.fieldOptional.push_back(p.attrs.isOptional ? 1 : 0);
@@ -900,16 +1098,15 @@ struct Parser {
 
   ImplDecl parseImpl() {
     const Token &implTok = expect(Tok::Implements, "expected 'impl'");
-    const Token &first = expect(Tok::Identifier, "expected type or trait name");
     ImplDecl impl;
     impl.line = implTok.line;
+    impl.typeParams = parseTypeParams();
+    const std::string first = parseType();
     if (match(Tok::For)) {
-      impl.traitName = first.text;
-      impl.typeName =
-          expect(Tok::Identifier, "expected type name after 'impl Trait for'")
-              .text;
+      impl.traitName = first;
+      impl.typeName = parseType();
     } else {
-      impl.typeName = first.text;
+      impl.typeName = first;
     }
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
@@ -956,6 +1153,7 @@ struct Parser {
     TraitDecl t;
     t.name = name.text;
     t.line = traitTok.line;
+    t.typeParams = parseTypeParams();
     expect(Tok::LBrace, "expected '{'");
     while (!check(Tok::RBrace) && !check(Tok::Eof)) {
       try {
@@ -993,14 +1191,12 @@ struct Parser {
     ClassDecl c;
     c.name = name.text;
     c.line = classTok.line;
+    c.typeParams = parseTypeParams();
     if (match(Tok::Extends))
-      c.parent =
-          expect(Tok::Identifier, "expected parent class name after extends")
-              .text;
+      c.parent = parseType();
     if (match(Tok::Implements)) {
       do {
-        c.implTraits.push_back(
-            expect(Tok::Identifier, "expected trait name after impl").text);
+        c.implTraits.push_back(parseType());
       } while (match(Tok::Comma));
     }
     expect(Tok::LBrace, "expected '{'");
@@ -1021,12 +1217,11 @@ struct Parser {
         if (p.sawVis)
           errorNote("visibility cannot apply to impl");
         expect(Tok::Implements, "expected 'impl'");
-        const Token &trait =
-            expect(Tok::Identifier, "expected trait name after impl");
+        NestedImpl block;
+        block.typeParams = parseTypeParams();
+        block.traitName = parseType();
         if (match(Tok::For))
           errorNote("impl inside a class is `impl Trait { … }` (no `for`)");
-        NestedImpl block;
-        block.traitName = trait.text;
         expect(Tok::LBrace, "expected '{' after trait name");
         while (!check(Tok::RBrace) && !check(Tok::Eof)) {
           FnDecl fn = parseMethod(true);
@@ -1054,11 +1249,33 @@ struct Parser {
         for (const auto &b : c.traitImpls) {
           checkMethodName({}, b.methods, fn.name);
         }
+        for (const auto &sig : c.signals) {
+          if (sig.name == fn.name)
+            errorNote("method '" + fn.name + "' conflicts with signal '" +
+                      fn.name + "'");
+        }
         c.methods.push_back(std::move(fn));
         continue;
       }
+      if (check(Tok::Signal)) {
+        rejectClassMods(p.isAbstract, p.isFinal, "signal");
+        rejectProtected(p.vis == Vis::Protected, "signal");
+        if (p.attrs.any())
+          errorNote("attributes cannot apply to signal");
+        SignalDecl sig = parseSignal();
+        checkSignalDecl(fieldNames, c.methods, c.signals, sig.name);
+        for (const auto &b : c.traitImpls) {
+          for (const auto &m : b.methods) {
+            if (m.name == sig.name)
+              errorNote("signal '" + sig.name + "' conflicts with method '" +
+                        sig.name + "'");
+          }
+        }
+        c.signals.push_back(std::move(sig));
+        continue;
+      }
       if (!check(Tok::Variable))
-        errorHere("expected var, fn, or impl in class body");
+        errorHere("expected var, fn, signal, or impl in class body");
       rejectClassMods(p.isAbstract, p.isFinal, "field");
       if (p.attrs.fnLike())
         errorNote("attributes cannot apply to field");
@@ -1086,6 +1303,11 @@ struct Parser {
                       f.name + "'");
         }
       }
+      for (const auto &sig : c.signals) {
+        if (sig.name == f.name)
+          errorNote("field '" + f.name + "' conflicts with signal '" +
+                    f.name + "'");
+      }
       fieldNames.push_back(f.name);
       c.fields.push_back(std::move(f));
       } catch (const ParseError &) {
@@ -1095,11 +1317,13 @@ struct Parser {
     expect(Tok::RBrace, "expected '}'");
     c.shape.name = c.name;
     c.shape.line = c.line;
+    c.shape.typeParams = c.typeParams;
     for (const auto &f : c.fields) {
       c.shape.fields.push_back(f.name);
       c.shape.fieldTypes.push_back(f.type);
       c.shape.fieldOptional.push_back(f.optional ? 1 : 0);
     }
+    c.shape.signals = c.signals;
     return c;
   }
 

@@ -5,6 +5,9 @@ import std;
 import math;
 import str;
 import io;
+import time;
+import path;
+import json;
 from vec import Vec2;
 from std import UUID;
 
@@ -78,6 +81,27 @@ fn stdlib_io() {
 }
 
 @test
+fn stdlib_time() {
+    checks.that(time.now() > 0);
+    time.sleep(0);
+}
+
+@test
+fn stdlib_path() {
+    checks.eq_string(path.join("a", "b"), "a/b");
+    checks.eq_string(path.stem("c.txt"), "c");
+}
+
+@test
+fn stdlib_json() {
+    var obj = try json.parse("{\"n\": 3}");
+    checks.eq(obj["n"], 3);
+    checks.eq_string(json.stringify([1, 2]), "[1,2]");
+    checks.that(json.valid("true"));
+    checks.that(!json.valid("null"));
+}
+
+@test
 fn stdlib_vec() {
     var v = Vec2 { x: 3.0, y: 4.0 };
     checks.eq(v.length(), 5.0);
@@ -92,6 +116,8 @@ fn stdlib_std() {
     var u = try std.parse("550e8400-e29b-41d4-a716-446655440000");
     checks.eq_string(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
     checks.eq(len(std.v4().to_string()), 36);
+    checks.that(std.time.now() > 0);
+    checks.eq_string(std.path.stem("README.md"), "README");
 }
 
 @test
@@ -115,6 +141,39 @@ fn const_from_call() {
 signal ping();
 signal collected(amount: Int);
 signal tap();
+signal later();
+
+struct Coin {
+    signal grabbed(amount: Int);
+
+    fn grab(self, n: Int) {
+        grabbed.emit(n);
+    }
+}
+
+struct Flag {
+    n: Int;
+}
+
+fn identity[T](x: T): T {
+    return x;
+}
+
+struct Cell[T] {
+    value: T;
+
+    fn get(self): T {
+        return value;
+    }
+
+    fn wrap[U](self, x: U): U {
+        return x;
+    }
+}
+
+fn first[T](xs: Array[T]): T {
+    return xs[0];
+}
 
 fn on_ping() {
     print("pong");
@@ -145,6 +204,71 @@ fn signal_disconnect() {
     tap.connect(fail_if_called);
     tap.disconnect(fail_if_called);
     tap.emit();
+}
+
+@test
+fn signal_instance() {
+    var c = Coin {};
+    c.grabbed.connect(take);
+    c.grabbed.emit(5);
+}
+
+@test
+fn signal_method_emit() {
+    var c = Coin {};
+    c.grabbed.connect(take);
+    c.grab(5);
+}
+
+@test
+fn signal_deferred() {
+    var box = Flag { n: 0 };
+    later.connect(fn () { box.n = 1; });
+    later.emit_deferred();
+    checks.eq(box.n, 0);
+}
+
+@test
+fn closure_add() {
+    var f = fn (x: Int): Int { return x + 1; };
+    checks.eq(f(1), 2);
+    checks.eq((fn (n: Int): Int { return n * 2; })(3), 6);
+}
+
+@test
+fn closure_capture() {
+    var box = Flag { n: 3 };
+    var f = fn (): Int { return box.n; };
+    box.n = 4;
+    checks.eq(f(), 4);
+}
+
+@test
+fn generic_id() {
+    checks.eq(identity(3), 3);
+    checks.eq_string(identity("a"), "a");
+}
+
+@test
+fn generic_box() {
+    var b = Cell { value: 8 };
+    checks.eq(b.get(), 8);
+    checks.eq(Cell[Int] { value: 2 }.value, 2);
+}
+
+@test
+fn generic_array() {
+    checks.eq(first([4, 5]), 4);
+}
+
+@test
+fn generic_method_targ() {
+    checks.eq_string(Cell { value: 1 }.wrap[String]("z"), "z");
+}
+
+@test
+fn generic_lambda() {
+    checks.eq((fn [T](x: T): T { return x; })(8), 8);
 }
 
 @test
@@ -372,6 +496,27 @@ fn class_extends_super() {
 fn class_trait() {
     var t = Token {};
     checks.eq_string(t.label(), "tok");
+}
+
+fn tagged[T: Named](x: T): String {
+    return x.label();
+}
+
+@test
+fn generic_bound() {
+    var t = Token {};
+    checks.eq_string(tagged(t), "tok");
+}
+
+fn shout(x: Named): String {
+    return x.label();
+}
+
+@test
+fn trait_object() {
+    var t: Named = Token {};
+    checks.eq_string(t.label(), "tok");
+    checks.eq_string(shout(Token {}), "tok");
 }
 
 @test

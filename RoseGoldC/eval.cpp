@@ -4,9 +4,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <optional>
@@ -15,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -27,11 +32,119 @@ static Value zeroOfType(const std::string &ty) {
     return Value::makeString("");
   if (ty == "Bool")
     return Value::makeBool(false);
-  if (ty == "Array")
+  if (ty == "Array" ||
+      (ty.size() > 6 && ty.compare(0, 6, "Array[") == 0 && ty.back() == ']'))
     return Value::makeArray({});
-  if (ty == "Map")
+  if (ty == "Map" ||
+      (ty.size() > 4 && ty.compare(0, 4, "Map[") == 0 && ty.back() == ']'))
     return Value::makeMap(std::make_shared<MapData>());
   return Value::makeVoid();
+}
+
+static bool sameFn(const Value &a, const Value &b) {
+  if (a.kind != Value::Kind::FnRef || b.kind != Value::Kind::FnRef)
+    return false;
+  if (a.clo || b.clo)
+    return a.clo.get() == b.clo.get();
+  return a.s == b.s;
+}
+
+static bool skipCaptureName(const std::string &name) {
+  return name == "print" || name == "len" || name == "assert" ||
+         name == "argv" || name == "argv_len" || name == "super";
+}
+
+static void collectFreeExpr(const Expr &e, std::set<std::string> &bound,
+                            std::set<std::string> &free);
+static void collectFreeStmt(const Stmt &s, std::set<std::string> &bound,
+                            std::set<std::string> &free);
+
+static void collectFreeExpr(const Expr &e, std::set<std::string> &bound,
+                            std::set<std::string> &free) {
+  if (e.kind == Expr::Kind::Lambda && e.lambda) {
+    auto inner = bound;
+    for (const auto &p : e.lambda->params)
+      inner.insert(p);
+    for (const auto &st : e.lambda->body)
+      collectFreeStmt(st, inner, free);
+    return;
+  }
+  if (e.kind == Expr::Kind::Var) {
+    if (!bound.count(e.text) && !skipCaptureName(e.text))
+      free.insert(e.text);
+    return;
+  }
+  for (const auto &kid : e.kids)
+    collectFreeExpr(kid, bound, free);
+}
+
+static void collectFreeStmt(const Stmt &s, std::set<std::string> &bound,
+                            std::set<std::string> &free) {
+  switch (s.kind) {
+  case Stmt::Kind::Var:
+  case Stmt::Kind::Const:
+    collectFreeExpr(s.expr, bound, free);
+    bound.insert(s.name);
+    return;
+  case Stmt::Kind::Assign:
+    collectFreeExpr(s.expr, bound, free);
+    if (!bound.count(s.name) && !skipCaptureName(s.name))
+      free.insert(s.name);
+    return;
+  case Stmt::Kind::FieldAssign:
+  case Stmt::Kind::IndexAssign:
+    collectFreeExpr(s.target, bound, free);
+    collectFreeExpr(s.expr, bound, free);
+    return;
+  case Stmt::Kind::Return:
+  case Stmt::Kind::Expr:
+  case Stmt::Kind::Throw:
+    collectFreeExpr(s.expr, bound, free);
+    return;
+  case Stmt::Kind::If:
+    collectFreeExpr(s.expr, bound, free);
+    for (const auto &st : s.body)
+      collectFreeStmt(st, bound, free);
+    for (const auto &st : s.elseBody)
+      collectFreeStmt(st, bound, free);
+    return;
+  case Stmt::Kind::While:
+    collectFreeExpr(s.expr, bound, free);
+    for (const auto &st : s.body)
+      collectFreeStmt(st, bound, free);
+    return;
+  case Stmt::Kind::For: {
+    collectFreeExpr(s.expr, bound, free);
+    auto inner = bound;
+    inner.insert(s.name);
+    for (const auto &st : s.body)
+      collectFreeStmt(st, inner, free);
+    return;
+  }
+  case Stmt::Kind::Match: {
+    collectFreeExpr(s.expr, bound, free);
+    for (const auto &arm : s.arms) {
+      auto inner = bound;
+      for (const auto &b : arm.binds)
+        inner.insert(b);
+      for (const auto &st : arm.body)
+        collectFreeStmt(st, inner, free);
+    }
+    return;
+  }
+  case Stmt::Kind::Do: {
+    for (const auto &st : s.body)
+      collectFreeStmt(st, bound, free);
+    auto inner = bound;
+    if (!s.name.empty())
+      inner.insert(s.name);
+    for (const auto &st : s.elseBody)
+      collectFreeStmt(st, inner, free);
+    return;
+  }
+  default:
+    return;
+  }
 }
 
 const std::string *Interpreter::findModuleBind(const std::string &name) const {
@@ -76,25 +189,34 @@ std::optional<std::string> Interpreter::modulePath(const Expr &e) {
 }
 
 const structDecl *Interpreter::findStruct(const std::string &name) const {
+  const std::string head = typeHead(name);
   if (!currentModule.empty()) {
     auto lit = loaded.find(currentModule);
     if (lit != loaded.end()) {
-      auto it = lit->second.structs.find(name);
+      auto it = lit->second.structs.find(head);
       if (it != lit->second.structs.end())
         return it->second;
     }
   }
-  auto it = structs.find(name);
+  auto it = structs.find(head);
   if (it != structs.end())
     return it->second;
   return nullptr;
 }
 
+const TraitDecl *Interpreter::findTrait(const std::string &name) const {
+  auto it = traits.find(typeHead(name));
+  if (it != traits.end())
+    return it->second;
+  return nullptr;
+}
+
 bool Interpreter::isDataType(const std::string &name) const {
-  auto it = allTypes.find(name);
+  const std::string head = typeHead(name);
+  auto it = allTypes.find(head);
   if (it != allTypes.end() && it->second)
     return it->second->isData;
-  const structDecl *st = findStruct(name);
+  const structDecl *st = findStruct(head);
   return st && st->isData;
 }
 
@@ -209,6 +331,11 @@ Value Interpreter::resolveValue(const std::string &name, int line, int col) {
     return local->value;
   if (Value *field = fieldOnSelf(name))
     return *field;
+  if (Binding *self = findLocalBinding("self")) {
+    if (self->value.kind == Value::Kind::Struct && self->value.rec &&
+        lookupTypeSignal(self->value.rec->name, name))
+      return Value::makeSignalRef(name, self->value.rec);
+  }
   if (Binding *global = findGlobalBinding(name))
     return global->value;
   if (findLocalFn(name))
@@ -617,8 +744,19 @@ Value Interpreter::eval(const Expr &e) {
   }
   case Expr::Kind::Try:
     return eval(e.kids[0]);
+  case Expr::Kind::Lambda:
+    return evalLambda(e);
   case Expr::Kind::Call: {
     std::vector<Value> args;
+    if (e.text.empty()) {
+      if (e.kids.empty())
+        runtime("can only call a function", e.line, e.col);
+      Value fn = eval(e.kids[0]);
+      args.reserve(e.kids.size() > 0 ? e.kids.size() - 1 : 0);
+      for (size_t i = 1; i < e.kids.size(); ++i)
+        args.push_back(eval(e.kids[i]));
+      return callFnValue(fn, args, e.line, e.col);
+    }
     args.reserve(e.kids.size());
     for (const auto &kid : e.kids)
       args.push_back(eval(kid));
@@ -633,6 +771,12 @@ Value Interpreter::eval(const Expr &e) {
     if (recv.kind == Expr::Kind::Var && recv.text == "super")
       return callSuper(e.text, args, e.line, e.col);
     if (recv.kind == Expr::Kind::Var) {
+      if (Binding *self = findLocalBinding("self")) {
+        if (self->value.kind == Value::Kind::Struct && self->value.rec &&
+            lookupTypeSignal(self->value.rec->name, recv.text))
+          return dispatchSignal(Value::makeSignalRef(recv.text, self->value.rec),
+                                e.text, args, e.line, e.col);
+      }
       if (signalArity.count(recv.text))
         return callSignal(recv.text, e.text, args, e.line, e.col);
       if (const std::string *modName = findModuleBind(recv.text))
@@ -640,6 +784,8 @@ Value Interpreter::eval(const Expr &e) {
       if (findLocalBinding(recv.text) || fieldOnSelf(recv.text) ||
           findGlobalBinding(recv.text) || findEnum(recv.text)) {
         Value obj = resolveValue(recv.text, recv.line, recv.col);
+        if (obj.kind == Value::Kind::SignalRef)
+          return dispatchSignal(obj, e.text, args, e.line, e.col);
         if (obj.kind == Value::Kind::Struct && obj.rec)
           return callTypeMethod(obj, e.text, args, e.line, e.col);
         if (obj.kind == Value::Kind::EnumType) {
@@ -663,6 +809,8 @@ Value Interpreter::eval(const Expr &e) {
     if (std::optional<std::string> modName = modulePath(recv))
       return callModule(*modName, e.text, args, e.line, e.col);
     Value obj = eval(recv);
+    if (obj.kind == Value::Kind::SignalRef)
+      return dispatchSignal(obj, e.text, args, e.line, e.col);
     if (obj.kind == Value::Kind::Struct && obj.rec)
       return callTypeMethod(obj, e.text, args, e.line, e.col);
     if (obj.kind == Value::Kind::EnumType) {
@@ -697,9 +845,12 @@ Value Interpreter::eval(const Expr &e) {
     if (obj.kind != Value::Kind::Struct || !obj.rec)
       runtime("cannot read field on " + obj.toString(), e.line, e.col);
     auto it = obj.rec->fields.find(e.text);
-    if (it == obj.rec->fields.end())
+    if (it == obj.rec->fields.end()) {
+      if (lookupTypeSignal(obj.rec->name, e.text))
+        return Value::makeSignalRef(e.text, obj.rec);
       runtime("struct " + obj.rec->name + " has no field '" + e.text + "'",
               e.line, e.col);
+    }
     return it->second;
   }
   case Expr::Kind::StructLit: {
@@ -742,6 +893,7 @@ Value Interpreter::eval(const Expr &e) {
       }
       runtime("missing field '" + field + "' on " + decl.name, e.line, e.col);
     }
+    initInstanceSignals(*data);
     return Value::makeStruct(std::move(data));
   }
   case Expr::Kind::Array: {
@@ -779,6 +931,396 @@ Value Interpreter::eval(const Expr &e) {
   }
   return Value::makeVoid();
 }
+
+namespace {
+
+std::string jsonEscape(const std::string &s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  const char *hex = "0123456789abcdef";
+  for (unsigned char c : s) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (c < 0x20) {
+        out += "\\u00";
+        out += hex[c >> 4];
+        out += hex[c & 0xf];
+      } else {
+        out += static_cast<char>(c);
+      }
+    }
+  }
+  return out;
+}
+
+void jsonUtf8(std::string &out, unsigned cp) {
+  if (cp <= 0x7F) {
+    out += static_cast<char>(cp);
+  } else if (cp <= 0x7FF) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp <= 0xFFFF) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+}
+
+struct JsonParser {
+  const std::string &src;
+  size_t i = 0;
+  int errLine;
+  int errCol;
+
+  explicit JsonParser(const std::string &s, int line, int col)
+      : src(s), errLine(line), errCol(col) {}
+
+  [[noreturn]] void fail(const std::string &msg) const {
+    throw ThrowEscape{Value::makeString(msg), errLine, errCol};
+  }
+
+  char peek() const { return i < src.size() ? src[i] : '\0'; }
+
+  char getc() {
+    if (i >= src.size())
+      fail("invalid JSON");
+    return src[i++];
+  }
+
+  void skip() {
+    while (i < src.size() &&
+           std::isspace(static_cast<unsigned char>(src[i])))
+      ++i;
+  }
+
+  bool matchLit(const char *lit) {
+    size_t n = 0;
+    while (lit[n])
+      ++n;
+    if (src.compare(i, n, lit) != 0)
+      return false;
+    i += n;
+    return true;
+  }
+
+  unsigned hex4() {
+    unsigned n = 0;
+    for (int k = 0; k < 4; ++k) {
+      unsigned char c = static_cast<unsigned char>(getc());
+      n <<= 4;
+      if (c >= '0' && c <= '9')
+        n += static_cast<unsigned>(c - '0');
+      else if (c >= 'a' && c <= 'f')
+        n += static_cast<unsigned>(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F')
+        n += static_cast<unsigned>(c - 'A' + 10);
+      else
+        fail("invalid JSON");
+    }
+    return n;
+  }
+
+  std::string parseString() {
+    if (getc() != '"')
+      fail("invalid JSON");
+    std::string out;
+    while (true) {
+      char c = getc();
+      if (c == '"')
+        return out;
+      if (c == '\\') {
+        char e = getc();
+        switch (e) {
+        case '"':
+        case '\\':
+        case '/':
+          out += e;
+          break;
+        case 'b':
+          out += '\b';
+          break;
+        case 'f':
+          out += '\f';
+          break;
+        case 'n':
+          out += '\n';
+          break;
+        case 'r':
+          out += '\r';
+          break;
+        case 't':
+          out += '\t';
+          break;
+        case 'u':
+          jsonUtf8(out, hex4());
+          break;
+        default:
+          fail("invalid JSON");
+        }
+      } else if (static_cast<unsigned char>(c) < 0x20) {
+        fail("invalid JSON");
+      } else {
+        out += c;
+      }
+    }
+  }
+
+  Value parseNumber() {
+    const size_t start = i;
+    if (peek() == '-')
+      ++i;
+    if (peek() == '0') {
+      ++i;
+      if (std::isdigit(static_cast<unsigned char>(peek())))
+        fail("invalid JSON");
+    } else if (std::isdigit(static_cast<unsigned char>(peek()))) {
+      while (std::isdigit(static_cast<unsigned char>(peek())))
+        ++i;
+    } else {
+      fail("invalid JSON");
+    }
+    bool frac = false;
+    if (peek() == '.') {
+      frac = true;
+      ++i;
+      if (!std::isdigit(static_cast<unsigned char>(peek())))
+        fail("invalid JSON");
+      while (std::isdigit(static_cast<unsigned char>(peek())))
+        ++i;
+    }
+    if (peek() == 'e' || peek() == 'E') {
+      frac = true;
+      ++i;
+      if (peek() == '+' || peek() == '-')
+        ++i;
+      if (!std::isdigit(static_cast<unsigned char>(peek())))
+        fail("invalid JSON");
+      while (std::isdigit(static_cast<unsigned char>(peek())))
+        ++i;
+    }
+    const std::string tok = src.substr(start, i - start);
+    if (!frac) {
+      try {
+        size_t idx = 0;
+        long long n = std::stoll(tok, &idx, 10);
+        if (idx == tok.size())
+          return Value::makeInt(n);
+      } catch (...) {
+      }
+    }
+    try {
+      size_t idx = 0;
+      double n = std::stod(tok, &idx);
+      if (idx != tok.size() || !std::isfinite(n))
+        fail("invalid JSON");
+      return Value::makeFloat(n);
+    } catch (...) {
+      fail("invalid JSON");
+    }
+    return Value::makeFloat(0);
+  }
+
+  Value parseValue() {
+    skip();
+    char c = peek();
+    if (c == '"')
+      return Value::makeString(parseString());
+    if (c == '{') {
+      getc();
+      auto data = std::make_shared<MapData>();
+      skip();
+      if (peek() == '}') {
+        getc();
+        return Value::makeMap(std::move(data));
+      }
+      while (true) {
+        skip();
+        if (peek() != '"')
+          fail("invalid JSON");
+        std::string key = parseString();
+        skip();
+        if (getc() != ':')
+          fail("invalid JSON");
+        Value val = parseValue();
+        if (!data->fields.count(key))
+          data->order.push_back(key);
+        data->fields[key] = std::move(val);
+        skip();
+        char sep = getc();
+        if (sep == '}')
+          return Value::makeMap(std::move(data));
+        if (sep != ',')
+          fail("invalid JSON");
+      }
+    }
+    if (c == '[') {
+      getc();
+      std::vector<Value> items;
+      skip();
+      if (peek() == ']') {
+        getc();
+        return Value::makeArray(std::move(items));
+      }
+      while (true) {
+        items.push_back(parseValue());
+        skip();
+        char sep = getc();
+        if (sep == ']')
+          return Value::makeArray(std::move(items));
+        if (sep != ',')
+          fail("invalid JSON");
+      }
+    }
+    if (c == 't') {
+      if (!matchLit("true"))
+        fail("invalid JSON");
+      return Value::makeBool(true);
+    }
+    if (c == 'f') {
+      if (!matchLit("false"))
+        fail("invalid JSON");
+      return Value::makeBool(false);
+    }
+    if (c == 'n') {
+      if (!matchLit("null"))
+        fail("invalid JSON");
+      fail("json null is not supported");
+    }
+    if (c == '-' || std::isdigit(static_cast<unsigned char>(c)))
+      return parseNumber();
+    fail("invalid JSON");
+  }
+
+  Value parse() {
+    Value v = parseValue();
+    skip();
+    if (i != src.size())
+      fail("invalid JSON");
+    return v;
+  }
+};
+
+bool jsonStringify(const Value &v, std::string &out, int depth,
+                   std::string &err) {
+  if (depth > 64) {
+    err = "json nesting too deep";
+    return false;
+  }
+  switch (v.kind) {
+  case Value::Kind::Bool:
+    out += v.b ? "true" : "false";
+    return true;
+  case Value::Kind::Int:
+    out += std::to_string(v.i);
+    return true;
+  case Value::Kind::Float: {
+    if (!std::isfinite(v.real)) {
+      err = "cannot stringify non-finite Float";
+      return false;
+    }
+    std::ostringstream ss;
+    ss << std::setprecision(17) << v.real;
+    out += ss.str();
+    return true;
+  }
+  case Value::Kind::String:
+    out += '"';
+    out += jsonEscape(v.s);
+    out += '"';
+    return true;
+  case Value::Kind::Array: {
+    out += '[';
+    if (v.items) {
+      for (size_t n = 0; n < v.items->size(); ++n) {
+        if (n)
+          out += ',';
+        if (!jsonStringify((*v.items)[n], out, depth + 1, err))
+          return false;
+      }
+    }
+    out += ']';
+    return true;
+  }
+  case Value::Kind::Map: {
+    out += '{';
+    if (v.dict) {
+      bool first = true;
+      for (const auto &k : v.dict->order) {
+        auto it = v.dict->fields.find(k);
+        if (it == v.dict->fields.end())
+          continue;
+        if (!first)
+          out += ',';
+        first = false;
+        out += '"';
+        out += jsonEscape(k);
+        out += "\":";
+        if (!jsonStringify(it->second, out, depth + 1, err))
+          return false;
+      }
+    }
+    out += '}';
+    return true;
+  }
+  case Value::Kind::Struct: {
+    out += '{';
+    if (v.rec) {
+      bool first = true;
+      for (const auto &k : v.rec->order) {
+        auto it = v.rec->fields.find(k);
+        if (it == v.rec->fields.end())
+          continue;
+        if (!first)
+          out += ',';
+        first = false;
+        out += '"';
+        out += jsonEscape(k);
+        out += "\":";
+        if (!jsonStringify(it->second, out, depth + 1, err))
+          return false;
+      }
+    }
+    out += '}';
+    return true;
+  }
+  case Value::Kind::Enum:
+    out += '"';
+    out += jsonEscape(v.variant);
+    out += '"';
+    return true;
+  default:
+    err = "cannot stringify value";
+    return false;
+  }
+}
+
+} // namespace
 
 Value Interpreter::callBuiltin(const std::string &module, const std::string &name,
                   const std::vector<Value> &args, int line, int col) {
@@ -1224,13 +1766,89 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
     }
     runtime("unknown function __uuid." + name, line, col);
   }
+  if (module == "__time") {
+    if (name == "now") {
+      if (!args.empty())
+        runtime("__time.now takes 0 arguments", line, col);
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch());
+      return Value::makeInt(ms.count());
+    }
+    if (name == "sleep") {
+      if (args.size() != 1)
+        runtime("__time.sleep takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::Int)
+        runtime("__time.sleep expects Int", line, col);
+      long long ms = args[0].i;
+      if (ms < 0)
+        ms = 0;
+      std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+      return Value::makeVoid();
+    }
+    runtime("unknown function __time." + name, line, col);
+  }
+  if (module == "__path") {
+    namespace fs = std::filesystem;
+    auto needStr = [&](size_t i) {
+      if (args[i].kind != Value::Kind::String)
+        runtime("__path." + name + " expects String", line, col);
+      return args[i].s;
+    };
+    if (name == "join") {
+      if (args.size() != 2)
+        runtime("__path.join takes 2 arguments", line, col);
+      return Value::makeString((fs::path(needStr(0)) / needStr(1)).generic_string());
+    }
+    if (name == "parent") {
+      if (args.size() != 1)
+        runtime("__path.parent takes 1 argument", line, col);
+      return Value::makeString(fs::path(needStr(0)).parent_path().generic_string());
+    }
+    if (name == "stem") {
+      if (args.size() != 1)
+        runtime("__path.stem takes 1 argument", line, col);
+      return Value::makeString(fs::path(needStr(0)).stem().generic_string());
+    }
+    runtime("unknown function __path." + name, line, col);
+  }
+  if (module == "__json") {
+    if (name == "parse") {
+      if (args.size() != 1)
+        runtime("__json.parse takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::String)
+        runtime("__json.parse expects String", line, col);
+      return JsonParser(args[0].s, line, col).parse();
+    }
+    if (name == "valid") {
+      if (args.size() != 1)
+        runtime("__json.valid takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::String)
+        runtime("__json.valid expects String", line, col);
+      try {
+        JsonParser(args[0].s, line, col).parse();
+        return Value::makeBool(true);
+      } catch (const ThrowEscape &) {
+        return Value::makeBool(false);
+      }
+    }
+    if (name == "stringify") {
+      if (args.size() != 1)
+        runtime("__json.stringify takes 1 argument", line, col);
+      std::string out;
+      std::string err;
+      if (!jsonStringify(args[0], out, 0, err))
+        runtime(err, line, col);
+      return Value::makeString(std::move(out));
+    }
+    runtime("unknown function __json." + name, line, col);
+  }
   runtime(module.empty() ? "unknown function '" + name + "'"
                          : "unknown function " + module + "." + name,
           line, col);
 }
 
 Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, int line,
-               int col) {
+               int col, const std::map<std::string, Binding> *caps) {
   struct ModGuard {
     Interpreter *self;
     std::string prev;
@@ -1252,6 +1870,8 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
     explicit EnvPop(Interpreter *s) : self(s) {}
     ~EnvPop() { self->env.pop_back(); }
   } pop(this);
+  if (caps)
+    env.back() = *caps;
   for (size_t i = 0; i < fn.params.size(); ++i)
     env.back()[fn.params[i]] = Binding{args[i], false};
   Value ret = Value::makeVoid();
@@ -1265,6 +1885,62 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
   else if (f.kind == Flow::Kind::Continue)
     runtime("continue outside loop", fn.line, 1);
   return ret;
+}
+
+Value Interpreter::evalLambda(const Expr &e) {
+  if (!e.lambda)
+    runtime("invalid closure", e.line, e.col);
+  std::set<std::string> bound;
+  for (const auto &p : e.lambda->params)
+    bound.insert(p);
+  std::set<std::string> free;
+  for (const auto &st : e.lambda->body)
+    collectFreeStmt(st, bound, free);
+  auto clo = std::make_shared<ClosureData>();
+  clo->fn = e.lambda;
+  bool capturedSelf = false;
+  for (const auto &name : free) {
+    if (findLocalFn(name) || fns.count(name) || structs.count(name) ||
+        allTypes.count(name) || enums.count(name) || traits.count(name) ||
+        signalArity.count(name) || findModuleBind(name) || isHostModule(name) ||
+        findEnum(name))
+      continue;
+    if (Binding *b = findLocalBinding(name)) {
+      clo->caps[name] = *b;
+      if (name == "self")
+        capturedSelf = true;
+      continue;
+    }
+    if (fieldOnSelf(name) ||
+        (findLocalBinding("self") && findLocalBinding("self")->value.rec &&
+         lookupTypeSignal(findLocalBinding("self")->value.rec->name, name))) {
+      if (!capturedSelf) {
+        if (Binding *self = findLocalBinding("self")) {
+          clo->caps["self"] = *self;
+          capturedSelf = true;
+        }
+      }
+    }
+  }
+  return Value::makeClosure(std::move(clo));
+}
+
+Value Interpreter::callFnValue(const Value &fn, const std::vector<Value> &args, int line,
+                  int col) {
+  if (fn.kind != Value::Kind::FnRef)
+    runtime("can only call a function", line, col);
+  if (fn.clo) {
+    if (!fn.clo->fn)
+      runtime("invalid closure", line, col);
+    return callUser(*fn.clo->fn, args, line, col, &fn.clo->caps);
+  }
+  auto it = fns.find(fn.s);
+  if (it == fns.end()) {
+    if (FnDecl *local = findLocalFn(fn.s))
+      return callUser(*local, args, line, col);
+    runtime("undefined function '" + fn.s + "'", line, col);
+  }
+  return callUser(*it->second, args, line, col);
 }
 
 Value Interpreter::invokeTypeMethod(const Value &obj, const std::string &startType,
@@ -1288,7 +1964,7 @@ Value Interpreter::invokeTypeMethod(const Value &obj, const std::string &startTy
   }
   std::string prev = superType;
   auto pit = classParents.find(definedOn);
-  superType = pit != classParents.end() ? pit->second : "";
+  superType = pit != classParents.end() ? typeHead(pit->second) : "";
   struct SuperGuard {
     Interpreter *self;
     std::string prev;
@@ -1310,22 +1986,68 @@ Value Interpreter::callTypeMethod(const Value &obj, const std::string &name,
 
 Value Interpreter::callSignal(const std::string &signal, const std::string &name,
                  const std::vector<Value> &args, int line, int col) {
+  auto it = signalArity.find(signal);
+  if (it == signalArity.end())
+    runtime("undefined signal '" + signal + "'", line, col);
+  return callSignalList(signal, it->second, listeners[signal], nullptr, name,
+                        args, line, col);
+}
+
+Value Interpreter::dispatchSignal(const Value &sig, const std::string &name,
+                     const std::vector<Value> &args, int line, int col) {
+  if (sig.kind != Value::Kind::SignalRef)
+    runtime("can only call signal methods on a signal", line, col);
+  if (!sig.rec) {
+    if (!signalArity.count(sig.s))
+      runtime("undefined signal '" + sig.s + "'", line, col);
+    return callSignalList(sig.s, signalArity[sig.s], listeners[sig.s], nullptr,
+                          name, args, line, col);
+  }
+  auto arity = lookupTypeSignal(sig.rec->name, sig.s);
+  if (!arity)
+    runtime("struct " + sig.rec->name + " has no signal '" + sig.s + "'", line,
+            col);
+  return callSignalList(sig.s, *arity, sig.rec->listeners[sig.s], sig.rec, name,
+                        args, line, col);
+}
+
+Value Interpreter::callSignalList(const std::string &signal, std::size_t arity,
+                     std::vector<Value> &list,
+                     std::shared_ptr<StructData> rec, const std::string &name,
+                     const std::vector<Value> &args, int line, int col) {
+  auto fnArity = [&](const Value &fn) -> std::size_t {
+    if (fn.kind != Value::Kind::FnRef)
+      runtime("signal '" + signal + "' connect expects a function", line, col);
+    if (fn.clo) {
+      if (!fn.clo->fn)
+        runtime("invalid closure", line, col);
+      return fn.clo->fn->params.size();
+    }
+    auto it = fns.find(fn.s);
+    if (it != fns.end())
+      return it->second->params.size();
+    if (FnDecl *local = findLocalFn(fn.s))
+      return local->params.size();
+    runtime("undefined function '" + fn.s + "'", line, col);
+  };
   if (name == "connect") {
     if (args.size() != 1)
       runtime("signal '" + signal + "' connect takes 1 argument", line, col);
     if (args[0].kind != Value::Kind::FnRef)
       runtime("signal '" + signal + "' connect expects a function", line, col);
-    const std::string &fnName = args[0].s;
-    auto fnIt = fns.find(fnName);
-    if (fnIt == fns.end())
-      runtime("undefined function '" + fnName + "'", line, col);
-    if (fnIt->second->params.size() != signalArity[signal])
+    if (fnArity(args[0]) != arity)
       runtime("signal '" + signal + "' connect expected " +
-                  std::to_string(signalArity[signal]) + " parameter(s)",
+                  std::to_string(arity) + " parameter(s)",
               line, col);
-    auto &list = listeners[signal];
-    if (std::find(list.begin(), list.end(), fnName) == list.end())
-      list.push_back(fnName);
+    bool found = false;
+    for (const auto &fn : list) {
+      if (sameFn(fn, args[0])) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      list.push_back(args[0]);
     return Value::makeVoid();
   }
   if (name == "disconnect") {
@@ -1335,25 +2057,63 @@ Value Interpreter::callSignal(const std::string &signal, const std::string &name
     if (args[0].kind != Value::Kind::FnRef)
       runtime("signal '" + signal + "' disconnect expects a function", line,
               col);
-    const std::string &fnName = args[0].s;
-    if (!fns.count(fnName))
-      runtime("undefined function '" + fnName + "'", line, col);
-    auto &list = listeners[signal];
-    list.erase(std::remove(list.begin(), list.end(), fnName), list.end());
+    if (!args[0].clo) {
+      if (!fns.count(args[0].s) && !findLocalFn(args[0].s))
+        runtime("undefined function '" + args[0].s + "'", line, col);
+    }
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const Value &fn) { return sameFn(fn, args[0]); }),
+               list.end());
     return Value::makeVoid();
   }
-  if (name == "emit") {
-    if (args.size() != signalArity[signal])
-      runtime("signal '" + signal + "' expected " +
-                  std::to_string(signalArity[signal]) + " argument(s), got " +
-                  std::to_string(args.size()),
+  if (name == "emit" || name == "emit_deferred") {
+    if (args.size() != arity)
+      runtime("signal '" + signal + "' expected " + std::to_string(arity) +
+                  " argument(s), got " + std::to_string(args.size()),
               line, col);
-    auto list = listeners[signal];
-    for (const auto &fnName : list)
-      callUser(*fns[fnName], args, line, col);
+    if (name == "emit_deferred") {
+      DeferredEmit item;
+      item.signal = signal;
+      item.rec = std::move(rec);
+      item.args = args;
+      item.line = line;
+      item.col = col;
+      deferred.push_back(std::move(item));
+      return Value::makeVoid();
+    }
+    auto copy = list;
+    for (const auto &fn : copy)
+      callFnValue(fn, args, line, col);
     return Value::makeVoid();
   }
   runtime("signal '" + signal + "' has no method '" + name + "'", line, col);
+}
+
+void Interpreter::flushDeferred() {
+  int waves = 0;
+  while (!deferred.empty()) {
+    if (++waves > 64)
+      runtime("deferred emit nested too deeply", deferred.front().line,
+              deferred.front().col);
+    auto batch = std::move(deferred);
+    deferred.clear();
+    for (auto &item : batch) {
+      if (item.rec) {
+        auto arity = lookupTypeSignal(item.rec->name, item.signal);
+        if (!arity)
+          runtime("struct " + item.rec->name + " has no signal '" +
+                      item.signal + "'",
+                  item.line, item.col);
+        auto copy = item.rec->listeners[item.signal];
+        for (const auto &fn : copy)
+          callFnValue(fn, item.args, item.line, item.col);
+      } else {
+        auto copy = listeners[item.signal];
+        for (const auto &fn : copy)
+          callFnValue(fn, item.args, item.line, item.col);
+      }
+    }
+  }
 }
 
 Value Interpreter::call(const std::string &module, const std::string &name,
@@ -1361,6 +2121,14 @@ Value Interpreter::call(const std::string &module, const std::string &name,
   if (module.empty()) {
     if (FnDecl *fn = findLocalFn(name))
       return callUser(*fn, args, line, col);
+    if (Binding *local = findLocalBinding(name)) {
+      if (local->value.kind == Value::Kind::FnRef)
+        return callFnValue(local->value, args, line, col);
+    }
+    if (Binding *global = findGlobalBinding(name)) {
+      if (global->value.kind == Value::Kind::FnRef)
+        return callFnValue(global->value, args, line, col);
+    }
     if (Binding *self = findLocalBinding("self")) {
       if (self->value.kind == Value::Kind::Struct && self->value.rec &&
           lookupMethod(self->value.rec->name, name).second)
@@ -1663,7 +2431,9 @@ Value Interpreter::callNamed(const std::string &name) {
         locatedError("runtime error", file, 0, 0,
                      "unknown function '" + name + "'"));
   try {
-    return callUser(*it->second, {}, it->second->line, 1);
+    Value ret = callUser(*it->second, {}, it->second->line, 1);
+    flushDeferred();
+    return ret;
   } catch (const ThrowEscape &ex) {
     runtime("uncaught throw: " + ex.value.toString(), ex.line, ex.col);
   }

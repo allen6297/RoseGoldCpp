@@ -43,10 +43,16 @@ void Interpreter::checkConstexprCall(const std::string &name, int line, int col)
 void Interpreter::checkConstexprExpr(const Expr &e) {
   if (e.kind == Expr::Kind::Try)
     constexprFail(e.line, e.col, "constexpr function cannot use 'try'");
+  if (e.kind == Expr::Kind::Lambda)
+    constexprFail(e.line, e.col, "constexpr function cannot use closures");
   if (e.kind == Expr::Kind::Var && e.text == "super")
     constexprFail(e.line, e.col, "constexpr function cannot use super");
-  if (e.kind == Expr::Kind::Call)
-    checkConstexprCall(e.text, e.line, e.col);
+  if (e.kind == Expr::Kind::Call) {
+    if (e.text.empty())
+      constexprFail(e.line, e.col, "constexpr function cannot call a closure");
+    else
+      checkConstexprCall(e.text, e.line, e.col);
+  }
   if (e.kind == Expr::Kind::MethodCall) {
     const Expr &recv = e.kids[0];
     bool allowed = false;

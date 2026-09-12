@@ -1,8 +1,8 @@
 {
   "name": "rosegoldc",
   "displayName": "RoseGoldC",
-  "description": "Language support for RoseGoldC: highlighting, diagnostics, completion, go to definition, run, and tests",
-  "version": "0.0.2",
+  "description": "Language support for RoseGoldC: highlighting, diagnostics, outline, CodeLens, completion, hover, signature help, find references, go to definition, highlight, rename, code actions, run, and tests",
+  "version": "0.0.4",
   "publisher": "rosegoldc",
   "engines": {
     "vscode": "^1.85.0"
@@ -124,6 +124,37 @@
         }
       }
     },
+    "problemMatchers": [
+      {
+        "name": "rosegoldc",
+        "label": "RoseGoldC",
+        "owner": "rosegoldc",
+        "source": "rosegoldc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      },
+      {
+        "name": "rosegoldc-located",
+        "label": "RoseGoldC located",
+        "owner": "rosegoldc",
+        "source": "rosegoldc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(?:parse error|type error|load error|constexpr error|runtime error) in (.*) at (\\d+):(\\d+):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      }
+    ],
     "configurationDefaults": {
       "editor.tokenColorCustomizations": {
         "textMateRules": [

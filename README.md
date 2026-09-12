@@ -16,7 +16,7 @@ That writes `build\RoseGoldC.exe`. Run it from the repo root so `examples/` path
 
 ## Editor extension
 
-Highlighting, snippets, **diagnostics**, hover, go to definition, completion, Run File, and Run Tests for `.rg` files:
+Highlighting, snippets, **diagnostics**, hover, go to definition, find references, signature help, completion, outline, CodeLens, highlight, rename (workspace refs), code actions, Run File, and Run Tests for `.rg` files:
 
 ```text
 powershell -NoProfile -ExecutionPolicy Bypass -File .\vscode\install.ps1
@@ -45,6 +45,9 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe run examples/control.rg
 .\build\RoseGoldC.exe run examples/point.rg
 .\build\RoseGoldC.exe run examples/signals.rg
+.\build\RoseGoldC.exe run examples/closures.rg
+.\build\RoseGoldC.exe run examples/generics.rg
+.\build\RoseGoldC.exe run examples/trait_objects.rg
 .\build\RoseGoldC.exe run examples/argv.rg hello
 .\build\RoseGoldC.exe run examples/import.rg
 .\build\RoseGoldC.exe run examples/nested.rg
@@ -70,11 +73,11 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe test examples/tests.rg
 ```
 
-`run` only calls `main`. Extra args after the file are `argv` (`argv(0)` is the file path). `check` lexes, parses, and typechecks without calling `main`. Parse, load, `@constexpr`, and type errors are all collected: `check` and the LSP list every one. `run` still stops at the first. `--json` prints `[{file, line, col, severity, message}, ...]`; `--stdin` reads the buffer and uses `<file>` for imports. `lsp` speaks the Language Server Protocol over stdin/stdout (JSON-RPC with `Content-Length` framing). The editor starts it once and keeps it running for diagnostics, hover, go to definition, and completion. `test <file>` only calls `@test` functions. `test` with no file runs `examples/tests.rg` plus `tests/pass` (must succeed; files without `fn main` are libraries and are skipped) and `tests/fail` (must error; first `# expect: …` comment is a substring of the message; files without `# expect:` are libraries and are skipped).
+`run` only calls `main`. Extra args after the file are `argv` (`argv(0)` is the file path). `check` lexes, parses, and typechecks without calling `main`. Parse, load, `@constexpr`, and type errors are all collected: `check` and the LSP list every one. `run` still stops at the first. `--json` prints `[{file, line, col, severity, message}, ...]`; `--stdin` reads the buffer and uses `<file>` for imports. `lsp` speaks the Language Server Protocol over stdin/stdout (JSON-RPC with `Content-Length` framing). The editor starts it once and keeps it running for diagnostics, hover, go to definition, find references, completion, outline, highlight, rename (workspace refs, not `builtin/`), CodeLens, and code actions. `test <file>` only calls `@test` functions. `test` with no file runs `examples/tests.rg` plus `tests/pass` (must succeed; files without `fn main` are libraries and are skipped) and `tests/fail` (must error; first `# expect: …` comment is a substring of the message; files without `# expect:` are libraries and are skipped).
 
 ## Language (now)
 
-`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait`, `impl` / `impl Trait for Type`, `super`, `enum`, `match` / `switch`, `signal`, `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`).
+`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`).
 
 Ints, Floats, strings, bools, `+ - * / % == != < > <= >= && ||`, unary `-` / `!`, `+= -= *= /=`, user functions. Int/Int `+ - * / %` stay Int (`3 / 2` is `1`). If either side is Float, the result is Float (`3 / 2.0` is `1.5`). `1 == 1.0` is true. `&&` / `||` short-circuit and return Bool (`false && (1 / 0 == 1)` does not divide). Any truthy value works: `1 && "x"` is true. `n += 1` is `n = n + 1` (same for fields and indexes). String `+=` concatenates.
 
@@ -118,7 +121,7 @@ fn main(): Int {
 }
 ```
 
-**`throws` marks a function that can `throw`.** Call it with `try`. Handle it with `do { … } catch e { … }`. `throw` outside a throwing function is a type error. A throwing call without `try` is a type error. Uncaught throws are a runtime error. `do` without `catch` is a block; a throw still escapes.
+**`throws` marks a function that can `throw`.** Call it with `try`. Handle it with `do { … } catch e { … }`. `throw` outside a throwing function is a type error. A throwing call without `try` is a type error. `return try boom()` in a function that is not itself `throws` is a type error — `try` does not swallow the throw, it marks that you are propagating. Uncaught throws are a runtime error. `do` without `catch` is a block; a throw still escapes.
 
 ```text
 fn boom() throws: String {
@@ -135,7 +138,7 @@ fn main(): Int {
 }
 ```
 
-**Typecheck runs when the file loads**, before `main`. Missing annotations stay quiet. Known types are checked: call arity, `1 + "x"`, assigning a String to an `Int`, returning the wrong type, unknown names, unknown methods/fields, and index types (`xs["a"]`, `m[0]`). `Int` and `Float` mix; `"a" + "b"` is a String. Today's `const` and untyped `var` still work. `check` and the editor report every parse, load, `@constexpr`, and type error in the file; `run` still stops at the first.
+**Typecheck runs when the file loads**, before `main`. Missing annotations stay quiet. Known types are checked: call arity, `1 + "x"`, assigning a String to an `Int`, returning the wrong type, unknown names, unknown methods/fields, and index types (`xs["a"]`, `m[0]`). `Int` and `Float` mix; `"a" + "b"` is a String. `[1, 2]` is `Array[Int]`; index, `for`, and `push` / `pop` use that element type. `Array[Int]` and `Array[String]` are valid annotations (`Array<Int>` is the same). `return try boom()` in a function that is not `throws` is a type error. Today's `const` and untyped `var` still work: a `var` with a known initializer keeps that type. `check` and the editor report every parse, load, `@constexpr`, and type error in the file; `run` still stops at the first.
 
 `if` / `elif` / `else`, `while`, and `for x in xs` take a condition or iterable and a `{ ... }` block. No extra parens. `elif` is the keyword; `else if` is not parsed. Conditions use the same truthy rules as `assert` (non-zero, non-empty, `true`). Combine them with `&&` / `||`. `pass;` does nothing. `break;` / `continue;` only work inside `while` and `for`.
 
@@ -176,7 +179,7 @@ for i in 1..=3 {
 
 `for x in xs` walks an array, a map's keys, each character of a string, `0..n` / `1..=n`, or `0 .. n-1` when `xs` is an Int. `0..5` is exclusive (`0 1 2 3 4`); `1..=3` is inclusive (`1 2 3`). Range bounds must be Int. The loop variable does not leak; an outer `var` with the same name is restored. `impl Trait for Type` still uses `for` as that keyword.
 
-`match` and `switch` are the same statement. Arms are a pattern plus a `{ ... }` block. No `case` or extra parens. Patterns can be `_`, an Int/string/bool literal, or an enum variant (`Red`, `Color.Red`, `Circle(r)`, `Rect(width: w, height: h)`). The first matching arm runs. A missing arm is a no-op.
+`match` and `switch` are the same statement. Arms are a pattern plus a `{ ... }` block. No `case` or extra parens. Patterns can be `_`, an Int/string/bool literal, or an enum variant (`Red`, `Color.Red`, `Circle(r)`, `Rect(width: w, height: h)`). The first matching arm runs. Matching an enum requires `_` or every variant; `check` and the LSP report a missing one. Int/string/bool matches do not have to be exhaustive.
 
 ```text
 switch n {
@@ -215,7 +218,7 @@ fn main(): Int {
 }
 ```
 
-**Arrays** are `[1, 2, 3]`. Index with `xs[i]`, length with `len(xs)` or `xs.len()` / `xs.len`. `push` appends, `pop` removes the last element (error if empty). Index assignment is `xs[i] = v`. Copies share the same array, like structs. Strings index to a one-character string: `"hi"[0]` is `"h"`. A match arm can bind a whole payload as one array: `Rect(dims)`.
+**Arrays** are `[1, 2, 3]` (`Array[Int]`). Index with `xs[i]`, length with `len(xs)` or `xs.len()` / `xs.len`. `push` appends, `pop` removes the last element (error if empty). Index assignment is `xs[i] = v`. Copies share the same array, like structs. Strings index to a one-character string: `"hi"[0]` is `"h"`. A match arm can bind a whole payload as one array: `Rect(dims)`. Mixed literals (`[1, "a"]`) stay a plain `Array`.
 
 ```text
 fn main(): Int {
@@ -244,10 +247,18 @@ fn main(): Int {
 
 `@deprecated` warns when that function is called, then still runs it.
 
-**Signals** are Godot-style: declare, `connect` free functions, `emit` calls them now in connect order. A second `connect` of the same function is ignored. `disconnect` removes that function (no error if it was not connected). Arity must match on connect.
+**Signals** are Godot-style. File-level `signal`s are global. `struct` / `class` (not `data`) may declare `signal`s; each instance has its own listener list (copies share the object, so they share listeners too). `connect` takes a named function or a closure. `emit` runs listeners now, in connect order. `emit_deferred` queues the same call until the current `main` / `@test` returns (idle-frame stand-in; nested deferred emits run in later waves, cap 64). A second `connect` of the same function or closure is ignored. `disconnect` removes it (no error if it was not connected). Arity must match on connect. Inside a method, a bare `collected.emit(…)` fires that instance's signal (and wins over a global of the same name). Trait signals attach to implementing instances.
 
 ```text
 signal collected(amount: Int);
+
+struct Coin {
+    signal grabbed(amount: Int);
+
+    fn grab(self, n: Int) {
+        grabbed.emit(n);
+    }
+}
 
 fn log_coin(amount: Int) {
     print(amount);
@@ -256,13 +267,93 @@ fn log_coin(amount: Int) {
 fn main(): Int {
     collected.connect(log_coin);
     collected.emit(5);
+    collected.emit_deferred(7);
     collected.disconnect(log_coin);
-    collected.emit(5);   # silent
+
+    var c = Coin {};
+    c.grabbed.connect(fn (amount: Int) { print(amount); });
+    c.grab(3);
     return 0;
 }
 ```
 
-No deferred emit or signals on structs yet.
+**Closures** are `fn (params) [: Type] { … }` in expression position, and may take type parameters: `fn [T](x: T): T { return x; }`. They capture enclosing locals: structs, arrays, and maps are shared objects; ints, floats, bools, and strings are snapshotted. Closures are `Fn` values (`connect` accepts them). They are not `@constexpr`.
+
+```text
+fn main(): Int {
+    var add = fn (x: Int): Int { return x + 1; };
+    print(add(2));
+    print((fn (n: Int): Int { return n * 2; })(3));
+    return 0;
+}
+```
+
+**Generics** are typecheck-only (the interpreter is still dynamic). `fn`, `struct`, `data`, `class`, and `trait` take `[T]` or `[T: Trait]` (also `<>`). Bounds are a compile-time checklist: `T` must `impl` that trait. The trait name is also a type (a trait object): `fn label(x: Named)` and `Array[Named]` accept any implementor. You only get the trait's methods, not the concrete fields. There is no downcast. Calls infer type arguments from values; you can write them: `id[Int](3)`, `Box[Int] { value: 1 }`, `obj.wrap[String]("hi")`. `impl[T] Holder[T] for Box[T]` and `class Child[T] extends Slot[T]` substitute along the type. `Array[T]` unifies the same way. `Map[String, Int]` now keeps both arguments.
+
+```text
+fn identity[T](x: T): T {
+    return x;
+}
+
+struct Box[T] {
+    value: T;
+    fn get(self): T {
+        return value;
+    }
+}
+
+fn first[T](xs: Array[T]): T {
+    return xs[0];
+}
+
+trait Holder[T] {
+    fn get(self): T;
+}
+
+impl[T] Holder[T] for Box[T] {
+}
+
+class Slot[T] {
+    var value: T;
+}
+
+class Packed[T] extends Slot[T] {
+}
+
+fn main(): Int {
+    print(identity(3));
+    print(identity[String]("hi"));
+    var b = Box { value: 9 };
+    print(b.get());
+    print(first([1, 2]));
+    print(Packed { value: 4 }.value);
+    print((fn [T](x: T): T { return x; })(3));
+    return 0;
+}
+```
+
+A **trait object** is the trait used as a type. `Person` and `Robot` can both sit in a `Named` variable or `Array[Named]`; you can only call `Named` methods.
+
+```text
+trait Named {
+    fn tag(self): String;
+}
+
+struct Person impl Named {
+    n: String;
+    fn tag(self): String { return n; }
+}
+
+fn label(x: Named): String {
+    return x.tag();
+}
+
+fn main(): Int {
+    var p: Named = Person { n: "ada" };
+    print(label(p));
+    return 0;
+}
+```
 
 `run file.rg a b` is indexed: `argv(0)` / `process.argv(0)` is the file path, `argv(1)` is `a`, `argv_len()` / `process.argc()` is the count.
 
@@ -454,7 +545,7 @@ fn main(): Int {
 }
 ```
 
-**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `import std;` loads `lib.rg` (`UUID`, `Identifiable`) and the child crates, so `std.math.abs`, `std.str.upper`, `std.io.exists` work. `import std.math;` binds both `std` and `math` (last segment), same as `import bag.math`. Short names still work: `import math;` / `import str;` / `import io;` / `from vec import Vec2;`. `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). `import std;` then `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `checks` stays a host builtin and does not need import.
+**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `import std;` loads `lib.rg` (`UUID`, `Identifiable`) and the child crates, so `std.math.abs`, `std.str.upper`, `std.io.exists`, `std.time.now`, `std.path.join`, `std.json.parse` work. `import std.math;` binds both `std` and `math` (last segment), same as `import bag.math`. Short names still work: `import math;` / `import str;` / `import io;` / `import time;` / `import path;` / `import json;` / `from vec import Vec2;`. `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `io.read_lines` is `Array[String]`. `time.now()` is unix epoch milliseconds; `time.sleep(ms)` waits. `path.join` / `path.parent` / `path.stem` use `/` in the returned string. `json.parse(s)` (`throws`) turns a JSON object into a Map, an array into an Array, and numbers/strings/bools into those values; `json.stringify` goes the other way (structs become objects; enums become the variant name). JSON `null` is not in this subset — parse throws. `json.valid(s)` is true when parse would succeed. `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). `import std;` then `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `checks` stays a host builtin and does not need import.
 
 A **framework** here is an optional stack behind `import`, not new syntax. `ui` / engine hosts are not built yet.
 
@@ -466,6 +557,9 @@ fn main(): Int {
     print(std.math.abs(-7));
     print(std.str.upper("hi"));
     print(std.io.exists("README.md"));
+    print(std.time.now() > 0);
+    print(std.path.stem("README.md"));
+    print(std.json.stringify({"ok": true}));
     var v = Vec2 { x: 3.0, y: 4.0 };
     print(v.length());
     return 0;
@@ -479,3 +573,8 @@ fn main(): Int {
 **Recommended order**
 
 1. Later on purpose: **`ui`**.
+
+**Only if you want them**
+
+- `import math` not loading the rest of `std` (correct, but the stdlib is tiny).
+- A formatter (`rgfmt`) after the language stops moving.
