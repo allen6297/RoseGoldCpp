@@ -24,6 +24,7 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CGGeometry.h>
+#include <TargetConditionals.h>
 #include <objc/message.h>
 #include <objc/objc.h>
 #include <objc/runtime.h>
@@ -42,6 +43,7 @@ extern "C" {
 #include <wayland-client.h>
 }
 #endif
+#undef Bool
 #endif
 
 namespace {
@@ -461,8 +463,8 @@ void feedClick(HostWin &win, int x, int y) {
 }
 
 #if defined(__unix__) && !defined(__APPLE__)
-enum class DispKind { None, X11, Wayland };
-DispKind gDisp = DispKind::None;
+enum class DispKind { Off, X11, Wayland };
+DispKind gDisp = DispKind::Off;
 #endif
 
 #ifdef _WIN32
@@ -1686,16 +1688,48 @@ bool hasNative(const HostWin &win) {
 #endif
 }
 
+// Write-once contract: widgets paint pixels; each OS only blits.
+// Future hosts: android / ios / web for both platform() and backend().
+const char *runtimePlatform() {
+#if defined(__EMSCRIPTEN__)
+  return "web";
+#elif defined(__ANDROID__)
+  return "android";
+#elif defined(_WIN32)
+  return "windows";
+#elif defined(__APPLE__)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+  return "ios";
+#else
+  return "macos";
+#endif
+#elif defined(__unix__)
+  return "linux";
+#else
+  return "linux";
+#endif
+}
+
 const char *runtimeBackend() {
-#ifdef _WIN32
+#if defined(__EMSCRIPTEN__)
+  return "web";
+#elif defined(__ANDROID__)
+  return "android";
+#elif defined(_WIN32)
   return "win32";
 #elif defined(__APPLE__)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+  return "ios";
+#else
   return "cocoa";
+#endif
 #elif defined(__unix__)
   nativeReady();
   if (gDisp == DispKind::Wayland)
     return "wayland";
-  return "x11";
+  if (gDisp == DispKind::X11)
+    return "x11";
+  return "none";
 #else
   return "none";
 #endif
@@ -1741,6 +1775,11 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     if (!args.empty())
       I.runtime("__ui.backend takes 0 arguments", line, col);
     return Value::makeString(runtimeBackend());
+  }
+  if (name == "platform") {
+    if (!args.empty())
+      I.runtime("__ui.platform takes 0 arguments", line, col);
+    return Value::makeString(runtimePlatform());
   }
   if (name == "open") {
     if (args.size() != 4)
