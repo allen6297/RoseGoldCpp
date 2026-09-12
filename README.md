@@ -1,6 +1,6 @@
 # RoseGoldC
 
-A C++ interpreter for a small RoseGold subset. Built with clang-cl from VS Code / Cursor.
+A C++ interpreter for a small RoseGold subset. On Windows it builds with clang-cl from VS Code / Cursor. Linux and macOS use `./build.sh`.
 
 ## Build
 
@@ -13,6 +13,16 @@ In VS Code: **Ctrl+Shift+B**, or F5 (builds then debugs). From a terminal at the
 ```
 
 That writes `build\RoseGoldC.exe`. Run it from the repo root so `examples/` paths work.
+
+On Linux (X11 or Wayland) or macOS (Cocoa):
+
+```text
+chmod +x ./build.sh
+./build.sh
+./build/RoseGoldC test
+```
+
+Linux needs `libx11` (`libx11-dev` on Debian/Ubuntu). If `libwayland-client` is also present (`libwayland-dev`), the same binary talks X11 and Wayland and picks at runtime (`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland` prefer Wayland). macOS needs the macOS SDK (Xcode or Command Line Tools). Hidden windows fall back to an offscreen host if there is no display, so `test` can still run over SSH.
 
 ## Editor extension
 
@@ -52,6 +62,7 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe run examples/import.rg
 .\build\RoseGoldC.exe run examples/nested.rg
 .\build\RoseGoldC.exe run examples/stdlib.rg
+.\build\RoseGoldC.exe run examples/window.rg
 .\build\RoseGoldC.exe run examples/class.rg
 .\build\RoseGoldC.exe run examples/enum.rg
 .\build\RoseGoldC.exe run examples/array.rg
@@ -77,7 +88,7 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 
 ## Language (now)
 
-`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`).
+`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`, `std.ui`).
 
 Ints, Floats, strings, bools, `+ - * / % == != < > <= >= && ||`, unary `-` / `!`, `+= -= *= /=`, user functions. Int/Int `+ - * / %` stay Int (`3 / 2` is `1`). If either side is Float, the result is Float (`3 / 2.0` is `1.5`). `1 == 1.0` is true. `&&` / `||` short-circuit and return Bool (`false && (1 / 0 == 1)` does not divide). Any truthy value works: `1 && "x"` is true. `n += 1` is `n = n + 1` (same for fields and indexes). String `+=` concatenates.
 
@@ -106,7 +117,7 @@ fn main(): Int {
 }
 ```
 
-**`@ufcs` is a call-syntax mark.** A function marked `@ufcs` can be called as a method: `x.fn(args)` means `fn(x, args)`. Bare `fn(x, args)` still works. Inherent methods win: `p.length()` uses `Point.length` if that method exists. Array `push` / `pop` and map / string methods are not stolen. `@ufcs` is only for free functions, not methods.
+**`@ufcs` is a call-syntax mark.** A function marked `@ufcs` can be called as a method: `x.fn(args)` means `fn(x, args)`. Bare `fn(x, args)` still works. Inherent methods win: `p.length()` uses `Point.length` if that method exists. Array `push` / `pop` and map / string methods are not stolen. `@ufcs` is only for free functions, not methods. After `import ui`, exported `@ufcs` helpers such as `padding` are visible as `label.padding(12)` as well as `ui.padding(label, 12)`.
 
 ```text
 @ufcs
@@ -522,7 +533,7 @@ class Pup extends Guard {
 
 **Modules** are directories or `mod` blocks, not `name.rg` files. `import calc;` loads every `.rg` file in a sibling `calc/` folder (file-level items are all exported). It also loads any sibling file that declares `mod calc { ... }`. Several files can contribute to the same name and get merged. Call exports as `calc.add()`. `import calc as c;` binds `c`. `from calc import add;` and `from calc import add as sum;` bind a name in the importer.
 
-Inside a `mod Name { }`, only `pub` items are exported; private functions can still call each other. Nested `mod` works: `outer.inner.add()`, and parent code can call `inner.add()`. Nested mods need `pub` to be visible outside the parent. `import bag.math;` loads `bag/math/` or a nested `pub mod math`. `from bag import math;` binds that nested module. `import` / `from` inside a `mod` bind names in that module only. `import checks;` / `import process;` are no-ops (`checks.eq` already works without import).
+Inside a `mod Name { }`, only `pub` items are exported; private functions can still call each other. Nested `mod` works: `outer.inner.add()`, and parent code can call `inner.add()`. Nested mods need `pub` to be visible outside the parent. `import` / `from` inside a `mod` bind names in that module only.
 
 ```text
 # calc/lib.rg
@@ -545,9 +556,49 @@ fn main(): Int {
 }
 ```
 
-**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `import std;` loads `lib.rg` (`UUID`, `Identifiable`) and the child crates, so `std.math.abs`, `std.str.upper`, `std.io.exists`, `std.time.now`, `std.path.join`, `std.json.parse` work. `import std.math;` binds both `std` and `math` (last segment), same as `import bag.math`. Short names still work: `import math;` / `import str;` / `import io;` / `import time;` / `import path;` / `import json;` / `from vec import Vec2;`. `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `io.read_lines` is `Array[String]`. `time.now()` is unix epoch milliseconds; `time.sleep(ms)` waits. `path.join` / `path.parent` / `path.stem` use `/` in the returned string. `json.parse(s)` (`throws`) turns a JSON object into a Map, an array into an Array, and numbers/strings/bools into those values; `json.stringify` goes the other way (structs become objects; enums become the variant name). JSON `null` is not in this subset — parse throws. `json.valid(s)` is true when parse would succeed. `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). `import std;` then `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `checks` stays a host builtin and does not need import.
+**Imports** pick a module, then bind a name. A dotted path loads the parent first. `import bag.math;` looks for `bag/math/` or a nested `pub mod math`, then binds `math` (or `as` alias). If the path starts with `std`, `std` is bound too, so `import std.math;` gives both `math.abs` and `std.math.abs`.
 
-A **framework** here is an optional stack behind `import`, not new syntax. `ui` / engine hosts are not built yet.
+Short stdlib crate names rewrite to `std.*`: `import math;` is `import std.math;` (same for `str`, `io`, `vec`, `time`, `path`, `json`, `ui`). `from vec import Vec2;` and `from std import UUID;` still pull one export. `import checks;` / `import process;` are no-ops (`checks.eq` already works).
+
+`import std;` loads `builtin/std/lib.rg` and attaches every child crate folder, so `std.math` works without a second import. `import math;` also loads `std` first (parent of `std.math`), so the other crates come along while the stdlib is small. Extra `.rg` files in a crate folder are the same crate: `import ui` loads `ui/lib.rg`, `ui/color.rg`, and `ui/widgets.rg`, so `Color`, `Label`, and `VStack` need no extra import. Nested folders under a crate attach the same way `std` attaches `math`.
+
+Using a stdlib name without importing it names the crate in the error: `undefined trait 'Identifiable' (in crate std; try 'import std')`. The editor lightbulb can insert that import.
+
+```text
+import math;
+import std.str;
+from vec import Vec2;
+
+fn main(): Int {
+    print(math.abs(-7));
+    print(std.str.upper("hi"));
+    print(Vec2 { x: 3.0, y: 4.0 }.length());
+    return 0;
+}
+```
+
+**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `io.read_lines` is `Array[String]`. `time.now()` is unix epoch milliseconds; `time.sleep(ms)` waits. `path.join` / `path.parent` / `path.stem` use `/` in the returned string. `json.parse(s)` (`throws`) turns a JSON object into a Map, an array into an Array, and numbers/strings/bools into those values; `json.stringify` goes the other way (structs become objects; enums become the variant name). JSON `null` is not in this subset — parse throws. `json.valid(s)` is true when parse would succeed. `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). After `import std;`, `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `ui` opens a native window on the current OS (`ui.backend()` is `win32`, `x11`, `wayland`, or `cocoa`): `try ui.open("RoseGold", 800, 600)` or `Window { title: "Hi", width: 640, height: 480 }` then `try w.show()`. Layout is Swift-ish: nest `VStack` / `HStack` (`children:` or `.add()`), then chain `.padding(n)`, `.background(Color.Blue)`, `.foreground(Color.Red)`, or `.style(Style { fill, ink, pad })`. Named colors are `Color.Black` / `Red` / `Green` / `Yellow` / `Blue` / `Magenta` / `Cyan` / `White`; custom is `ui.rgb(r, g, b)` or `Color.Rgb(r, g, b)` (`.value()` is the packed Int the host draws). `w.add(Label { text: "Hi" })` and `Button { text: "OK" }` (`clicked` signal) still stack vertically if you skip the stacks. Connect signals on the `Button` before wrapping it. `w.run()` pumps until that window closes. `ui.run()` still pumps every window that has no widget tree. `open` / `show` are `throws`. `ui.open_hidden` is the same window with no flash (tests). Visible `open` still needs a display; hidden windows can run offscreen if the display is missing. Drawing is fill plus the OS UI font on Windows (`Segoe UI` / the message font) and an 8×8 bitmap fallback elsewhere. `ui.font_height()` / `ui.text_width(s)` measure that font. `checks` stays a host builtin and does not need import.
+
+A **framework** here is an optional stack behind `import`, not new syntax. Windowing is `import ui`. Widgets are `Label`, `Button`, `VStack`, and `HStack`.
+
+```text
+import ui;
+
+fn main(): Int {
+    var w = try ui.open("RoseGold", 400, 240);
+    var go = Button { text: "Close" };
+    go.clicked.connect(fn () { w.close(); });
+    w.add(VStack {
+        spacing: 12,
+        children: [
+            Label { text: "Hello" }.padding(8),
+            go.background(Color.Blue)
+        ]
+    }.padding(12));
+    w.run();
+    return 0;
+}
+```
 
 ```text
 import std;
@@ -568,11 +619,11 @@ fn main(): Int {
 
 ## Next steps
 
-**Not yet:** the `ui` framework. That lives in the Rust tree.
+**Not yet:** more widgets (fields, lists), richer drawing, Cocoa mouse hit-testing.
 
 **Recommended order**
 
-1. Later on purpose: **`ui`**.
+1. More controls on top of `Label`, `Button`, `VStack`, and `HStack`.
 
 **Only if you want them**
 

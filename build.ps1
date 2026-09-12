@@ -29,13 +29,14 @@ $sources = @(
     "RoseGoldC\typecheck.cpp",
     "RoseGoldC\eval.cpp",
     "RoseGoldC\harness.cpp",
-    "RoseGoldC\lsp.cpp"
+    "RoseGoldC\lsp.cpp",
+    "RoseGoldC\host_ui.cpp"
 )
 
 $quoted = ($sources | ForEach-Object { "`"$root\$_`"" }) -join " "
 $exe = Join-Path $outDir "RoseGoldC.exe"
 
-$cmd = "`"$vcvars`" && clang-cl /nologo /std:c++20 /EHsc /Zi /Od /W3 /I `"$root\RoseGoldC`" /Fe:`"$exe`" /Fo:`"$outDir\\`" $quoted"
+$cmd = "`"$vcvars`" && clang-cl /nologo /std:c++20 /EHsc /Zi /Od /W3 /I `"$root\RoseGoldC`" /Fe:`"$exe`" /Fo:`"$outDir\\`" $quoted user32.lib gdi32.lib"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

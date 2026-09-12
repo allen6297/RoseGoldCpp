@@ -258,6 +258,35 @@ FnDecl *Interpreter::findUfcs(const std::string &name) {
   FnDecl *fn = findLocalFn(name);
   if (fn && fn->isUfcs)
     return fn;
+  std::vector<std::string> queue;
+  std::set<std::string> seen;
+  auto enqueue = [&](const std::map<std::string, std::string> &binds) {
+    for (const auto &kv : binds)
+      queue.push_back(kv.second);
+  };
+  if (!currentModule.empty()) {
+    auto lit = loaded.find(currentModule);
+    if (lit != loaded.end())
+      enqueue(lit->second.modules);
+  } else {
+    enqueue(moduleBinds);
+  }
+  for (size_t i = 0; i < queue.size(); ++i) {
+    const std::string modName = queue[i];
+    if (!seen.insert(modName).second)
+      continue;
+    auto lit = loaded.find(modName);
+    if (lit == loaded.end())
+      continue;
+    auto eit = lit->second.exports.find(name);
+    if (eit != lit->second.exports.end() && eit->second &&
+        eit->second->isUfcs)
+      return eit->second;
+    for (const auto &kv : lit->second.exportMods)
+      queue.push_back(kv.second);
+    for (const auto &kv : lit->second.modules)
+      queue.push_back(kv.second);
+  }
   return nullptr;
 }
 
@@ -1842,6 +1871,8 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
     }
     runtime("unknown function __json." + name, line, col);
   }
+  if (module == "__ui")
+    return uiHostCall(*this, name, args, line, col);
   runtime(module.empty() ? "unknown function '" + name + "'"
                          : "unknown function " + module + "." + name,
           line, col);

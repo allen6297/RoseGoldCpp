@@ -98,6 +98,40 @@ struct TypeChecker {
     return !ty.empty() && ty != "None" && ty != "Self" && ty != "Void";
   }
 
+  static bool builtinHead(const std::string &head) {
+    return head == "Int" || head == "Float" || head == "String" ||
+           head == "Str" || head == "Bool" || head == "Void" ||
+           head == "Array" || head == "Map" || head == "Range" ||
+           head == "None" || head == "Self";
+  }
+
+  void checkTypeName(const std::string &ty, int line, int col) {
+    if (ty.empty())
+      return;
+    const auto args = typeArgList(ty);
+    for (const auto &a : args)
+      checkTypeName(a, line, col);
+    const std::string head = typeHead(ty);
+    if (head.empty() || head == "_" || genericParams.count(head) ||
+        builtinHead(head))
+      return;
+    if (I().findStruct(head) || I().findTrait(head) || I().findEnum(head) ||
+        I().allTypes.count(head) || I().structs.count(head) ||
+        I().traits.count(head) || I().enums.count(head))
+      return;
+    const StdlibExport *ex = lookupStdlibExport(head, I().file);
+    if (!ex)
+      return;
+    std::string word = "type";
+    if (ex->kind == "trait")
+      word = "trait";
+    else if (ex->kind == "fn")
+      word = "function";
+    fail(line, col,
+         "undefined " + word + " '" + head + "'" +
+             stdlibImportHint(head, I().file));
+  }
+
   static bool isArrayTy(const std::string &ty) {
     return ty == "Array" ||
            (ty.size() > 6 && ty.compare(0, 6, "Array[") == 0 &&
@@ -533,6 +567,19 @@ struct TypeChecker {
           return "String";
         return "";
       }
+      if (recv.text == "__ui") {
+        if (e.text == "open")
+          return "Int";
+        if (e.text == "title" || e.text == "backend")
+          return "String";
+        if (e.text == "alive" || e.text == "poll" || e.text == "mouse_down" ||
+            e.text == "take_click")
+          return "Bool";
+        if (e.text == "width" || e.text == "height" || e.text == "count" ||
+            e.text == "mouse_x" || e.text == "mouse_y")
+          return "Int";
+        return "Void";
+      }
       return "Void";
     }
     if (recv.kind == Expr::Kind::Var && I().signalArity.count(recv.text))
@@ -851,7 +898,8 @@ struct TypeChecker {
     const std::string head = typeHead(bound);
     const TraitDecl *tr = I().findTrait(head);
     if (!tr) {
-      fail(line, col, "undefined trait '" + head + "'");
+      fail(line, col,
+           "undefined trait '" + head + "'" + stdlibImportHint(head, I().file));
       return;
     }
     const auto args = typeArgList(bound);
@@ -1107,7 +1155,8 @@ struct TypeChecker {
         return;
       }
     }
-    fail(e.line, e.col, "unknown function '" + name + "'");
+    fail(e.line, e.col,
+         "unknown function '" + name + "'" + stdlibImportHint(name, I().file));
   }
 
   void checkHostCall(const std::string &mod, const std::string &name,
@@ -1245,6 +1294,48 @@ struct TypeChecker {
         return;
       }
       fail(line, col, "unknown function __json." + name);
+      return;
+    }
+    if (mod == "__ui") {
+      if (name == "open") {
+        arity(4);
+        requireTry(true, name, line, col);
+        return;
+      }
+      if (name == "fill") {
+        arity(6);
+        return;
+      }
+      if (name == "text") {
+        arity(5);
+        return;
+      }
+      if (name == "text_width") {
+        arity(1);
+        return;
+      }
+      if (name == "set_size" || name == "feed_click") {
+        arity(3);
+        return;
+      }
+      if (name == "set_title" || name == "clear" || name == "set_frame") {
+        arity(2);
+        return;
+      }
+      if (name == "close" || name == "show" || name == "hide" ||
+          name == "poll" || name == "alive" || name == "title" ||
+          name == "width" || name == "height" || name == "present" ||
+          name == "mouse_x" || name == "mouse_y" || name == "mouse_down" ||
+          name == "take_click") {
+        arity(1);
+        return;
+      }
+      if (name == "run" || name == "count" || name == "backend" ||
+          name == "wait" || name == "font_height") {
+        arity(0);
+        return;
+      }
+      fail(line, col, "unknown function __ui." + name);
       return;
     }
   }
@@ -1543,7 +1634,9 @@ struct TypeChecker {
     }
     if (e.kind == Expr::Kind::Var) {
       if (!defined(e.text))
-        fail(e.line, e.col, "undefined variable '" + e.text + "'");
+        fail(e.line, e.col,
+             "undefined variable '" + e.text + "'" +
+                 stdlibImportHint(e.text, I().file));
       else if (!isLocal(e.text) && !currentSelf.empty()) {
         auto found = I().lookupField(currentSelf, e.text);
         if (!found.first.empty())
@@ -1647,7 +1740,9 @@ struct TypeChecker {
         if (I().findTrait(e.text))
           fail(e.line, e.col, "cannot construct trait '" + e.text + "'");
         else
-          fail(e.line, e.col, "undefined struct '" + e.text + "'");
+          fail(e.line, e.col,
+               "undefined struct '" + e.text + "'" +
+                   stdlibImportHint(e.text, I().file));
         return;
       }
       auto absIt = I().classAbstract.find(e.text);
@@ -1746,6 +1841,7 @@ struct TypeChecker {
       walkExpr(stmt.expr);
       std::string got = infer(stmt.expr);
       if (!stmt.typeName.empty()) {
+        checkTypeName(stmt.typeName, stmt.line, stmt.col);
         if (const structDecl *st = I().findStruct(stmt.typeName))
           checkTypeArgCount(st->typeParams, typeArgList(stmt.typeName),
                             stmt.line, stmt.col, typeHead(stmt.typeName));
@@ -1766,7 +1862,9 @@ struct TypeChecker {
     case Stmt::Kind::Assign: {
       walkExpr(stmt.expr);
       if (!defined(stmt.name)) {
-        fail(stmt.line, stmt.col, "undefined variable '" + stmt.name + "'");
+        fail(stmt.line, stmt.col,
+             "undefined variable '" + stmt.name + "'" +
+                 stdlibImportHint(stmt.name, I().file));
         return;
       }
       if (!isLocal(stmt.name) && !currentSelf.empty()) {
@@ -1966,12 +2064,14 @@ struct TypeChecker {
       if (pit != I().classParents.end())
         currentSuper = pit->second;
     }
+    checkTypeName(fn.returnType, fn.line, 1);
     scopes.emplace_back();
     for (size_t i = 0; i < fn.params.size(); ++i) {
       std::string ty = i < fn.paramTypes.size() ? fn.paramTypes[i] : "";
       if (fn.params[i] == "self" && !selfType.empty())
         ty = selfType;
       if (!ty.empty()) {
+        checkTypeName(ty, fn.line, 1);
         if (const structDecl *st = I().findStruct(ty))
           checkTypeArgCount(st->typeParams, typeArgList(ty), fn.line, 1,
                             typeHead(ty));
@@ -1993,11 +2093,31 @@ struct TypeChecker {
   }
 
   void run() {
+    for (const auto &st : I().program.structs) {
+      auto prev = genericParams;
+      for (const auto &p : st.typeParams)
+        genericParams.insert(p.name);
+      for (const auto &ty : st.fieldTypes)
+        checkTypeName(ty, st.line, 1);
+      genericParams = std::move(prev);
+    }
+    for (const auto &c : I().program.classes) {
+      auto prev = genericParams;
+      for (const auto &p : c.typeParams)
+        genericParams.insert(p.name);
+      for (const auto &f : c.fields)
+        checkTypeName(f.type, c.line, 1);
+      genericParams = std::move(prev);
+    }
     for (const auto &fn : I().program.fns)
       checkFn(fn, "");
     for (const auto &type : I().typeMethods) {
-      for (const auto &m : type.second)
+      for (const auto &m : type.second) {
+        const std::string prevMod = I().currentModule;
+        I().currentModule = m.second->module;
         checkFn(*m.second, type.first);
+        I().currentModule = prevMod;
+      }
     }
     const std::string prev = I().currentModule;
     for (auto &mod : I().loaded) {

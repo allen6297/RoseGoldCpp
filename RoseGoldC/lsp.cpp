@@ -1086,6 +1086,45 @@ std::vector<std::string> quotedIdents(const std::string &s) {
   return out;
 }
 
+int importInsertLine(const std::string &text) {
+  auto lines = splitLines(text);
+  int last = -1;
+  for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+    const std::string t = trimCopy(lines[static_cast<size_t>(i)]);
+    if (t.rfind("import ", 0) == 0 || t.rfind("from ", 0) == 0)
+      last = i;
+  }
+  return last + 1;
+}
+
+bool fileHasCrateImport(const std::string &text, const std::string &crate) {
+  auto lines = splitLines(text);
+  for (const auto &line : lines) {
+    const std::string t = trimCopy(line);
+    if (t == "import " + crate + ";" || t == "import std." + crate + ";")
+      return true;
+    if (crate == "std" && t.rfind("import std", 0) == 0)
+      return true;
+  }
+  return false;
+}
+
+std::string crateFromDiag(const std::string &msg) {
+  const std::string p = "(in crate ";
+  const size_t a = msg.find(p);
+  if (a == std::string::npos)
+    return "";
+  const size_t start = a + p.size();
+  const size_t b = msg.find_first_of(";)", start);
+  if (b == std::string::npos)
+    return "";
+  std::string c = msg.substr(start, b - start);
+  const size_t orPos = c.find(" or ");
+  if (orPos != std::string::npos)
+    c = c.substr(0, orPos);
+  return trimCopy(c);
+}
+
 bool isIdentName(const std::string &s) {
   if (s.empty())
     return false;
@@ -1602,6 +1641,27 @@ bool pathHasBuiltin(const std::string &path) {
          n.rfind("builtin/", 0) == 0;
 }
 
+std::string stdlibCrateFromUri(const std::string &uri) {
+  std::string n = uriToPath(uri);
+  for (char &c : n) {
+    if (c == '\\')
+      c = '/';
+  }
+  const std::string key = "/builtin/std/";
+  std::string rest;
+  const size_t p = n.find(key);
+  if (p != std::string::npos)
+    rest = n.substr(p + key.size());
+  else if (n.rfind("builtin/std/", 0) == 0)
+    rest = n.substr(std::string("builtin/std/").size());
+  else
+    return "";
+  const size_t slash = rest.find('/');
+  if (slash == std::string::npos)
+    return "std";
+  return rest.substr(0, slash);
+}
+
 Json hoverPayload(const NavSymbol &s, const IdentAt *ident) {
   std::string sig = s.detail.empty() ? s.kind + " " + s.name : s.detail;
   std::string md = "```rosegold\n";
@@ -1613,6 +1673,9 @@ Json hoverPayload(const NavSymbol &s, const IdentAt *ident) {
   md += "\n```";
   if (!s.doc.empty())
     md += "\n\n" + s.doc;
+  const std::string crate = stdlibCrateFromUri(s.uri);
+  if (!crate.empty() && s.doc.find("in crate") == std::string::npos)
+    md += "\n\nin crate `" + crate + "`";
   Json contents = Json::object();
   contents.set("kind", Json::str("markdown"));
   contents.set("value", Json::str(md));
@@ -1670,7 +1733,8 @@ const char *kKeywords[] = {
     "self",    "true", "false",
     "try",     "do",   "throws",   "throw",  "catch"};
 const char *kTypes[] = {"Int",  "Float", "String", "Bool", "Void",
-                        "Array", "Map",  "Range",  "UUID", "Vec2", "Vec3"};
+                        "Array", "Map",  "Range",  "UUID", "Vec2", "Vec3",
+                        "Window"};
 
 struct Builtin {
   const char *label;
@@ -2029,16 +2093,22 @@ struct Server {
     if (ident.qualifier == "io" || ident.qualifier == "time" ||
         ident.qualifier == "path" || ident.qualifier == "math" ||
         ident.qualifier == "str" || ident.qualifier == "json" ||
+        ident.qualifier == "ui" || ident.qualifier == "vec" ||
         ident.qualifier == "std") {
       NavSymbol s;
       s.name = ident.name;
-      s.kind = "fn";
+      s.kind = ident.name == "Window" || ident.name == "Vec2" ||
+                       ident.name == "Vec3" || ident.name == "UUID"
+                   ? "class"
+                   : "fn";
       s.detail = ident.qualifier + "." + ident.name;
       if (ident.name == "read_text" || ident.name == "read_lines" ||
-          ident.name == "write_text" || ident.name == "parse")
+          ident.name == "write_text" || ident.name == "parse" ||
+          ident.name == "open" || ident.name == "open_hidden")
         s.throws = true;
       if (ident.name == "read_text" || ident.name == "read_lines" ||
-          ident.name == "write_text" || ident.name == "parse")
+          ident.name == "write_text" || ident.name == "parse" ||
+          ident.name == "open" || ident.name == "open_hidden")
         s.detail += " throws";
       return hoverPayload(s, &ident);
     }
@@ -2064,8 +2134,18 @@ struct Server {
       if (!hit)
         hit = &s;
     }
-    if (!hit)
+    if (!hit) {
+      if (const StdlibExport *ex =
+              lookupStdlibExport(ident.name, uriToPath(uri))) {
+        NavSymbol s;
+        s.name = ident.name;
+        s.kind = ex->kind;
+        s.detail = std::string(ex->kind) + " " + ident.name;
+        s.doc = "in crate `" + ex->crate + "`. Try `import " + ex->crate + "`.";
+        return hoverPayload(s, &ident);
+      }
       return Json::null();
+    }
     return hoverPayload(*hit, &ident);
   }
 
@@ -2276,6 +2356,8 @@ struct Server {
                            "path"));
         items.a.push_back(
             completionItem("json", 9, "std.json", "parse / stringify", "json"));
+        items.a.push_back(completionItem(
+            "ui", 9, "std.ui", "Native windows (open / run)", "ui"));
         items.a.push_back(
             completionItem("v4", 3, "std.v4()", "Random UUID v4", "v4()"));
         items.a.push_back(
@@ -2376,6 +2458,64 @@ struct Server {
             completionItem("Vec2", 7, "class Vec2", "Vec2 { x, y }", "Vec2"));
         items.a.push_back(completionItem(
             "Vec3", 7, "class Vec3", "Vec3 { x, y, z } extends Vec2", "Vec3"));
+      } else if (recv == "ui") {
+        items.a.push_back(completionItem(
+            "open", 3, "ui.open(title, width, height) throws",
+            "Create a visible native window", "open($1, $2, $3)"));
+        items.a.push_back(completionItem(
+            "open_hidden", 3, "ui.open_hidden(title, width, height) throws",
+            "Create a hidden window (tests)", "open_hidden($1, $2, $3)"));
+        items.a.push_back(completionItem(
+            "run", 3, "ui.run()", "Pump messages until every window closes",
+            "run()"));
+        items.a.push_back(
+            completionItem("count", 3, "ui.count()", "Living windows",
+                           "count()"));
+        items.a.push_back(completionItem(
+            "backend", 3, "ui.backend()", "win32, x11, wayland, or cocoa",
+            "backend()"));
+        items.a.push_back(completionItem(
+            "font_height", 3, "ui.font_height()", "Pixel height of the UI font",
+            "font_height()"));
+        items.a.push_back(completionItem(
+            "text_width", 3, "ui.text_width(s)", "Pixel width of a string",
+            "text_width($0)"));
+        items.a.push_back(completionItem(
+            "rgb", 3, "ui.rgb(r, g, b)", "Custom Color.Rgb(r, g, b)",
+            "rgb($1, $2, $3)"));
+        items.a.push_back(completionItem(
+            "Color", 13, "enum Color",
+            "Black, Red, Green, Yellow, Blue, Magenta, Cyan, White, Rgb(r, g, b)",
+            "Color"));
+        items.a.push_back(completionItem(
+            "padding", 3, "w.padding(n)", "Wrap a widget with inset",
+            "padding($0)"));
+        items.a.push_back(completionItem(
+            "background", 3, "w.background(color)",
+            "Paint a fill behind a widget", "background($0)"));
+        items.a.push_back(completionItem(
+            "style", 3, "w.style(Style { fill, pad })",
+            "Fill and padding bag", "style($0)"));
+        items.a.push_back(completionItem(
+            "Window", 7, "class Window",
+            "Window { title, width, height, visible }", "Window"));
+        items.a.push_back(completionItem(
+            "Label", 7, "class Label", "Label { text } implements Widget",
+            "Label"));
+        items.a.push_back(completionItem(
+            "Button", 7, "class Button",
+            "Button { text } with clicked signal", "Button"));
+        items.a.push_back(completionItem(
+            "VStack", 7, "class VStack",
+            "VStack { spacing, children } vertical layout", "VStack"));
+        items.a.push_back(completionItem(
+            "HStack", 7, "class HStack",
+            "HStack { spacing, children } horizontal layout", "HStack"));
+        items.a.push_back(completionItem(
+            "Style", 7, "class Style", "Style { fill, ink, pad }", "Style"));
+        items.a.push_back(completionItem(
+            "Widget", 8, "trait Widget",
+            "height / paint / handle_click", "Widget"));
       } else if (recv == "checks") {
         items.a.push_back(
             completionItem("eq", 2, "checks.eq(a, b)", "", "eq($1, $2)"));
@@ -2418,8 +2558,26 @@ struct Server {
     }
 
     if (reColonType()) {
-      for (const char *t : kTypes)
-        items.a.push_back(completionItem(t, 25, "type", "", t));
+      std::set<std::string> seen;
+      const std::string from = uriToPath(uri);
+      for (const char *t : kTypes) {
+        std::string detail = "type";
+        if (const StdlibExport *ex = lookupStdlibExport(t, from))
+          detail = "crate " + ex->crate;
+        items.a.push_back(completionItem(t, 25, detail, "", t));
+        seen.insert(t);
+      }
+      for (const auto &kv : stdlibExportIndex(from)) {
+        for (const auto &ex : kv.second) {
+          if (ex.kind == "fn")
+            continue;
+          if (!seen.insert(kv.first).second)
+            continue;
+          items.a.push_back(completionItem(
+              kv.first, 25, "crate " + ex.crate,
+              ex.kind + " in " + ex.crate, kv.first));
+        }
+      }
       Json list = Json::object();
       list.set("isIncomplete", Json::boolean(false));
       list.set("items", std::move(items));
@@ -2806,6 +2964,35 @@ struct Server {
             workspaceEditJson(uri, std::move(edits)), false));
       }
     }
+
+    {
+      const std::string from = uriToPath(uri);
+      std::set<std::string> crates;
+      auto consider = [&](const std::string &crate) {
+        if (crate.empty() || !crates.insert(crate).second)
+          return;
+        if (fileHasCrateImport(text, crate))
+          return;
+        const int il = importInsertLine(text);
+        Json edits = Json::array();
+        edits.a.push_back(
+            textEditJson(il, 0, il, 0, "import " + crate + ";" + nl));
+        actions.a.push_back(codeActionJson(
+            "Import crate " + crate, "quickfix",
+            workspaceEditJson(uri, std::move(edits)), true));
+      };
+      for (const auto &d : diags) {
+        std::string crate;
+        auto qs = quotedIdents(d.message);
+        if (!qs.empty()) {
+          if (const StdlibExport *ex = lookupStdlibExport(qs[0], from))
+            crate = ex->crate;
+        }
+        if (crate.empty())
+          crate = crateFromDiag(d.message);
+        consider(crate);
+      }
+    }
     return actions;
   }
 
@@ -3127,6 +3314,41 @@ bool jsonRpcSelfTest() {
         stub = true;
     }
     if (!stub)
+      return false;
+    srv.docs["file:///kbob.rg"] =
+        "class Block impl Identifiable {\n    var x: Int = 0;\n}\nfn main(): "
+        "Int {\n    return 0;\n}\n";
+    Json kp = Json::object();
+    Json ktd = Json::object();
+    ktd.set("uri", Json::str("file:///kbob.rg"));
+    kp.set("textDocument", std::move(ktd));
+    Json kst = Json::object();
+    kst.set("line", Json::num(0));
+    kst.set("character", Json::num(18));
+    Json kr = Json::object();
+    kr.set("start", kst);
+    kr.set("end", kst);
+    kp.set("range", std::move(kr));
+    Json kacts = srv.codeAction(kp);
+    bool importStd = false;
+    for (const auto &a : kacts.a) {
+      if (a.getStr("title") == "Import crate std")
+        importStd = true;
+    }
+    if (!importStd)
+      return false;
+    Json khovp = Json::object();
+    Json khtd = Json::object();
+    khtd.set("uri", Json::str("file:///kbob.rg"));
+    khovp.set("textDocument", std::move(khtd));
+    Json khpos = Json::object();
+    khpos.set("line", Json::num(0));
+    khpos.set("character", Json::num(18));
+    khovp.set("position", std::move(khpos));
+    Json khov = srv.hover(khovp);
+    const Json *kcontents = khov.getObj("contents");
+    if (!kcontents ||
+        kcontents->getStr("value").find("crate") == std::string::npos)
       return false;
     return true;
   } catch (...) {

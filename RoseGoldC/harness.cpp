@@ -439,6 +439,43 @@ static void appendCheckSelfTest(RunResult &result) {
             d.empty() ? "no diagnostic"
                       : std::to_string(d.size()) + " diags: " + d[0].message);
   }
+  if (fs::is_regular_file("tests/fail/crate_std.rg", ec)) {
+    auto d = checkFile("tests/fail/crate_std.rg");
+    bool trait = false;
+    for (const auto &x : d) {
+      if (x.message.find("Identifiable") != std::string::npos &&
+          x.message.find("in crate std") != std::string::npos)
+        trait = true;
+    }
+    require(trait, "crate_std",
+            d.empty() ? "no diagnostic" : d[0].message);
+  }
+  if (fs::is_regular_file("tests/fail/crate_uuid.rg", ec)) {
+    auto d = checkFile("tests/fail/crate_uuid.rg");
+    bool uuid = false;
+    for (const auto &x : d) {
+      if (x.message.find("UUID") != std::string::npos &&
+          x.message.find("in crate std") != std::string::npos)
+        uuid = true;
+    }
+    require(uuid, "crate_uuid",
+            d.empty() ? "no diagnostic" : d[0].message);
+  }
+  if (fs::is_regular_file("builtin/std/ui/color.rg", ec)) {
+    auto d = checkFile("builtin/std/ui/color.rg");
+    require(d.empty(), "ui_color_crate",
+            d.empty() ? "" : diagnosticToHuman(d[0]));
+  }
+  if (fs::is_regular_file("builtin/std/ui/lib.rg", ec)) {
+    auto d = checkFile("builtin/std/ui/lib.rg");
+    require(d.empty(), "ui_lib_crate",
+            d.empty() ? "" : diagnosticToHuman(d[0]));
+  }
+  if (fs::is_regular_file("builtin/std/ui/widgets.rg", ec)) {
+    auto d = checkFile("builtin/std/ui/widgets.rg");
+    require(d.empty(), "ui_widgets_crate",
+            d.empty() ? "" : diagnosticToHuman(d[0]));
+  }
   require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
 }
 

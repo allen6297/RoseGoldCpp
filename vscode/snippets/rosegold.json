@@ -342,7 +342,7 @@
     "body": [
       "import std;"
     ],
-    "description": "Import std (std.math, std.str, std.io, std.vec, std.time, std.path, std.json)"
+    "description": "Import std (std.math, std.str, std.io, std.vec, std.time, std.path, std.json, std.ui)"
   },
   "Import std.math": {
     "prefix": "importstdmath",
@@ -371,6 +371,28 @@
       "import std.json;"
     ],
     "description": "Import std.json (parse, stringify, valid)"
+  },
+  "Import ui": {
+    "prefix": "importui",
+    "body": [
+      "import ui;",
+      "",
+      "fn main(): Int {",
+      "    var w = try ui.open(\"${1:RoseGold}\", ${2:400}, ${3:240});",
+      "    var go = Button { text: \"${5:Close}\" };",
+      "    go.clicked.connect(fn () { w.close(); });",
+      "    w.add(VStack {",
+      "        spacing: 12,",
+      "        children: [",
+      "            Label { text: \"${4:Hello}\" }.padding(8),",
+      "            go",
+      "        ]",
+      "    }.padding(12));",
+      "    w.run();",
+      "    return 0;",
+      "}"
+    ],
+    "description": "Open a window with a nested VStack"
   },
   "From import": {
     "prefix": "from",

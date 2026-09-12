@@ -282,20 +282,19 @@ struct LoadedMod {
 inline bool isHostModule(const std::string &name) {
   return name == "checks" || name == "process" || name == "__math" ||
          name == "__str" || name == "__io" || name == "__uuid" ||
-         name == "__time" || name == "__path" || name == "__json";
+         name == "__time" || name == "__path" || name == "__json" ||
+         name == "__ui";
 }
 
 inline bool isStdlibChild(const std::string &name) {
   return name == "math" || name == "str" || name == "io" || name == "vec" ||
-         name == "time" || name == "path" || name == "json";
+         name == "time" || name == "path" || name == "json" || name == "ui";
 }
 
 inline bool isCrateStdlib(const std::string &name) {
   if (name == "std" || isStdlibChild(name))
     return true;
-  if (name.size() > 4 && name.compare(0, 4, "std.") == 0)
-    return isStdlibChild(name.substr(4));
-  return false;
+  return name.size() > 4 && name.compare(0, 4, "std.") == 0;
 }
 
 inline std::string canonicalStdlibName(const std::string &name) {
@@ -303,6 +302,19 @@ inline std::string canonicalStdlibName(const std::string &name) {
     return "std." + name;
   return name;
 }
+
+struct StdlibExport {
+  std::string crate;
+  std::string kind;
+};
+
+std::filesystem::path findStdlibRoot(const std::string &fromFile);
+const std::map<std::string, std::vector<StdlibExport>> &
+stdlibExportIndex(const std::string &fromFile);
+const StdlibExport *lookupStdlibExport(const std::string &name,
+                                       const std::string &fromFile);
+std::string stdlibImportHint(const std::string &name,
+                             const std::string &fromFile);
 
 inline ModDecl *pickMod(Program &p, const std::string &name) {
   ModDecl *named = nullptr;
@@ -386,6 +398,8 @@ struct DeferredEmit {
   int line = 1;
   int col = 1;
 };
+
+void uiHostReset();
 
 struct Interpreter {
   Program program;
@@ -478,7 +492,10 @@ struct Interpreter {
                        const std::string &atFile);
   void ingestModule(Program &p, const std::string &modName, LoadedMod &m,
                     const std::string &atFile);
-  void attachStdlibChildren();
+  std::string crateNameOfFile(const std::string &path) const;
+  std::filesystem::path crateDir(const std::string &name) const;
+  void ingestCrateEntry(const std::string &crate);
+  void attachCrateChildren(const std::string &parent);
   void loadModule(const std::string &name, const std::string &fromFile, int line,
                   int col);
   void bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod *owner,
@@ -593,7 +610,13 @@ struct Interpreter {
   void constexprFail(int line, int col, const std::string &msg) {
     recordDiag("constexpr error", file, line, col, msg);
   }
+
+  ~Interpreter() { uiHostReset(); }
 };
+
+void uiHostReset();
+Value uiHostCall(Interpreter &I, const std::string &name,
+                 const std::vector<Value> &args, int line, int col);
 
 std::string readFile(const std::string &path);
 bool isNumeric(const Value &v);

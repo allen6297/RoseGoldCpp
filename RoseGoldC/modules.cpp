@@ -37,6 +37,11 @@ Interpreter::Interpreter(Program p, std::string f, std::vector<std::string> a,
 }
 
 void Interpreter::ingestEntry() {
+  const std::string crate = crateNameOfFile(file);
+  if (!crate.empty()) {
+    ingestCrateEntry(crate);
+    return;
+  }
   for (const auto &fn : program.fns)
     fns[fn.name] = &fn;
   for (auto &st : program.structs) {
@@ -116,15 +121,14 @@ bool Interpreter::fileHasMod(const std::string &source, const std::string &name)
   return false;
 }
 
-std::filesystem::path Interpreter::stdlibRoot() const {
+std::filesystem::path findStdlibRoot(const std::string &fromFile) {
   namespace fs = std::filesystem;
   std::vector<fs::path> starts;
-  if (!file.empty()) {
-    fs::path p = fs::path(file).parent_path();
+  if (!fromFile.empty()) {
+    fs::path p = fs::path(fromFile).parent_path();
     if (p.empty())
       p = ".";
     starts.push_back(p);
-  
   }
   std::error_code ec;
   fs::path cwd = fs::current_path(ec);
@@ -142,6 +146,247 @@ std::filesystem::path Interpreter::stdlibRoot() const {
     }
   }
   return {};
+}
+
+std::filesystem::path Interpreter::stdlibRoot() const {
+  return findStdlibRoot(file);
+}
+
+static std::filesystem::path stdlibChildDir(const std::filesystem::path &root,
+                                            const std::string &child) {
+  namespace fs = std::filesystem;
+  fs::path dir = root;
+  std::string part;
+  for (char c : child) {
+    if (c == '.') {
+      if (!part.empty()) {
+        dir /= part;
+        part.clear();
+      }
+    } else
+      part.push_back(c);
+  }
+  if (!part.empty())
+    dir /= part;
+  return dir;
+}
+
+static bool sameRgFile(const std::string &a, const std::string &b) {
+  namespace fs = std::filesystem;
+  if (a.empty() || b.empty())
+    return false;
+  std::error_code ec;
+  if (fs::equivalent(fs::path(a), fs::path(b), ec) && !ec)
+    return true;
+  auto norm = [](const std::string &p) {
+    std::error_code nec;
+    fs::path c = fs::weakly_canonical(fs::path(p), nec);
+    if (nec)
+      c = fs::path(p).lexically_normal();
+    std::string s = c.generic_string();
+    for (char &ch : s)
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+  };
+  return norm(a) == norm(b);
+}
+
+std::string Interpreter::crateNameOfFile(const std::string &path) const {
+  namespace fs = std::filesystem;
+  if (path.empty())
+    return "";
+  const fs::path root = findStdlibRoot(path);
+  if (root.empty())
+    return "";
+  std::error_code ec;
+  fs::path filePath = fs::weakly_canonical(fs::path(path), ec);
+  if (ec)
+    filePath = fs::absolute(fs::path(path), ec);
+  if (ec)
+    filePath = fs::path(path);
+  fs::path rootPath = fs::weakly_canonical(root, ec);
+  if (ec)
+    rootPath = root;
+  const fs::path rel = fs::relative(filePath, rootPath, ec);
+  if (ec)
+    return "";
+  const std::string s = rel.generic_string();
+  if (s.empty() || s == ".")
+    return "";
+  if (s.size() >= 2 && s.compare(0, 2, "..") == 0)
+    return "";
+  const fs::path parent = rel.parent_path();
+  if (parent.empty() || parent == ".")
+    return "std";
+  std::string crate = "std";
+  for (const auto &part : parent) {
+    crate += ".";
+    crate += part.generic_string();
+  }
+  return crate;
+}
+
+std::filesystem::path Interpreter::crateDir(const std::string &name) const {
+  const std::filesystem::path root = stdlibRoot();
+  if (root.empty() || name == "std")
+    return root;
+  std::string child = name;
+  if (child.size() > 4 && child.compare(0, 4, "std.") == 0)
+    child = child.substr(4);
+  else if (isStdlibChild(child)) {
+    /* short crate name */
+  } else
+    return {};
+  return stdlibChildDir(root, child);
+}
+
+static void indexStdlibSource(
+    const std::string &source, const std::string &crate,
+    std::map<std::string, std::vector<StdlibExport>> &out) {
+  try {
+    const auto tokens = tokenize(source, "");
+    int depth = 0;
+    for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+      const Tok k = tokens[i].kind;
+      if (k == Tok::LBrace) {
+        ++depth;
+        continue;
+      }
+      if (k == Tok::RBrace) {
+        if (depth > 0)
+          --depth;
+        continue;
+      }
+      if (depth != 0)
+        continue;
+      const char *kind = nullptr;
+      switch (k) {
+      case Tok::Function:
+        kind = "fn";
+        break;
+      case Tok::Struct:
+        kind = "struct";
+        break;
+      case Tok::Data:
+        kind = "data";
+        break;
+      case Tok::Class:
+        kind = "class";
+        break;
+      case Tok::Trait:
+        kind = "trait";
+        break;
+      case Tok::Enum:
+        kind = "enum";
+        break;
+      default:
+        break;
+      }
+      if (!kind || tokens[i + 1].kind != Tok::Identifier)
+        continue;
+      const std::string &name = tokens[i + 1].text;
+      auto &list = out[name];
+      bool have = false;
+      for (const auto &e : list) {
+        if (e.crate == crate) {
+          have = true;
+          break;
+        }
+      }
+      if (!have)
+        list.push_back(StdlibExport{crate, kind});
+    }
+  } catch (...) {
+  }
+}
+
+static void indexStdlibDir(
+    const std::filesystem::path &dir, const std::string &crate,
+    std::map<std::string, std::vector<StdlibExport>> &out) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec) || ec)
+    return;
+  std::vector<fs::path> paths;
+  for (const auto &entry : fs::directory_iterator(dir, ec)) {
+    if (ec)
+      break;
+    std::error_code fec;
+    if (!entry.is_regular_file(fec) || fec)
+      continue;
+    if (entry.path().extension() == ".rg")
+      paths.push_back(entry.path());
+  }
+  std::sort(paths.begin(), paths.end());
+  for (const auto &path : paths) {
+    try {
+      indexStdlibSource(readFile(path.generic_string()), crate, out);
+    } catch (...) {
+    }
+  }
+}
+
+const std::map<std::string, std::vector<StdlibExport>> &
+stdlibExportIndex(const std::string &fromFile) {
+  static std::map<std::string, std::map<std::string, std::vector<StdlibExport>>>
+      cache;
+  const std::filesystem::path root = findStdlibRoot(fromFile);
+  const std::string key = root.empty() ? std::string() : root.generic_string();
+  auto it = cache.find(key);
+  if (it != cache.end())
+    return it->second;
+  auto &idx = cache[key];
+  if (root.empty())
+    return idx;
+  indexStdlibDir(root, "std", idx);
+  const char *children[] = {"math", "str", "io",  "vec",
+                            "time", "path", "json", "ui"};
+  for (const char *child : children)
+    indexStdlibDir(root / child, child, idx);
+  return idx;
+}
+
+const StdlibExport *lookupStdlibExport(const std::string &name,
+                                       const std::string &fromFile) {
+  const auto &idx = stdlibExportIndex(fromFile);
+  auto it = idx.find(name);
+  if (it == idx.end() || it->second.empty())
+    return nullptr;
+  return &it->second[0];
+}
+
+std::string stdlibImportHint(const std::string &name,
+                             const std::string &fromFile) {
+  const auto &idx = stdlibExportIndex(fromFile);
+  auto it = idx.find(name);
+  if (it == idx.end() || it->second.empty())
+    return "";
+  const auto &hits = it->second;
+  std::string crates;
+  for (size_t i = 0; i < hits.size(); ++i) {
+    if (i)
+      crates += " or ";
+    crates += hits[i].crate;
+  }
+  std::string tryMsg;
+  if (hits.size() == 1) {
+    const auto &h = hits[0];
+    if (h.kind == "fn") {
+      if (h.crate == "std")
+        tryMsg = "; try 'import std' then 'std." + name + "'";
+      else
+        tryMsg = "; try 'import " + h.crate + "' then '" + h.crate + "." +
+                 name + "'";
+    } else if (h.crate == "std") {
+      tryMsg = "; try 'import std'";
+    } else {
+      tryMsg = "; try 'from " + h.crate + " import " + name +
+               "' or 'import " + h.crate + "'";
+    }
+  } else {
+    tryMsg = "; try importing " + crates;
+  }
+  return " (in crate " + crates + tryMsg + ")";
 }
 
 std::vector<std::string> Interpreter::resolveModule(const std::string &name,
@@ -189,13 +434,15 @@ std::vector<std::string> Interpreter::resolveModule(const std::string &name,
 
   if (isCrateStdlib(stem)) {
     fs::path root = stdlibRoot();
+    if (root.empty())
+      root = findStdlibRoot(fromFile);
     if (!root.empty()) {
       fs::path dir = root;
       if (stem != "std") {
         std::string child = stem;
         if (child.size() > 4 && child.compare(0, 4, "std.") == 0)
           child = child.substr(4);
-        dir = root / child;
+        dir = stdlibChildDir(root, child);
       }
       addDir(dir);
       if (!out.empty())
@@ -266,8 +513,10 @@ void Interpreter::ingestStructs(LoadedMod &m, std::vector<structDecl> &items, bo
     m.structs[st.name] = &st;
     allTypes[st.name] = &st;
     recordFieldAccess(st.name, st.fields, st.fieldVis);
-    for (const auto &method : st.methods)
+    for (auto &method : st.methods) {
+      method.module = modName;
       typeMethods[st.name][method.name] = &method;
+    }
     for (const auto &t : st.implTraits)
       recordTraitImpl(selfApplied(st.name, st.typeParams), t, st.typeParams,
                       st.line);
@@ -461,7 +710,8 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
     classAbstract[c.name] = c.isAbstract;
     classFinal[c.name] = c.isFinal;
     auto &slot = typeMethods[c.name];
-    for (const auto &method : c.methods) {
+    for (auto &method : c.methods) {
+      method.module = modName;
       if (slot.count(method.name))
         loadFail(atFile,
                   "duplicate method '" + method.name + "' on " + c.name,
@@ -475,6 +725,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
       recordTraitImpl(selfApplied(c.name, c.typeParams), block.traitName,
                       params, c.line);
       for (auto &method : block.methods) {
+        method.module = modName;
         if (slot.count(method.name))
           loadFail(atFile,
                     "duplicate method '" + method.name + "' on " + c.name,
@@ -511,13 +762,18 @@ void Interpreter::ingestImpls(std::vector<ImplDecl> &impls, const std::string &a
         st = sit->second;
     }
     if (!st) {
-      loadFail(atFile, "undefined struct '" + head + "'", im.line, 1);
+      loadFail(atFile,
+               "undefined struct '" + head + "'" +
+                   stdlibImportHint(head, atFile),
+               im.line, 1);
       continue;
     }
     if (!im.traitName.empty()) {
       if (!traits.count(typeHead(im.traitName)))
-        loadFail(atFile, "undefined trait '" + typeHead(im.traitName) + "'",
-                  im.line, 1);
+        loadFail(atFile,
+                 "undefined trait '" + typeHead(im.traitName) + "'" +
+                     stdlibImportHint(typeHead(im.traitName), atFile),
+                 im.line, 1);
       else {
         std::vector<TypeParam> params = im.typeParams;
         if (params.empty())
@@ -578,7 +834,7 @@ void Interpreter::flattenType(const std::string &name, std::vector<std::string> 
     }
     loadFail(file,
              "class '" + name + "' extends unknown type '" + parentApplied +
-                 "'",
+                 "'" + stdlibImportHint(parent, file),
              typeLine(), 1);
     return;
   }
@@ -704,7 +960,9 @@ void Interpreter::checkTraitImpls() {
     for (const auto &traitName : kv.second) {
       auto tit = traits.find(typeHead(traitName));
       if (tit == traits.end()) {
-        loadFail(file, "undefined trait '" + typeHead(traitName) + "'",
+        loadFail(file,
+                 "undefined trait '" + typeHead(traitName) + "'" +
+                     stdlibImportHint(typeHead(traitName), file),
                  typeLine, 1);
         continue;
       }
@@ -932,20 +1190,64 @@ void Interpreter::ingestModule(Program &p, const std::string &modName, LoadedMod
   }
 }
 
-void Interpreter::attachStdlibChildren() {
-  auto it = loaded.find("std");
+void Interpreter::ingestCrateEntry(const std::string &crate) {
+  loading.push_back(crate);
+  LoadedMod m;
+  try {
+    for (const auto &path : resolveModule(crate, file)) {
+      if (sameRgFile(path, file))
+        continue;
+      std::vector<Diagnostic> parseErrs;
+      Program *kept = keep(parseSource(readFile(path), path, &parseErrs));
+      for (const auto &d : parseErrs)
+        recordDiag(d.kind, d.file, d.line, d.col, d.message);
+      ingestModule(*kept, crate, m, path);
+    }
+    ingestModule(program, crate, m, file);
+  } catch (...) {
+    loading.pop_back();
+    throw;
+  }
+  loading.pop_back();
+  loaded[crate] = std::move(m);
+  attachCrateChildren(crate);
+  const auto dot = crate.rfind('.');
+  const std::string bind = dot == std::string::npos ? crate : crate.substr(dot + 1);
+  moduleBinds[bind] = crate;
+}
+
+void Interpreter::attachCrateChildren(const std::string &parent) {
+  namespace fs = std::filesystem;
+  auto it = loaded.find(parent);
   if (it == loaded.end())
     return;
-  static const char *kids[] = {"math", "str", "io", "vec", "time", "path",
-                               "json"};
-  for (const char *kid : kids) {
-    const std::string full = std::string("std.") + kid;
-    loadModule(full, file, 1, 1);
-    if (!loaded.count(full))
+  const fs::path dir = crateDir(parent);
+  std::error_code ec;
+  if (dir.empty() || !fs::is_directory(dir, ec) || ec)
+    return;
+  std::vector<std::string> kids;
+  for (const auto &entry : fs::directory_iterator(dir, ec)) {
+    if (ec)
+      break;
+    std::error_code dec;
+    if (!entry.is_directory(dec) || dec)
       continue;
-    it = loaded.find("std");
+    const std::string kid = entry.path().filename().generic_string();
+    if (kid.empty() || kid[0] == '.')
+      continue;
+    kids.push_back(kid);
+  }
+  std::sort(kids.begin(), kids.end());
+  for (const std::string &kid : kids) {
+    const std::string full = parent + "." + kid;
+    if (resolveModule(full, file).empty())
+      continue;
+    loadModule(full, file, 1, 1);
+    it = loaded.find(parent);
     if (it == loaded.end())
       return;
+    if (!loaded.count(full))
+      continue;
     it->second.modules[kid] = full;
     it->second.exportMods[kid] = full;
   }
@@ -997,8 +1299,7 @@ void Interpreter::loadModule(const std::string &raw, const std::string &fromFile
   }
   loading.pop_back();
   loaded[name] = std::move(m);
-  if (name == "std")
-    attachStdlibChildren();
+  attachCrateChildren(name);
 }
 
 void Interpreter::bindFromImport(const ImportDecl &im, LoadedMod &mod, LoadedMod *owner,

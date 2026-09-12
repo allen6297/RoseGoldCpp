@@ -527,7 +527,7 @@ fn implicit_field() {
     checks.eq(hp, 1);
 }
 
-enum Color {
+enum Hue {
     Red,
     Green,
 }
@@ -539,9 +539,9 @@ enum Shape {
 
 @test
 fn enum_unit() {
-    var c = Color.Red;
-    checks.that(c == Color.Red);
-    checks.that(c != Color.Green);
+    var c = Hue.Red;
+    checks.that(c == Hue.Red);
+    checks.that(c != Hue.Green);
 }
 
 @test
