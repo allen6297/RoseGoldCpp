@@ -3,6 +3,9 @@ import ui;
 fn main(): Int {
     var b = ui.backend();
     checks.that(b == "win32" || b == "x11" || b == "wayland" || b == "cocoa" || b == "none");
+    var p = ui.platform();
+    checks.that(p == "windows" || p == "linux" || p == "macos");
+    checks.eq_string(ui.kind(), "desktop");
     checks.that(ui.font_height() > 0);
     checks.that(ui.text_width("Hi") > ui.text_width("H"));
     checks.eq(ui.count(), 0);

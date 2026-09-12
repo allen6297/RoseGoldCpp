@@ -570,7 +570,7 @@ struct TypeChecker {
       if (recv.text == "__ui") {
         if (e.text == "open")
           return "Int";
-        if (e.text == "title" || e.text == "backend")
+        if (e.text == "title" || e.text == "backend" || e.text == "platform")
           return "String";
         if (e.text == "alive" || e.text == "poll" || e.text == "mouse_down" ||
             e.text == "take_click")
@@ -1331,7 +1331,7 @@ struct TypeChecker {
         return;
       }
       if (name == "run" || name == "count" || name == "backend" ||
-          name == "wait" || name == "font_height") {
+          name == "platform" || name == "wait" || name == "font_height") {
         arity(0);
         return;
       }
@@ -2109,8 +2109,13 @@ struct TypeChecker {
         checkTypeName(f.type, c.line, 1);
       genericParams = std::move(prev);
     }
+    const std::string crate = I().crateNameOfFile(I().file);
+    const std::string prevEntry = I().currentModule;
+    if (!crate.empty())
+      I().currentModule = crate;
     for (const auto &fn : I().program.fns)
       checkFn(fn, "");
+    I().currentModule = prevEntry;
     for (const auto &type : I().typeMethods) {
       for (const auto &m : type.second) {
         const std::string prevMod = I().currentModule;

@@ -2472,8 +2472,16 @@ struct Server {
             completionItem("count", 3, "ui.count()", "Living windows",
                            "count()"));
         items.a.push_back(completionItem(
-            "backend", 3, "ui.backend()", "win32, x11, wayland, or cocoa",
+            "backend", 3, "ui.backend()",
+            "Blit host: win32, x11, wayland, cocoa, none (later android, ios, web)",
             "backend()"));
+        items.a.push_back(completionItem(
+            "platform", 3, "ui.platform()",
+            "OS family: windows, linux, macos (later android, ios, web)",
+            "platform()"));
+        items.a.push_back(completionItem(
+            "kind", 3, "ui.kind()",
+            "desktop, mobile, or web", "kind()"));
         items.a.push_back(completionItem(
             "font_height", 3, "ui.font_height()", "Pixel height of the UI font",
             "font_height()"));

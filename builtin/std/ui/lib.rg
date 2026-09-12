@@ -274,3 +274,18 @@ fn count(): Int {
 fn backend(): String {
     return __ui.backend();
 }
+
+fn platform(): String {
+    return __ui.platform();
+}
+
+fn kind(): String {
+    var p = platform();
+    if (p == "android" || p == "ios") {
+        return "mobile";
+    }
+    if (p == "web") {
+        return "web";
+    }
+    return "desktop";
+}
