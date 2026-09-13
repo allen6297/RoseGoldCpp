@@ -570,13 +570,18 @@ struct TypeChecker {
       if (recv.text == "__ui") {
         if (e.text == "open")
           return "Int";
-        if (e.text == "title" || e.text == "backend" || e.text == "platform")
+        if (e.text == "title" || e.text == "backend" || e.text == "platform" ||
+            e.text == "key_text")
           return "String";
         if (e.text == "alive" || e.text == "poll" || e.text == "mouse_down" ||
-            e.text == "take_click")
+            e.text == "take_click" || e.text == "take_key" ||
+            e.text == "take_scroll")
           return "Bool";
         if (e.text == "width" || e.text == "height" || e.text == "count" ||
-            e.text == "mouse_x" || e.text == "mouse_y")
+            e.text == "mouse_x" || e.text == "mouse_y" || e.text == "key_code" ||
+            e.text == "scroll_dx" || e.text == "scroll_dy" ||
+            e.text == "text_width" || e.text == "font_height" ||
+            e.text == "image_width" || e.text == "image_height")
           return "Int";
         return "Void";
       }
@@ -1302,23 +1307,35 @@ struct TypeChecker {
         requireTry(true, name, line, col);
         return;
       }
-      if (name == "fill") {
+      if (name == "fill" || name == "line" || name == "stroke_rect" ||
+          name == "image_rgb") {
         arity(6);
+        return;
+      }
+      if (name == "clip_push") {
+        arity(5);
         return;
       }
       if (name == "text") {
         arity(5);
         return;
       }
-      if (name == "text_width") {
+      if (name == "image") {
+        arity(4);
+        return;
+      }
+      if (name == "text_width" || name == "image_width" ||
+          name == "image_height") {
         arity(1);
         return;
       }
-      if (name == "set_size" || name == "feed_click") {
+      if (name == "set_size" || name == "feed_click" || name == "feed_key" ||
+          name == "feed_scroll" || name == "feed_mouse") {
         arity(3);
         return;
       }
-      if (name == "set_title" || name == "clear" || name == "set_frame") {
+      if (name == "set_title" || name == "clear" || name == "set_frame" ||
+          name == "feed_down") {
         arity(2);
         return;
       }
@@ -1326,7 +1343,9 @@ struct TypeChecker {
           name == "poll" || name == "alive" || name == "title" ||
           name == "width" || name == "height" || name == "present" ||
           name == "mouse_x" || name == "mouse_y" || name == "mouse_down" ||
-          name == "take_click") {
+          name == "take_click" || name == "take_key" || name == "key_code" ||
+          name == "key_text" || name == "take_scroll" || name == "scroll_dx" ||
+          name == "scroll_dy" || name == "clip_pop") {
         arity(1);
         return;
       }

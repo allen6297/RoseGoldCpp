@@ -1,7 +1,17 @@
 trait Widget {
-    fn height(): Int;
+    fn min_width(): Int;
+    fn height(w: Int): Int;
+    fn flex(): Int;
     fn paint(win_id: Int, x: Int, y: Int, w: Int);
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool;
+    fn handle_key(code: Int, text: String): Bool;
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool;
+    fn clear_focus();
+}
+
+trait LazyRows {
+    fn count(): Int;
+    fn row(i: Int): Widget;
 }
 
 class Style {
@@ -16,8 +26,20 @@ class Pad impl Widget {
     var child: Widget;
     var amount: Int = 0;
 
-    fn height(): Int {
-        return child.height() + amount * 2;
+    fn min_width(): Int {
+        return child.min_width() + amount * 2;
+    }
+
+    fn height(w: Int): Int {
+        var inner = w - amount * 2;
+        if (inner < 0) {
+            inner = 0;
+        }
+        return child.height(inner) + amount * 2;
+    }
+
+    fn flex(): Int {
+        return child.flex();
     }
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
@@ -45,23 +67,69 @@ class Pad impl Widget {
         }
         return child.handle_click(lx - amount, ly - amount, inner_w, inner_h);
     }
+
+    fn handle_key(code: Int, text: String): Bool {
+        return child.handle_key(code, text);
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (lx < amount || ly < amount) {
+            return false;
+        }
+        if (lx >= w - amount || ly >= h - amount) {
+            return false;
+        }
+        var inner_w = w - amount * 2;
+        var inner_h = h - amount * 2;
+        if (inner_w < 0) {
+            inner_w = 0;
+        }
+        if (inner_h < 0) {
+            inner_h = 0;
+        }
+        return child.handle_scroll(dx, dy, lx - amount, ly - amount, inner_w, inner_h);
+    }
+
+    fn clear_focus() {
+        child.clear_focus();
+    }
 }
 
 class Backdrop impl Widget {
     var child: Widget;
     var color: Color = Color.Black;
 
-    fn height(): Int {
-        return child.height();
+    fn min_width(): Int {
+        return child.min_width();
+    }
+
+    fn height(w: Int): Int {
+        return child.height(w);
+    }
+
+    fn flex(): Int {
+        return child.flex();
     }
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
-        __ui.fill(win_id, x, y, w, child.height(), color.value());
+        __ui.fill(win_id, x, y, w, child.height(w), color.value());
         child.paint(win_id, x, y, w);
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return child.handle_click(lx, ly, w, h);
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        return child.handle_key(code, text);
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return child.handle_scroll(dx, dy, lx, ly, w, h);
+    }
+
+    fn clear_focus() {
+        child.clear_focus();
     }
 }
 
@@ -87,17 +155,144 @@ fn style(w: Widget, s: Style): Widget {
     return out;
 }
 
+fn drop_last(s: String): String {
+    var n = len(s);
+    if (n == 0) {
+        return "";
+    }
+    var out = "";
+    var i = 0;
+    while (i < n - 1) {
+        out = out + s[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+fn line_step(): Int {
+    var h = font_height() + 2;
+    if (h < 18) {
+        return 18;
+    }
+    return h;
+}
+
+fn control_height(min_h: Int, pad: Int): Int {
+    var h = font_height() + pad;
+    if (h < min_h) {
+        return min_h;
+    }
+    return h;
+}
+
+fn wrap_lines(text: String, max_w: Int): Array[String] {
+    var lines: Array[String] = [];
+    var width = max_w;
+    if (width < 1) {
+        width = 1;
+    }
+    var para = "";
+    var i = 0;
+    var n = len(text);
+    while (i <= n) {
+        var at_end = i == n;
+        var ch = "";
+        if (!at_end) {
+            ch = text[i];
+        }
+        if (at_end || ch == "\n") {
+            if (len(para) == 0) {
+                lines.push("");
+            } else {
+                var word = "";
+                var line = "";
+                var j = 0;
+                while (j <= len(para)) {
+                    var done = j == len(para);
+                    var c = "";
+                    if (!done) {
+                        c = para[j];
+                    }
+                    if (done || c == " ") {
+                        var candidate = word;
+                        if (len(line) > 0) {
+                            candidate = line + " " + word;
+                        }
+                        if (len(word) > 0 && text_width(candidate) <= width) {
+                            line = candidate;
+                        } else {
+                            if (len(line) > 0) {
+                                lines.push(line);
+                            }
+                            if (text_width(word) <= width) {
+                                line = word;
+                            } else {
+                                var piece = "";
+                                var k = 0;
+                                while (k < len(word)) {
+                                    var next = piece + word[k];
+                                    if (len(piece) > 0 && text_width(next) > width) {
+                                        lines.push(piece);
+                                        piece = word[k];
+                                    } else {
+                                        piece = next;
+                                    }
+                                    k = k + 1;
+                                }
+                                line = piece;
+                            }
+                        }
+                        word = "";
+                    } else {
+                        word = word + c;
+                    }
+                    j = j + 1;
+                }
+                if (len(line) > 0) {
+                    lines.push(line);
+                }
+            }
+            para = "";
+            if (at_end) {
+                break;
+            }
+        } else {
+            para = para + ch;
+        }
+        i = i + 1;
+    }
+    if (len(lines) == 0) {
+        lines.push("");
+    }
+    return lines;
+}
+
+fn wrapped_height(text: String, max_w: Int): Int {
+    var lines = wrap_lines(text, max_w);
+    var step = line_step();
+    var h = len(lines) * step;
+    if (h < step) {
+        h = step;
+    }
+    return h;
+}
+
 class Window {
     var id: Int = 0;
     var title: String = "RoseGold";
     var width: Int = 800;
     var height: Int = 600;
     var visible: Bool = true;
+    var theme: Theme = Theme {};
     @optional
     var children: Array[Widget];
 
     fn bind_frame() {
         __ui.set_frame(id, fn () { self.tick(); });
+    }
+
+    fn root_widget(): Widget {
+        return VStack { spacing: 8, children: children }.padding(12);
     }
 
     fn show() throws {
@@ -182,37 +377,50 @@ class Window {
         if (len(children) == 0) {
             return;
         }
-        __ui.clear(id, 242 * 65536 + 242 * 256 + 242);
-        var pad = 12;
-        var inner = width - pad * 2;
-        if (inner < 1) {
-            inner = 1;
-        }
-        var y = pad;
-        var i = 0;
-        while (i < len(children)) {
-            var child = children[i];
-            var h = child.height();
-            child.paint(id, pad, y, inner);
-            y = y + h + 8;
-            i = i + 1;
-        }
-        __ui.present(id);
+        var root = root_widget();
+        var rh = root.height(width);
         if (__ui.take_click(id)) {
             var mx = __ui.mouse_x(id);
             var my = __ui.mouse_y(id);
-            y = pad;
-            i = 0;
-            while (i < len(children)) {
-                var child = children[i];
-                var h = child.height();
-                if (mx >= pad && mx < pad + inner && my >= y && my < y + h) {
-                    child.handle_click(mx - pad, my - y, inner, h);
-                }
-                y = y + h + 8;
-                i = i + 1;
-            }
+            root.clear_focus();
+            root.handle_click(mx, my, width, rh);
         }
+        while (__ui.take_key(id)) {
+            root.handle_key(__ui.key_code(id), __ui.key_text(id));
+        }
+        if (__ui.take_scroll(id)) {
+            root.handle_scroll(__ui.scroll_dx(id), __ui.scroll_dy(id),
+                               __ui.mouse_x(id), __ui.mouse_y(id), width, rh);
+        }
+        __ui.clear(id, theme.window_bg.value());
+        root.paint(id, 0, 0, width);
+        __ui.present(id);
+    }
+
+    fn hover_at(x: Int, y: Int) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_mouse(id, x, y);
+        tick();
+    }
+
+    fn drag_to(x: Int, y: Int) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_down(id, true);
+        __ui.feed_mouse(id, x, y);
+        tick();
+    }
+
+    fn drag_end(x: Int, y: Int) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_mouse(id, x, y);
+        __ui.feed_down(id, false);
+        tick();
     }
 
     fn click_at(x: Int, y: Int) {
@@ -220,6 +428,24 @@ class Window {
             return;
         }
         __ui.feed_click(id, x, y);
+        tick();
+    }
+
+    fn key_at(code: Int, text: String) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_key(id, code, text);
+        tick();
+    }
+
+    fn scroll_at(dx: Int, dy: Int, x: Int, y: Int) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_click(id, x, y);
+        __ui.take_click(id);
+        __ui.feed_scroll(id, dx, dy);
         tick();
     }
 

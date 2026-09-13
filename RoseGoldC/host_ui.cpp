@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -24,6 +27,7 @@
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CGGeometry.h>
+#include <CoreGraphics/CoreGraphics.h>
 #include <TargetConditionals.h>
 #include <objc/message.h>
 #include <objc/objc.h>
@@ -31,6 +35,7 @@
 #elif defined(__unix__)
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <cstdlib>
 #include <cstring>
 #ifdef ROSEGOLD_WAYLAND
@@ -77,6 +82,22 @@ struct HostWin {
   int mouse_y = 0;
   bool mouse_down = false;
   bool mouse_click = false;
+  bool key_pending = false;
+  int key_code = 0;
+  std::string key_text;
+  bool scroll_pending = false;
+  int scroll_dx = 0;
+  int scroll_dy = 0;
+  struct ClipRect {
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+  };
+  std::vector<ClipRect> clip_stack;
+#if defined(__APPLE__)
+  void *nsview = nullptr;
+#endif
 };
 
 std::map<long long, HostWin> gWins;
@@ -158,14 +179,7 @@ void fbClear(HostWin &win, long long color) {
   std::fill(win.fb.begin(), win.fb.end(), p);
 }
 
-void fbFill(HostWin &win, int x, int y, int w, int h, long long color) {
-  ensureFb(win);
-  if (w < 1 || h < 1)
-    return;
-  int x0 = x;
-  int y0 = y;
-  int x1 = x + w;
-  int y1 = y + h;
+void clipBounds(const HostWin &win, int &x0, int &y0, int &x1, int &y1) {
   if (x0 < 0)
     x0 = 0;
   if (y0 < 0)
@@ -174,6 +188,28 @@ void fbFill(HostWin &win, int x, int y, int w, int h, long long color) {
     x1 = win.fb_w;
   if (y1 > win.fb_h)
     y1 = win.fb_h;
+  if (!win.clip_stack.empty()) {
+    const HostWin::ClipRect &c = win.clip_stack.back();
+    if (x0 < c.x0)
+      x0 = c.x0;
+    if (y0 < c.y0)
+      y0 = c.y0;
+    if (x1 > c.x1)
+      x1 = c.x1;
+    if (y1 > c.y1)
+      y1 = c.y1;
+  }
+}
+
+void fbFill(HostWin &win, int x, int y, int w, int h, long long color) {
+  ensureFb(win);
+  if (w < 1 || h < 1)
+    return;
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w;
+  int y1 = y + h;
+  clipBounds(win, x0, y0, x1, y1);
   if (x0 >= x1 || y0 >= y1)
     return;
   const uint32_t p = packRgb(color);
@@ -182,6 +218,157 @@ void fbFill(HostWin &win, int x, int y, int w, int h, long long color) {
     for (int col = x0; col < x1; ++col)
       *dst++ = p;
   }
+}
+
+void fbPlot(HostWin &win, int x, int y, uint32_t p) {
+  if (x < 0 || y < 0 || x >= win.fb_w || y >= win.fb_h)
+    return;
+  if (!win.clip_stack.empty()) {
+    const HostWin::ClipRect &c = win.clip_stack.back();
+    if (x < c.x0 || y < c.y0 || x >= c.x1 || y >= c.y1)
+      return;
+  }
+  win.fb[static_cast<size_t>(y) * win.fb_w + x] = p;
+}
+
+void fbLine(HostWin &win, int x0, int y0, int x1, int y1, long long color) {
+  ensureFb(win);
+  const uint32_t p = packRgb(color);
+  int dx = x1 - x0;
+  int dy = y1 - y0;
+  const int absDx = dx < 0 ? -dx : dx;
+  const int absDy = dy < 0 ? -dy : dy;
+  const int steps = absDx > absDy ? absDx : absDy;
+  if (steps == 0) {
+    fbPlot(win, x0, y0, p);
+    return;
+  }
+  for (int i = 0; i <= steps; ++i) {
+    const int x = x0 + dx * i / steps;
+    const int y = y0 + dy * i / steps;
+    fbPlot(win, x, y, p);
+  }
+}
+
+void fbStrokeRect(HostWin &win, int x, int y, int w, int h, long long color) {
+  if (w < 1 || h < 1)
+    return;
+  fbFill(win, x, y, w, 1, color);
+  fbFill(win, x, y + h - 1, w, 1, color);
+  fbFill(win, x, y, 1, h, color);
+  fbFill(win, x + w - 1, y, 1, h, color);
+}
+
+struct RgbImage {
+  int w = 0;
+  int h = 0;
+  std::vector<uint32_t> px;
+};
+
+std::map<std::string, RgbImage> gImages;
+
+void fbBlitRgb(HostWin &win, int x, int y, int iw, int ih,
+               const uint32_t *src) {
+  ensureFb(win);
+  if (!src || iw < 1 || ih < 1)
+    return;
+  for (int row = 0; row < ih; ++row) {
+    for (int col = 0; col < iw; ++col)
+      fbPlot(win, x + col, y + row, src[static_cast<size_t>(row) * iw + col]);
+  }
+}
+
+bool loadPpmFile(const std::string &path, RgbImage &out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    return false;
+  std::string magic;
+  in >> magic;
+  if (magic != "P6" && magic != "P3")
+    return false;
+  auto skipComments = [&]() {
+    while (in) {
+      const int c = in.peek();
+      if (c == '#') {
+        std::string line;
+        std::getline(in, line);
+        continue;
+      }
+      if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+        in.get();
+        continue;
+      }
+      break;
+    }
+  };
+  skipComments();
+  int w = 0;
+  int h = 0;
+  int maxv = 0;
+  in >> w >> h;
+  skipComments();
+  in >> maxv;
+  if (!in || w < 1 || h < 1 || maxv < 1 || w > 8192 || h > 8192)
+    return false;
+  if (magic == "P6") {
+    in.get(); // single whitespace after maxval
+    std::vector<unsigned char> raw(static_cast<size_t>(w) * h * 3);
+    in.read(reinterpret_cast<char *>(raw.data()),
+            static_cast<std::streamsize>(raw.size()));
+    if (!in)
+      return false;
+    out.w = w;
+    out.h = h;
+    out.px.resize(static_cast<size_t>(w) * h);
+    for (size_t i = 0; i < out.px.size(); ++i) {
+      const unsigned r = raw[i * 3];
+      const unsigned g = raw[i * 3 + 1];
+      const unsigned b = raw[i * 3 + 2];
+      const long long color =
+          (static_cast<long long>(r) << 16) | (static_cast<long long>(g) << 8) | b;
+      out.px[i] = packRgb(color);
+    }
+    return true;
+  }
+  out.w = w;
+  out.h = h;
+  out.px.resize(static_cast<size_t>(w) * h);
+  for (size_t i = 0; i < out.px.size(); ++i) {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    in >> r >> g >> b;
+    if (!in)
+      return false;
+    const long long color = (static_cast<long long>(r & 255) << 16) |
+                            (static_cast<long long>(g & 255) << 8) | (b & 255);
+    out.px[i] = packRgb(color);
+  }
+  return true;
+}
+
+const RgbImage *cachedImage(const std::string &path) {
+  auto it = gImages.find(path);
+  if (it != gImages.end())
+    return &it->second;
+  RgbImage img;
+  if (!loadPpmFile(path, img))
+    return nullptr;
+  auto &slot = gImages[path];
+  slot = std::move(img);
+  return &slot;
+}
+
+void feedKey(HostWin &win, int code, std::string text) {
+  win.key_code = code;
+  win.key_text = std::move(text);
+  win.key_pending = true;
+}
+
+void feedScroll(HostWin &win, int dx, int dy) {
+  win.scroll_dx = dx;
+  win.scroll_dy = dy;
+  win.scroll_pending = true;
 }
 
 const uint8_t kFont8[96][8] = {
@@ -245,8 +432,64 @@ int gFontBw = 0;
 int gFontBh = 0;
 HFONT gFont = nullptr;
 int gSysFontH = 8;
+int gFontDpi = 0;
 bool gSysFontOk = false;
-bool gSysFontTried = false;
+bool gDpiAwareTried = false;
+HCURSOR gArrowCursor = nullptr;
+
+void enableDpiAwareness() {
+  if (gDpiAwareTried)
+    return;
+  gDpiAwareTried = true;
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32) {
+    using SetCtxFn = BOOL(WINAPI *)(void *);
+    auto setCtx = reinterpret_cast<SetCtxFn>(
+        GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+    if (setCtx) {
+      // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (DPI_AWARENESS_CONTEXT)-4
+      if (setCtx(reinterpret_cast<void *>(static_cast<INT_PTR>(-4))))
+        return;
+    }
+    using SetAwareFn = BOOL(WINAPI *)(void);
+    auto setAware = reinterpret_cast<SetAwareFn>(
+        GetProcAddress(user32, "SetProcessDPIAware"));
+    if (setAware)
+      setAware();
+  }
+}
+
+int queryDpi(HWND hwnd) {
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32 && hwnd) {
+    using GetDpiWinFn = UINT(WINAPI *)(HWND);
+    auto getWin = reinterpret_cast<GetDpiWinFn>(
+        GetProcAddress(user32, "GetDpiForWindow"));
+    if (getWin) {
+      const UINT d = getWin(hwnd);
+      if (d >= 72)
+        return static_cast<int>(d);
+    }
+  }
+  if (user32) {
+    using GetDpiSysFn = UINT(WINAPI *)(void);
+    auto getSys = reinterpret_cast<GetDpiSysFn>(
+        GetProcAddress(user32, "GetDpiForSystem"));
+    if (getSys) {
+      const UINT d = getSys();
+      if (d >= 72)
+        return static_cast<int>(d);
+    }
+  }
+  HDC screen = GetDC(nullptr);
+  if (screen) {
+    const int d = GetDeviceCaps(screen, LOGPIXELSX);
+    ReleaseDC(nullptr, screen);
+    if (d >= 72)
+      return d;
+  }
+  return 96;
+}
 
 std::wstring utf8ToWide(const std::string &s) {
   if (s.empty())
@@ -261,32 +504,71 @@ std::wstring utf8ToWide(const std::string &s) {
   return w;
 }
 
-bool ensureSysFont() {
-  if (gSysFontTried)
-    return gSysFontOk;
-  gSysFontTried = true;
+void clearFontDib() {
+  if (!gFontBmp)
+    return;
+  if (gFontDc)
+    SelectObject(gFontDc, GetStockObject(SYSTEM_FONT));
+  DeleteObject(gFontBmp);
+  gFontBmp = nullptr;
+  gFontBits = nullptr;
+  gFontBw = 0;
+  gFontBh = 0;
+}
+
+bool ensureSysFont(int dpi) {
+  if (dpi < 72)
+    dpi = 96;
+  if (gSysFontOk && gFont && gFontDpi == dpi)
+    return true;
+
+  clearFontDib();
+  if (gFont) {
+    if (gFontDc)
+      SelectObject(gFontDc, GetStockObject(SYSTEM_FONT));
+    DeleteObject(gFont);
+    gFont = nullptr;
+  }
+  if (!gFontDc) {
+    gFontDc = CreateCompatibleDC(nullptr);
+    if (!gFontDc) {
+      gSysFontOk = false;
+      return false;
+    }
+  }
+
+  const int px = -MulDiv(13, dpi, 96);
   NONCLIENTMETRICSW ncm{};
   ncm.cbSize = sizeof(ncm);
   if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-    ncm.lfMessageFont.lfQuality = CLEARTYPE_QUALITY;
-    gFont = CreateFontIndirectW(&ncm.lfMessageFont);
+    LOGFONTW lf = ncm.lfMessageFont;
+    lf.lfHeight = px;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    gFont = CreateFontIndirectW(&lf);
   }
   if (!gFont)
-    gFont = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    gFont = CreateFontW(px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                         CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS,
                         L"Segoe UI");
-  if (!gFont)
+  if (!gFont) {
+    gSysFontOk = false;
+    gFontDpi = 0;
     return false;
-  gFontDc = CreateCompatibleDC(nullptr);
-  if (!gFontDc)
-    return false;
+  }
   SelectObject(gFontDc, gFont);
   TEXTMETRICW tm{};
   GetTextMetricsW(gFontDc, &tm);
   gSysFontH = tm.tmHeight > 0 ? static_cast<int>(tm.tmHeight) : 8;
+  gFontDpi = dpi;
   gSysFontOk = true;
   return true;
+}
+
+bool ensureSysFont() { return ensureSysFont(queryDpi(nullptr)); }
+
+bool ensureSysFontFor(HostWin &win) {
+  return ensureSysFont(queryDpi(win.hwnd));
 }
 
 void ensureFontDib(int w, int h) {
@@ -296,12 +578,7 @@ void ensureFontDib(int w, int h) {
     h = 1;
   if (gFontBmp && gFontBw >= w && gFontBh >= h)
     return;
-  if (gFontBmp) {
-    SelectObject(gFontDc, GetStockObject(SYSTEM_FONT));
-    DeleteObject(gFontBmp);
-    gFontBmp = nullptr;
-    gFontBits = nullptr;
-  }
+  clearFontDib();
   BITMAPINFO bi{};
   bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
   bi.bmiHeader.biWidth = w;
@@ -320,23 +597,23 @@ void ensureFontDib(int w, int h) {
 
 int sysTextWidth(const std::string &s) {
   if (!ensureSysFont())
-    return static_cast<int>(s.size()) * 8;
+    return static_cast<int>(s.size()) * 16;
   const std::wstring w = utf8ToWide(s);
   SIZE sz{};
   if (!GetTextExtentPoint32W(gFontDc, w.c_str(), static_cast<int>(w.size()),
                              &sz))
-    return static_cast<int>(s.size()) * 8;
+    return static_cast<int>(s.size()) * 16;
   return sz.cx;
 }
 
 int sysFontHeight() {
   if (!ensureSysFont())
-    return 8;
+    return 16;
   return gSysFontH;
 }
 
 bool sysText(HostWin &win, int x, int y, const std::string &s, long long color) {
-  if (!ensureSysFont())
+  if (!ensureSysFontFor(win))
     return false;
   const std::wstring w = utf8ToWide(s);
   if (w.empty())
@@ -383,10 +660,7 @@ bool sysText(HostWin &win, int x, int y, const std::string &s, long long color) 
           continue;
         for (int col = 0; col < sz.cx; ++col) {
           const int fx = x + col;
-          if (fx < 0 || fx >= win.fb_w)
-            continue;
-          win.fb[static_cast<size_t>(fy) * win.fb_w + fx] =
-              dst[static_cast<size_t>(row) * gFontBw + col];
+          fbPlot(win, fx, fy, dst[static_cast<size_t>(row) * gFontBw + col]);
         }
       }
     }
@@ -397,6 +671,25 @@ bool sysText(HostWin &win, int x, int y, const std::string &s, long long color) 
   }
   return true;
 }
+
+void blitFbToDc(HDC hdc, HostWin &win, int cw, int ch) {
+  if (win.fb.empty() || win.fb_w < 1 || win.fb_h < 1)
+    return;
+  SetStretchBltMode(hdc, HALFTONE);
+  SetBrushOrgEx(hdc, 0, 0, nullptr);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = win.fb_w;
+  bi.bmiHeader.biHeight = -win.fb_h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  StretchDIBits(hdc, 0, 0, cw, ch, 0, 0, win.fb_w, win.fb_h, win.fb.data(), &bi,
+                DIB_RGB_COLORS, SRCCOPY);
+  // HALFTONE StretchDIBits can clear the cursor; restore for client area.
+  if (gArrowCursor)
+    SetCursor(gArrowCursor);
+}
 #else
 int sysTextWidth(const std::string &s) {
   int n = 0;
@@ -404,10 +697,10 @@ int sysTextWidth(const std::string &s) {
     if (ch != '\n')
       ++n;
   }
-  return n * 8;
+  return n * 16;
 }
 
-int sysFontHeight() { return 8; }
+int sysFontHeight() { return 16; }
 
 bool sysText(HostWin &, int, int, const std::string &, long long) {
   return false;
@@ -416,32 +709,32 @@ bool sysText(HostWin &, int, int, const std::string &, long long) {
 
 void fbTextBitmap(HostWin &win, int x, int y, const std::string &s, long long color) {
   const uint32_t p = packRgb(color);
+  const int scale = 2;
+  const int cell = 8 * scale;
   int cx = x;
   int cy = y;
   for (unsigned char ch : s) {
     if (ch == '\n') {
       cx = x;
-      cy += 9;
+      cy += cell + scale;
       continue;
     }
     if (ch < 32 || ch > 126)
       ch = '?';
     const uint8_t *glyph = kFont8[ch - 32];
     for (int row = 0; row < 8; ++row) {
-      const int py = cy + row;
-      if (py < 0 || py >= win.fb_h)
-        continue;
       uint8_t bits = glyph[row];
       for (int col = 0; col < 8; ++col) {
         if (bits & 0x80) {
-          const int px = cx + col;
-          if (px >= 0 && px < win.fb_w)
-            win.fb[static_cast<size_t>(py) * win.fb_w + px] = p;
+          for (int dy = 0; dy < scale; ++dy) {
+            for (int dx = 0; dx < scale; ++dx)
+              fbPlot(win, cx + col * scale + dx, cy + row * scale + dy, p);
+          }
         }
         bits = static_cast<uint8_t>(bits << 1);
       }
     }
-    cx += 8;
+    cx += cell;
   }
 }
 
@@ -460,6 +753,17 @@ void feedClick(HostWin &win, int x, int y) {
   win.mouse_y = y;
   win.mouse_down = false;
   win.mouse_click = true;
+}
+
+void feedMouse(HostWin &win, int x, int y) {
+  win.mouse_x = x;
+  win.mouse_y = y;
+}
+
+void feedDown(HostWin &win, bool down) {
+  win.mouse_down = down;
+  if (!down)
+    win.mouse_click = false;
 }
 
 #if defined(__unix__) && !defined(__APPLE__)
@@ -492,9 +796,23 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (it != gWins.end())
       win = &it->second;
   }
+  if (msg == WM_SETCURSOR) {
+    if (LOWORD(lp) == HTCLIENT) {
+      if (!gArrowCursor)
+        gArrowCursor = LoadCursor(nullptr, IDC_ARROW);
+      if (gArrowCursor) {
+        SetCursor(gArrowCursor);
+        return TRUE;
+      }
+    }
+    return DefWindowProc(hwnd, msg, wp, lp);
+  }
   if (msg == WM_MOUSEMOVE && win) {
     win->mouse_x = static_cast<int>(static_cast<short>(LOWORD(lp)));
     win->mouse_y = static_cast<int>(static_cast<short>(HIWORD(lp)));
+    runFrame(id);
+    if (gArrowCursor)
+      SetCursor(gArrowCursor);
     return 0;
   }
   if (msg == WM_LBUTTONDOWN && win) {
@@ -510,6 +828,32 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     win->mouse_y = static_cast<int>(static_cast<short>(HIWORD(lp)));
     win->mouse_down = false;
     win->mouse_click = true;
+    return 0;
+  }
+  if (msg == WM_MOUSEWHEEL && win) {
+    POINT pt{static_cast<LONG>(static_cast<short>(LOWORD(lp))),
+             static_cast<LONG>(static_cast<short>(HIWORD(lp)))};
+    ScreenToClient(hwnd, &pt);
+    win->mouse_x = static_cast<int>(pt.x);
+    win->mouse_y = static_cast<int>(pt.y);
+    const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+    feedScroll(*win, 0, delta / WHEEL_DELTA * 24);
+    runFrame(id);
+    return 0;
+  }
+  if (msg == WM_CHAR && win) {
+    const unsigned ch = static_cast<unsigned>(wp);
+    if (ch == 8 || ch == 13) {
+      feedKey(*win, static_cast<int>(ch), "");
+    } else if (ch >= 32 && ch != 127) {
+      wchar_t wch = static_cast<wchar_t>(ch);
+      char utf8[8]{};
+      const int n = WideCharToMultiByte(CP_UTF8, 0, &wch, 1, utf8, 7, nullptr,
+                                        nullptr);
+      feedKey(*win, static_cast<int>(ch),
+              n > 0 ? std::string(utf8, utf8 + n) : std::string());
+    }
+    runFrame(id);
     return 0;
   }
   if (msg == WM_ENTERSIZEMOVE) {
@@ -531,6 +875,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return 0;
   }
+  if (msg == WM_DPICHANGED && win) {
+    const auto *sug = reinterpret_cast<const RECT *>(lp);
+    if (sug) {
+      SetWindowPos(hwnd, nullptr, sug->left, sug->top, sug->right - sug->left,
+                   sug->bottom - sug->top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    ensureSysFont(queryDpi(hwnd));
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    applyClientSize(*win, rc.right, rc.bottom);
+    runFrame(id);
+    return 0;
+  }
   if (msg == WM_SIZE && win) {
     if (wp != SIZE_MINIMIZED) {
       applyClientSize(*win, static_cast<int>(LOWORD(lp)),
@@ -549,15 +906,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       GetClientRect(hwnd, &rc);
       const int cw = rc.right > 0 ? rc.right : win->fb_w;
       const int ch = rc.bottom > 0 ? rc.bottom : win->fb_h;
-      BITMAPINFO bi{};
-      bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-      bi.bmiHeader.biWidth = win->fb_w;
-      bi.bmiHeader.biHeight = -win->fb_h;
-      bi.bmiHeader.biPlanes = 1;
-      bi.bmiHeader.biBitCount = 32;
-      bi.bmiHeader.biCompression = BI_RGB;
-      StretchDIBits(hdc, 0, 0, cw, ch, 0, 0, win->fb_w, win->fb_h,
-                    win->fb.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+      blitFbToDc(hdc, *win, cw, ch);
     }
     EndPaint(hwnd, &ps);
     return 0;
@@ -580,12 +929,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void ensureClass() {
+  enableDpiAwareness();
   if (gAtom)
     return;
+  if (!gArrowCursor)
+    gArrowCursor = LoadCursor(nullptr, IDC_ARROW);
   WNDCLASSW wc{};
   wc.lpfnWndProc = wndProc;
   wc.hInstance = GetModuleHandleW(nullptr);
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hCursor = gArrowCursor;
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
   wc.lpszClassName = L"RoseGoldC.Window";
   gAtom = RegisterClassW(&wc);
@@ -604,7 +956,17 @@ bool nativeOpen(HostWin &win, const std::string &title, int w, int h,
   if (!visible)
     ex = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
   RECT rc{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)};
-  AdjustWindowRectEx(&rc, style, FALSE, ex);
+  const int sysDpi = queryDpi(nullptr);
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  using AdjDpiFn = BOOL(WINAPI *)(LPRECT, DWORD, BOOL, DWORD, UINT);
+  AdjDpiFn adjDpi = nullptr;
+  if (user32)
+    adjDpi = reinterpret_cast<AdjDpiFn>(
+        GetProcAddress(user32, "AdjustWindowRectExForDpi"));
+  if (adjDpi)
+    adjDpi(&rc, style, FALSE, ex, static_cast<UINT>(sysDpi));
+  else
+    AdjustWindowRectEx(&rc, style, FALSE, ex);
   HWND hwnd = CreateWindowExW(
       ex, L"RoseGoldC.Window", wideOf(title).c_str(), style, CW_USEDEFAULT,
       CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr,
@@ -613,6 +975,7 @@ bool nativeOpen(HostWin &win, const std::string &title, int w, int h,
     return false;
   win.hwnd = hwnd;
   win.mapped = false;
+  ensureSysFont(queryDpi(hwnd));
   return true;
 }
 
@@ -691,15 +1054,7 @@ void nativePresent(HostWin &win) {
   GetClientRect(win.hwnd, &rc);
   const int cw = rc.right > 0 ? rc.right : win.fb_w;
   const int ch = rc.bottom > 0 ? rc.bottom : win.fb_h;
-  BITMAPINFO bi{};
-  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth = win.fb_w;
-  bi.bmiHeader.biHeight = -win.fb_h;
-  bi.bmiHeader.biPlanes = 1;
-  bi.bmiHeader.biBitCount = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-  StretchDIBits(hdc, 0, 0, cw, ch, 0, 0, win.fb_w, win.fb_h, win.fb.data(), &bi,
-                DIB_RGB_COLORS, SRCCOPY);
+  blitFbToDc(hdc, win, cw, ch);
   ReleaseDC(win.hwnd, hdc);
 }
 
@@ -715,8 +1070,171 @@ void nativeWait() {
 }
 
 #elif defined(__APPLE__)
-
 id gApp = nil;
+Class gRgViewClass = nil;
+
+HostWin *hostFromView(id view) {
+  if (!view)
+    return nullptr;
+  const long long idVal = reinterpret_cast<long long (*)(id, SEL)>(objc_msgSend)(
+      view, sel_registerName("winId"));
+  return findAlive(idVal);
+}
+
+void cocoaSetMouse(HostWin *win, id view, id event) {
+  if (!win || !view || !event)
+    return;
+  CGPoint loc = reinterpret_cast<CGPoint (*)(id, SEL)>(objc_msgSend)(
+      event, sel_registerName("locationInWindow"));
+  CGPoint pt = reinterpret_cast<CGPoint (*)(id, SEL, CGPoint, id)>(objc_msgSend)(
+      view, sel_registerName("convertPoint:fromView:"), loc, nil);
+  win->mouse_x = static_cast<int>(pt.x);
+  win->mouse_y = static_cast<int>(pt.y);
+}
+
+BOOL rgIsFlipped(id, SEL) { return YES; }
+
+long long rgWinId(id self, SEL) {
+  Ivar iv = class_getInstanceVariable(gRgViewClass, "winId_");
+  if (!iv)
+    return 0;
+  return *reinterpret_cast<long long *>(reinterpret_cast<char *>(self) +
+                                        ivar_getOffset(iv));
+}
+
+void rgSetWinId(id self, SEL, long long v) {
+  Ivar iv = class_getInstanceVariable(gRgViewClass, "winId_");
+  if (!iv)
+    return;
+  *reinterpret_cast<long long *>(reinterpret_cast<char *>(self) +
+                                 ivar_getOffset(iv)) = v;
+}
+
+void rgDrawRect(id self, SEL, CGRect) {
+  HostWin *win = hostFromView(self);
+  if (!win || win->fb.empty())
+    return;
+  CGContextRef ctx = reinterpret_cast<CGContextRef (*)(id, SEL)>(objc_msgSend)(
+      reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+          (id)objc_getClass("NSGraphicsContext"),
+          sel_registerName("currentContext")),
+      sel_registerName("CGContext"));
+  if (!ctx)
+    return;
+  ensureFb(*win);
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  CGContextRef bmp = CGBitmapContextCreate(
+      win->fb.data(), static_cast<size_t>(win->fb_w),
+      static_cast<size_t>(win->fb_h), 8,
+      static_cast<size_t>(win->fb_w) * 4, cs,
+      kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  if (!bmp)
+    return;
+  CGImageRef img = CGBitmapContextCreateImage(bmp);
+  CGContextRelease(bmp);
+  if (!img)
+    return;
+  CGContextSaveGState(ctx);
+  CGContextTranslateCTM(ctx, 0, win->fb_h);
+  CGContextScaleCTM(ctx, 1, -1);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, win->fb_w, win->fb_h), img);
+  CGContextRestoreGState(ctx);
+  CGImageRelease(img);
+}
+
+void rgMouseDown(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  cocoaSetMouse(win, self, event);
+  if (win)
+    win->mouse_down = true;
+}
+
+void rgMouseUp(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  cocoaSetMouse(win, self, event);
+  if (win) {
+    win->mouse_down = false;
+    win->mouse_click = true;
+    runFrame(win->id);
+  }
+}
+
+void rgMouseMoved(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  cocoaSetMouse(win, self, event);
+  if (win)
+    runFrame(win->id);
+}
+
+void rgScrollWheel(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  cocoaSetMouse(win, self, event);
+  if (!win)
+    return;
+  const double dy = reinterpret_cast<double (*)(id, SEL)>(objc_msgSend)(
+      event, sel_registerName("scrollingDeltaY"));
+  feedScroll(*win, 0, static_cast<int>(dy));
+  runFrame(win->id);
+}
+
+void rgKeyDown(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  if (!win || !event)
+    return;
+  id chars = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+      event, sel_registerName("characters"));
+  const char *utf8 = chars ? reinterpret_cast<const char *(*)(id, SEL)>(
+                                 objc_msgSend)(chars, sel_registerName("UTF8String"))
+                           : nullptr;
+  std::string text = utf8 ? utf8 : "";
+  unsigned short keyCode = reinterpret_cast<unsigned short (*)(id, SEL)>(
+      objc_msgSend)(event, sel_registerName("keyCode"));
+  int code = 0;
+  if (keyCode == 51)
+    code = 8;
+  else if (keyCode == 36)
+    code = 13;
+  else if (!text.empty())
+    code = static_cast<unsigned char>(text[0]);
+  if (code == 8 || code == 13)
+    text.clear();
+  if (code != 0 || !text.empty()) {
+    feedKey(*win, code, text);
+    runFrame(win->id);
+  }
+}
+
+BOOL rgAcceptsFirstResponder(id, SEL) { return YES; }
+
+void ensureRgViewClass() {
+  if (gRgViewClass)
+    return;
+  gRgViewClass = objc_allocateClassPair(objc_getClass("NSView"), "RGHostView", 0);
+  class_addIvar(gRgViewClass, "winId_", sizeof(long long), 3, "q");
+  class_addMethod(gRgViewClass, sel_registerName("isFlipped"), (IMP)rgIsFlipped,
+                  "c@:");
+  class_addMethod(gRgViewClass, sel_registerName("winId"), (IMP)rgWinId, "q@:");
+  class_addMethod(gRgViewClass, sel_registerName("setWinId:"), (IMP)rgSetWinId,
+                  "v@:q");
+  class_addMethod(gRgViewClass, sel_registerName("drawRect:"), (IMP)rgDrawRect,
+                  "v@:{CGRect={CGPoint=dd}{CGSize=dd}}");
+  class_addMethod(gRgViewClass, sel_registerName("mouseDown:"), (IMP)rgMouseDown,
+                  "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("mouseUp:"), (IMP)rgMouseUp,
+                  "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("mouseDragged:"),
+                  (IMP)rgMouseMoved, "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("mouseMoved:"),
+                  (IMP)rgMouseMoved, "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("scrollWheel:"),
+                  (IMP)rgScrollWheel, "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("keyDown:"), (IMP)rgKeyDown,
+                  "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("acceptsFirstResponder"),
+                  (IMP)rgAcceptsFirstResponder, "c@:");
+  objc_registerClassPair(gRgViewClass);
+}
 
 void cocoaEnsureApp() {
   if (gApp)
@@ -727,6 +1245,7 @@ void cocoaEnsureApp() {
       gApp, sel_registerName("setActivationPolicy:"), 0L);
   reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(
       gApp, sel_registerName("finishLaunching"));
+  ensureRgViewClass();
 }
 
 bool nativeReady() {
@@ -749,11 +1268,13 @@ void cocoaReap() {
     if (win.mapped && !cocoaVisible(win.nswin)) {
       win.alive = false;
       win.nswin = nullptr;
+      win.nsview = nullptr;
       win.mapped = false;
       continue;
     }
-    id view = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
-        (id)win.nswin, sel_registerName("contentView"));
+    id view = win.nsview ? (id)win.nsview
+                         : reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+                               (id)win.nswin, sel_registerName("contentView"));
     if (!view)
       continue;
     CGRect bounds = reinterpret_cast<CGRect (*)(id, SEL)>(objc_msgSend)(
@@ -791,18 +1312,35 @@ bool nativeOpen(HostWin &win, const std::string &title, int w, int h,
       window, sel_registerName("setTitle:"), nsTitle);
   reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
       window, sel_registerName("setReleasedWhenClosed:"), NO);
+  id view = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+      (id)gRgViewClass, sel_registerName("alloc"));
+  view = reinterpret_cast<id (*)(id, SEL, CGRect)>(objc_msgSend)(
+      view, sel_registerName("initWithFrame:"), CGRectMake(0, 0, w, h));
+  reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
+      window, sel_registerName("setContentView:"), view);
+  reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(
+      view, sel_registerName("release"));
   win.nswin = window;
+  win.nsview = view;
   win.mapped = false;
   return true;
 }
 
-void nativeBind(HostWin &, long long) {}
+void nativeBind(HostWin &win, long long id) {
+  if (!win.nsview)
+    return;
+  reinterpret_cast<void (*)(id, SEL, long long)>(objc_msgSend)(
+      (id)win.nsview, sel_registerName("setWinId:"), id);
+}
 
 void nativeShow(HostWin &win) {
   if (!win.nswin)
     return;
   reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(
       (id)win.nswin, sel_registerName("makeKeyAndOrderFront:"), nil);
+  if (win.nsview)
+    reinterpret_cast<BOOL (*)(id, SEL, id)>(objc_msgSend)(
+        (id)win.nswin, sel_registerName("makeFirstResponder:"), (id)win.nsview);
   if (gApp)
     reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
         gApp, sel_registerName("activateIgnoringOtherApps:"), YES);
@@ -843,6 +1381,7 @@ void nativeClose(HostWin &win) {
   reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(
       (id)win.nswin, sel_registerName("release"));
   win.nswin = nullptr;
+  win.nsview = nullptr;
   win.mapped = false;
 }
 
@@ -863,7 +1402,10 @@ void nativeRun() {
 }
 
 void nativePresent(HostWin &win) {
-  (void)win;
+  if (!win.nsview)
+    return;
+  reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
+      (id)win.nsview, sel_registerName("setNeedsDisplay:"), YES);
 }
 
 void nativeWait() {
@@ -1384,6 +1926,7 @@ void xHandle(const XEvent &e) {
     if (win) {
       win->mouse_x = e.xmotion.x;
       win->mouse_y = e.xmotion.y;
+      runFrame(win->id);
     }
     return;
   }
@@ -1394,6 +1937,12 @@ void xHandle(const XEvent &e) {
       win->mouse_y = e.xbutton.y;
       win->mouse_down = true;
     }
+    if (win && (e.xbutton.button == 4 || e.xbutton.button == 5)) {
+      win->mouse_x = e.xbutton.x;
+      win->mouse_y = e.xbutton.y;
+      feedScroll(*win, 0, e.xbutton.button == 4 ? 24 : -24);
+      runFrame(win->id);
+    }
     return;
   }
   if (e.type == ButtonRelease) {
@@ -1403,6 +1952,32 @@ void xHandle(const XEvent &e) {
       win->mouse_y = e.xbutton.y;
       win->mouse_down = false;
       win->mouse_click = true;
+    }
+    return;
+  }
+  if (e.type == KeyPress) {
+    HostWin *win = findByXid(e.xkey.window);
+    if (win) {
+      char buf[8]{};
+      KeySym sym = 0;
+      const int n = XLookupString(const_cast<XKeyEvent *>(&e.xkey), buf,
+                                  sizeof(buf) - 1, &sym, nullptr);
+      int code = 0;
+      std::string text;
+      if (sym == XK_BackSpace)
+        code = 8;
+      else if (sym == XK_Return || sym == XK_KP_Enter)
+        code = 13;
+      else if (n > 0) {
+        text.assign(buf, buf + n);
+        code = static_cast<unsigned char>(text[0]);
+      }
+      if (code == 8 || code == 13)
+        text.clear();
+      if (code != 0 || !text.empty()) {
+        feedKey(*win, code, text);
+        runFrame(win->id);
+      }
     }
     return;
   }
@@ -1457,7 +2032,7 @@ bool xOpen(HostWin &win, const std::string &title, int w, int h) {
   XStoreName(gDpy, xid, title.c_str());
   XSelectInput(gDpy, xid,
                StructureNotifyMask | ButtonPressMask | ButtonReleaseMask |
-                   PointerMotionMask | ExposureMask);
+                   PointerMotionMask | ExposureMask | KeyPressMask);
   if (gWmDelete != None)
     XSetWMProtocols(gDpy, xid, &gWmDelete, 1);
   XSizeHints hints{};
@@ -1740,6 +2315,7 @@ const char *runtimeBackend() {
 void uiHostReset() {
   gFrameFns.clear();
   gUiInterp = nullptr;
+  gImages.clear();
   for (auto &kv : gWins) {
     if (hasNative(kv.second))
       nativeClose(kv.second);
@@ -1922,6 +2498,110 @@ Value uiHostCall(Interpreter &I, const std::string &name,
              needInt(5));
     return Value::makeVoid();
   }
+  if (name == "line") {
+    if (args.size() != 6)
+      I.runtime("__ui.line takes 6 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      fbLine(*win, static_cast<int>(needInt(1)), static_cast<int>(needInt(2)),
+             static_cast<int>(needInt(3)), static_cast<int>(needInt(4)),
+             needInt(5));
+    return Value::makeVoid();
+  }
+  if (name == "stroke_rect") {
+    if (args.size() != 6)
+      I.runtime("__ui.stroke_rect takes 6 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      fbStrokeRect(*win, static_cast<int>(needInt(1)),
+                   static_cast<int>(needInt(2)), static_cast<int>(needInt(3)),
+                   static_cast<int>(needInt(4)), needInt(5));
+    return Value::makeVoid();
+  }
+  if (name == "image_rgb") {
+    if (args.size() != 6)
+      I.runtime("__ui.image_rgb takes 6 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    const int x = static_cast<int>(needInt(1));
+    const int y = static_cast<int>(needInt(2));
+    const int iw = static_cast<int>(needInt(3));
+    const int ih = static_cast<int>(needInt(4));
+    if (args[5].kind != Value::Kind::Array || !args[5].items)
+      I.runtime("__ui.image_rgb expects Array[Int] pixels", line, col);
+    if (iw < 1 || ih < 1 || iw > 8192 || ih > 8192)
+      I.runtime("__ui.image_rgb size out of range", line, col);
+    const auto &items = *args[5].items;
+    const size_t need = static_cast<size_t>(iw) * static_cast<size_t>(ih);
+    if (items.size() < need)
+      I.runtime("__ui.image_rgb pixel array too short", line, col);
+    if (win) {
+      std::vector<uint32_t> px(need);
+      for (size_t i = 0; i < need; ++i) {
+        if (items[i].kind != Value::Kind::Int)
+          I.runtime("__ui.image_rgb pixels must be Int", line, col);
+        px[i] = packRgb(items[i].i);
+      }
+      fbBlitRgb(*win, x, y, iw, ih, px.data());
+    }
+    return Value::makeVoid();
+  }
+  if (name == "image") {
+    if (args.size() != 4)
+      I.runtime("__ui.image takes 4 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    const int x = static_cast<int>(needInt(1));
+    const int y = static_cast<int>(needInt(2));
+    const std::string path = needStr(3);
+    const RgbImage *img = cachedImage(path);
+    if (win && img)
+      fbBlitRgb(*win, x, y, img->w, img->h, img->px.data());
+    return Value::makeVoid();
+  }
+  if (name == "image_width") {
+    if (args.size() != 1)
+      I.runtime("__ui.image_width takes 1 argument", line, col);
+    const RgbImage *img = cachedImage(needStr(0));
+    return Value::makeInt(img ? img->w : 0);
+  }
+  if (name == "image_height") {
+    if (args.size() != 1)
+      I.runtime("__ui.image_height takes 1 argument", line, col);
+    const RgbImage *img = cachedImage(needStr(0));
+    return Value::makeInt(img ? img->h : 0);
+  }
+  if (name == "clip_push") {
+    if (args.size() != 5)
+      I.runtime("__ui.clip_push takes 5 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win) {
+      HostWin::ClipRect c;
+      c.x0 = static_cast<int>(needInt(1));
+      c.y0 = static_cast<int>(needInt(2));
+      c.x1 = c.x0 + static_cast<int>(needInt(3));
+      c.y1 = c.y0 + static_cast<int>(needInt(4));
+      if (!win->clip_stack.empty()) {
+        const HostWin::ClipRect &p = win->clip_stack.back();
+        if (c.x0 < p.x0)
+          c.x0 = p.x0;
+        if (c.y0 < p.y0)
+          c.y0 = p.y0;
+        if (c.x1 > p.x1)
+          c.x1 = p.x1;
+        if (c.y1 > p.y1)
+          c.y1 = p.y1;
+      }
+      win->clip_stack.push_back(c);
+    }
+    return Value::makeVoid();
+  }
+  if (name == "clip_pop") {
+    if (args.size() != 1)
+      I.runtime("__ui.clip_pop takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win && !win->clip_stack.empty())
+      win->clip_stack.pop_back();
+    return Value::makeVoid();
+  }
   if (name == "text") {
     if (args.size() != 5)
       I.runtime("__ui.text takes 5 arguments", line, col);
@@ -1984,6 +2664,84 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     if (win)
       feedClick(*win, static_cast<int>(needInt(1)),
                 static_cast<int>(needInt(2)));
+    return Value::makeVoid();
+  }
+  if (name == "feed_mouse") {
+    if (args.size() != 3)
+      I.runtime("__ui.feed_mouse takes 3 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      feedMouse(*win, static_cast<int>(needInt(1)),
+                static_cast<int>(needInt(2)));
+    return Value::makeVoid();
+  }
+  if (name == "feed_down") {
+    if (args.size() != 2)
+      I.runtime("__ui.feed_down takes 2 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      feedDown(*win, needBool(1));
+    return Value::makeVoid();
+  }
+  if (name == "take_key") {
+    if (args.size() != 1)
+      I.runtime("__ui.take_key takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (!win)
+      return Value::makeBool(false);
+    const bool pending = win->key_pending;
+    win->key_pending = false;
+    return Value::makeBool(pending);
+  }
+  if (name == "key_code") {
+    if (args.size() != 1)
+      I.runtime("__ui.key_code takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    return Value::makeInt(win ? win->key_code : 0);
+  }
+  if (name == "key_text") {
+    if (args.size() != 1)
+      I.runtime("__ui.key_text takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    return Value::makeString(win ? win->key_text : "");
+  }
+  if (name == "feed_key") {
+    if (args.size() != 3)
+      I.runtime("__ui.feed_key takes 3 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      feedKey(*win, static_cast<int>(needInt(1)), needStr(2));
+    return Value::makeVoid();
+  }
+  if (name == "take_scroll") {
+    if (args.size() != 1)
+      I.runtime("__ui.take_scroll takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (!win)
+      return Value::makeBool(false);
+    const bool pending = win->scroll_pending;
+    win->scroll_pending = false;
+    return Value::makeBool(pending);
+  }
+  if (name == "scroll_dx") {
+    if (args.size() != 1)
+      I.runtime("__ui.scroll_dx takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    return Value::makeInt(win ? win->scroll_dx : 0);
+  }
+  if (name == "scroll_dy") {
+    if (args.size() != 1)
+      I.runtime("__ui.scroll_dy takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    return Value::makeInt(win ? win->scroll_dy : 0);
+  }
+  if (name == "feed_scroll") {
+    if (args.size() != 3)
+      I.runtime("__ui.feed_scroll takes 3 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      feedScroll(*win, static_cast<int>(needInt(1)),
+                 static_cast<int>(needInt(2)));
     return Value::makeVoid();
   }
   if (name == "set_frame") {

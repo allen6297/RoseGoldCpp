@@ -1,7 +1,19 @@
 $ErrorActionPreference = "Stop"
 
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not (Test-Path $vswhere)) {
+$pf86 = ${env:ProgramFiles(x86)}
+if (-not $pf86) {
+    $pf86 = [Environment]::GetFolderPath("ProgramFilesX86")
+}
+if (-not $pf86) {
+    $pf86 = "C:\Program Files (x86)"
+}
+
+$vswhereCandidates = @(
+    (Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe"),
+    "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+)
+$vswhere = $vswhereCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $vswhere) {
     throw "vswhere.exe not found. Install Visual Studio Build Tools or Community."
 }
 
