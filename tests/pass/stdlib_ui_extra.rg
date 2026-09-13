@@ -53,7 +53,7 @@ fn main(): Int {
     w.hover_at(20, 80);
     w.close();
 
-    var png = ui.load_image("examples/dot.png");
+    var png = ui.load_image("examples/assets/dot.png");
     checks.eq(png.img_w, 16);
     checks.eq(png.img_h, 16);
     var wp = try ui.open_hidden("rg-png", 200, 120);

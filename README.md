@@ -51,38 +51,15 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 
 ```text
 .\build\RoseGoldC.exe run examples/hello.rg
-.\build\RoseGoldC.exe run examples/const.rg
-.\build\RoseGoldC.exe run examples/control.rg
-.\build\RoseGoldC.exe run examples/point.rg
-.\build\RoseGoldC.exe run examples/signals.rg
-.\build\RoseGoldC.exe run examples/closures.rg
-.\build\RoseGoldC.exe run examples/generics.rg
-.\build\RoseGoldC.exe run examples/trait_objects.rg
-.\build\RoseGoldC.exe run examples/argv.rg hello
-.\build\RoseGoldC.exe run examples/import.rg
-.\build\RoseGoldC.exe run examples/nested.rg
-.\build\RoseGoldC.exe run examples/stdlib.rg
 .\build\RoseGoldC.exe run examples/window.rg
-.\build\RoseGoldC.exe run examples/class.rg
-.\build\RoseGoldC.exe run examples/enum.rg
-.\build\RoseGoldC.exe run examples/array.rg
-.\build\RoseGoldC.exe run examples/map.rg
-.\build\RoseGoldC.exe run examples/for.rg
-.\build\RoseGoldC.exe run examples/float.rg
-.\build\RoseGoldC.exe run examples/logic.rg
-.\build\RoseGoldC.exe run examples/compound.rg
-.\build\RoseGoldC.exe run examples/constexpr.rg
-.\build\RoseGoldC.exe run examples/ufcs.rg
-.\build\RoseGoldC.exe run examples/optional.rg
-.\build\RoseGoldC.exe run examples/abstract.rg
-.\build\RoseGoldC.exe run examples/vis.rg
-.\build\RoseGoldC.exe run examples/data.rg
-.\build\RoseGoldC.exe run examples/try.rg
+.\build\RoseGoldC.exe run examples/widgets.rg
+.\build\RoseGoldC.exe run examples/contacts.rg
+.\build\RoseGoldC.exe run examples/argv.rg hello
 .\build\RoseGoldC.exe check examples/hello.rg
-.\build\RoseGoldC.exe check tests/fail/type_add.rg
 .\build\RoseGoldC.exe test
-.\build\RoseGoldC.exe test examples/tests.rg
 ```
+
+Language samples live under `examples/` (`class.rg`, `generics.rg`, …). UI demos: `window.rg` (hello), `canvas.rg`, `widgets.rg` (controls kitchen sink), `contacts.rg` (small app). Images are in `examples/assets/`.
 
 `run` only calls `main`. Extra args after the file are `argv` (`argv(0)` is the file path). `check` lexes, parses, and typechecks without calling `main`. Parse, load, `@constexpr`, and type errors are all collected: `check` and the LSP list every one. `run` still stops at the first. `--json` prints `[{file, line, col, severity, message}, ...]`; `--stdin` reads the buffer and uses `<file>` for imports. `lsp` speaks the Language Server Protocol over stdin/stdout (JSON-RPC with `Content-Length` framing). The editor starts it once and keeps it running for diagnostics, hover, go to definition, find references, completion, outline, highlight, rename (workspace refs, not `builtin/`), CodeLens, and code actions. `test <file>` only calls `@test` functions. `test` with no file runs `examples/tests.rg` plus `tests/pass` (must succeed; files without `fn main` are libraries and are skipped) and `tests/fail` (must error; first `# expect: …` comment is a substring of the message; files without `# expect:` are libraries and are skipped).
 
@@ -619,13 +596,15 @@ fn main(): Int {
 
 ## Next steps
 
-**Not yet:** mobile/web hosts.
+**Desktop UI polish (recommended before mobile/web)**
 
-**Recommended order**
+1. Tab / Shift+Tab focus order across controls (Button, TextField, Toggle, Slider, LazyColumn).
+2. Dropdown / context menu widgets.
+3. Scrollbar chrome on `ScrollView` and `LazyColumn` (thumb + click-to-page).
 
-1. Mobile or web `__ui` host when you have a concrete target app; otherwise keep iterating on desktop demos.
+**Later / when you have a concrete target**
 
-**Only if you want them**
-
-- `import math` not loading the rest of `std` (correct, but the stdlib is tiny).
+- Mobile or web `__ui` host (names already reserved on the same surface as win32/X11/Wayland/Cocoa).
+- More image formats beyond PPM/PNG if needed.
 - A formatter (`rgfmt`) after the language stops moving.
+- Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).

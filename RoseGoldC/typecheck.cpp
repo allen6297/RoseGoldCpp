@@ -1335,7 +1335,7 @@ struct TypeChecker {
         return;
       }
       if (name == "set_title" || name == "clear" || name == "set_frame" ||
-          name == "feed_down") {
+          name == "feed_down" || name == "cursor") {
         arity(2);
         return;
       }

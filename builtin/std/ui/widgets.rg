@@ -495,9 +495,10 @@ class Button impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
-        var mx = __ui.mouse_x(win_id);
-        var my = __ui.mouse_y(win_id);
-        hot = mx >= x && mx < x + w && my >= y && my < y + h;
+        hot = pointer_over(win_id, x, y, w, h);
+        if (hot) {
+            cursor_hand(win_id);
+        }
         down = hot && __ui.mouse_down(win_id);
         var bg = fill;
         if (down) {
@@ -561,6 +562,9 @@ class TextField impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
+        if (pointer_over(win_id, x, y, w, h)) {
+            cursor_ibeam(win_id);
+        }
         __ui.fill(win_id, x, y, w, h, fill.value());
         var bcol = border;
         if (focused) {
@@ -647,6 +651,9 @@ class Toggle impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
+        if (pointer_over(win_id, x, y, w, h)) {
+            cursor_hand(win_id);
+        }
         var track = Color.Rgb(180, 180, 180);
         if (on) {
             track = Color.Rgb(47, 111, 196);
@@ -858,9 +865,12 @@ class Slider impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
+        var over = pointer_over(win_id, x, y, w, h);
+        if (over) {
+            cursor_hand(win_id);
+        }
         var mx = __ui.mouse_x(win_id);
         var my = __ui.mouse_y(win_id);
-        var over = mx >= x && mx < x + w && my >= y && my < y + h;
         if (__ui.mouse_down(win_id) && (dragging || over)) {
             dragging = true;
             set_value(value_from_x(mx - x, w));
@@ -1068,6 +1078,9 @@ class LazyColumn impl Widget {
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         layout_w = w;
         sync_cache();
+        if (pointer_over(win_id, x, y, w, viewport_h)) {
+            cursor_hand(win_id);
+        }
         __ui.clip_push(win_id, x, y, w, viewport_h);
         var first = first_index();
         var last = last_index();

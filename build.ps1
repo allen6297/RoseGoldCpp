@@ -47,9 +47,31 @@ $sources = @(
 
 $quoted = ($sources | ForEach-Object { "`"$root\$_`"" }) -join " "
 $exe = Join-Path $outDir "RoseGoldC.exe"
+# Link to a staging name first so a locked RoseGoldC.exe (running demo/tests)
+# does not block the build; then replace the canonical binary.
+$stage = Join-Path $outDir "RoseGoldC.stage.exe"
 
-$cmd = "`"$vcvars`" && clang-cl /nologo /std:c++20 /EHsc /Zi /Od /W3 /I `"$root\RoseGoldC`" /Fe:`"$exe`" /Fo:`"$outDir\\`" $quoted user32.lib gdi32.lib"
+$cmd = "`"$vcvars`" && clang-cl /nologo /std:c++20 /EHsc /Zi /Od /W3 /I `"$root\RoseGoldC`" /Fe:`"$stage`" /Fo:`"$outDir\\`" $quoted user32.lib gdi32.lib"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
+
+function Install-RoseGoldC([string]$from, [string]$to) {
+    if (Test-Path $to) {
+        try {
+            Remove-Item -LiteralPath $to -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Could not replace $to (file may be locked). New build is at $from"
+            Write-Warning "Close RoseGoldC.exe and re-run .\build.ps1, or copy manually."
+            return $false
+        }
+    }
+    Move-Item -LiteralPath $from -Destination $to -Force
+    return $true
+}
+
+if (-not (Install-RoseGoldC $stage $exe)) {
+    exit 0
+}
+Write-Host "Built $exe"

@@ -87,6 +87,7 @@ struct HostWin {
   int mouse_y = 0;
   bool mouse_down = false;
   bool mouse_click = false;
+  int cursor_kind = 0; // 0 arrow, 1 hand, 2 ibeam
   bool key_pending = false;
   int key_code = 0;
   std::string key_text;
@@ -481,6 +482,32 @@ int gFontDpi = 0;
 bool gSysFontOk = false;
 bool gDpiAwareTried = false;
 HCURSOR gArrowCursor = nullptr;
+HCURSOR gHandCursor = nullptr;
+HCURSOR gIBeamCursor = nullptr;
+
+void ensureCursors() {
+  if (!gArrowCursor)
+    gArrowCursor = LoadCursor(nullptr, IDC_ARROW);
+  if (!gHandCursor)
+    gHandCursor = LoadCursor(nullptr, IDC_HAND);
+  if (!gIBeamCursor)
+    gIBeamCursor = LoadCursor(nullptr, IDC_IBEAM);
+}
+
+HCURSOR cursorHandle(int kind) {
+  ensureCursors();
+  if (kind == 1 && gHandCursor)
+    return gHandCursor;
+  if (kind == 2 && gIBeamCursor)
+    return gIBeamCursor;
+  return gArrowCursor;
+}
+
+void applyCursor(HostWin &win) {
+  HCURSOR cur = cursorHandle(win.cursor_kind);
+  if (cur)
+    SetCursor(cur);
+}
 
 void enableDpiAwareness() {
   if (gDpiAwareTried)
@@ -732,8 +759,7 @@ void blitFbToDc(HDC hdc, HostWin &win, int cw, int ch) {
   StretchDIBits(hdc, 0, 0, cw, ch, 0, 0, win.fb_w, win.fb_h, win.fb.data(), &bi,
                 DIB_RGB_COLORS, SRCCOPY);
   // HALFTONE StretchDIBits can clear the cursor; restore for client area.
-  if (gArrowCursor)
-    SetCursor(gArrowCursor);
+  applyCursor(win);
 }
 #else
 int sysTextWidth(const std::string &s) {
@@ -843,12 +869,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (msg == WM_SETCURSOR) {
     if (LOWORD(lp) == HTCLIENT) {
-      if (!gArrowCursor)
-        gArrowCursor = LoadCursor(nullptr, IDC_ARROW);
-      if (gArrowCursor) {
-        SetCursor(gArrowCursor);
-        return TRUE;
+      if (win)
+        applyCursor(*win);
+      else {
+        ensureCursors();
+        if (gArrowCursor)
+          SetCursor(gArrowCursor);
       }
+      return TRUE;
     }
     return DefWindowProc(hwnd, msg, wp, lp);
   }
@@ -856,8 +884,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     win->mouse_x = static_cast<int>(static_cast<short>(LOWORD(lp)));
     win->mouse_y = static_cast<int>(static_cast<short>(HIWORD(lp)));
     runFrame(id);
-    if (gArrowCursor)
-      SetCursor(gArrowCursor);
+    applyCursor(*win);
     return 0;
   }
   if (msg == WM_LBUTTONDOWN && win) {
@@ -987,7 +1014,7 @@ void ensureClass() {
   if (gAtom)
     return;
   if (!gArrowCursor)
-    gArrowCursor = LoadCursor(nullptr, IDC_ARROW);
+    ensureCursors();
   WNDCLASSW wc{};
   wc.lpfnWndProc = wndProc;
   wc.hInstance = GetModuleHandleW(nullptr);
@@ -2681,6 +2708,21 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     HostWin *win = findAlive(needInt(0));
     if (win)
       nativePresent(*win);
+    return Value::makeVoid();
+  }
+  if (name == "cursor") {
+    if (args.size() != 2)
+      I.runtime("__ui.cursor takes 2 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win) {
+      int kind = static_cast<int>(needInt(1));
+      if (kind < 0 || kind > 2)
+        kind = 0;
+      win->cursor_kind = kind;
+#ifdef _WIN32
+      applyCursor(*win);
+#endif
+    }
     return Value::makeVoid();
   }
   if (name == "mouse_x") {

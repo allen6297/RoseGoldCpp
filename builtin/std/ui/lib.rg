@@ -393,6 +393,7 @@ class Window {
                                __ui.mouse_x(id), __ui.mouse_y(id), width, rh);
         }
         __ui.clear(id, theme.window_bg.value());
+        __ui.cursor(id, 0);
         root.paint(id, 0, 0, width);
         __ui.present(id);
     }
@@ -479,6 +480,24 @@ fn open_hidden(title: String, width: Int, height: Int) throws: Window {
     };
     w.bind_frame();
     return w;
+}
+
+fn cursor_arrow(win_id: Int) {
+    __ui.cursor(win_id, 0);
+}
+
+fn cursor_hand(win_id: Int) {
+    __ui.cursor(win_id, 1);
+}
+
+fn cursor_ibeam(win_id: Int) {
+    __ui.cursor(win_id, 2);
+}
+
+fn pointer_over(win_id: Int, x: Int, y: Int, w: Int, h: Int): Bool {
+    var mx = __ui.mouse_x(win_id);
+    var my = __ui.mouse_y(win_id);
+    return mx >= x && mx < x + w && my >= y && my < y + h;
 }
 
 fn font_height(): Int {

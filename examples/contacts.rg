@@ -59,7 +59,7 @@ fn main(): Int {
             status.set_text("Saved");
         }
     });
-    var avatar = ui.load_image("examples/dot.png");
+    var avatar = ui.load_image("examples/assets/dot.png");
     var quit = theme.button("Close");
     quit.clicked.connect(fn () { w.close(); });
     w.add(VStack {

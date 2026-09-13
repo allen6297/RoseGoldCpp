@@ -25,12 +25,8 @@ fn main(): Int {
 
 ```text
 .\build\RoseGoldC.exe run examples/window.rg
-.\build\RoseGoldC.exe run examples/form.rg
-.\build\RoseGoldC.exe run examples/scroll.rg
 .\build\RoseGoldC.exe run examples/canvas.rg
-.\build\RoseGoldC.exe run examples/polish.rg
-.\build\RoseGoldC.exe run examples/extra.rg
-.\build\RoseGoldC.exe run examples/lazy.rg
+.\build\RoseGoldC.exe run examples/widgets.rg
 .\build\RoseGoldC.exe run examples/contacts.rg
 ```
 
@@ -117,6 +113,8 @@ For `LazyColumn`, implement `LazyRows` (`count` / `row(i)`) or use `LabelRows`.
 
 Draw with `__ui.fill` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.image` / `__ui.image_rgb` / `__ui.clip_push` / `__ui.clip_pop`.
 
+Hover cursors: widgets call `cursor_hand` / `cursor_ibeam` (or `__ui.cursor(id, 0|1|2)`) while painting under the pointer. `Window.tick` resets to arrow each frame.
+
 ## Tests
 
 ```text
@@ -131,6 +129,9 @@ Draw with `__ui.fill` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.i
 
 ## Not yet
 
-Mobile/web backends (names reserved on the same `__ui` surface).
+- Tab focus order across controls
+- Dropdown / context menu
+- Scrollbar chrome on `ScrollView` / `LazyColumn`
+- Mobile/web backends (names reserved on the same `__ui` surface)
 
-`LazyColumn` keeps a cache of visible row widgets so TextField/Button state survives paints; rows that scroll off are dropped.
+`LazyColumn` keeps a cache of visible row widgets so TextField/Button state survives paints; rows that scroll off are dropped. Hover uses `cursor_hand` / `cursor_ibeam` via `__ui.cursor`.
