@@ -520,5 +520,98 @@
       "pass;"
     ],
     "description": "No-op statement"
+  },
+  "Async function": {
+    "prefix": "async",
+    "body": [
+      "async fn ${1:name}(${2:args}): ${3:Int} {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Async function (returns Future)"
+  },
+  "Async main": {
+    "prefix": "asyncmain",
+    "body": [
+      "async fn main(): Int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Async entry point"
+  },
+  "Await": {
+    "prefix": "await",
+    "body": [
+      "await ${1:future}"
+    ],
+    "description": "Await a Future"
+  },
+  "Future.all": {
+    "prefix": "futureall",
+    "body": [
+      "await Future.all([${1:a}, ${2:b}])"
+    ],
+    "description": "Await all Futures"
+  },
+  "Future.race": {
+    "prefix": "futurerace",
+    "body": [
+      "await Future.race([${1:a}, ${2:b}])"
+    ],
+    "description": "Race Futures; first to finish wins"
+  },
+  "Time delay": {
+    "prefix": "delay",
+    "body": [
+      "await time.delay(${1:100});"
+    ],
+    "description": "Await std.time.delay (ms)"
+  },
+  "UI async frame": {
+    "prefix": "uiframe",
+    "body": [
+      "import ui;",
+      "",
+      "async fn main(): Int {",
+      "\tvar w = try ui.open(\"${1:App}\", ${2:400}, ${3:240});",
+      "\twhile await w.next_frame() {",
+      "\t\t$0",
+      "\t}",
+      "\tw.close();",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Async UI window with next_frame loop"
+  },
+  "UI button": {
+    "prefix": "uibutton",
+    "body": [
+      "var ${1:btn} = Button { text: \"${2:OK}\" };",
+      "${1:btn}.clicked.connect(fn () {",
+      "\t$0",
+      "});"
+    ],
+    "description": "UI Button with click handler"
+  },
+  "UI label": {
+    "prefix": "uilabel",
+    "body": [
+      "Label { text: \"${1:Hello}\" }"
+    ],
+    "description": "UI Label widget"
+  },
+  "UI VStack": {
+    "prefix": "uivstack",
+    "body": [
+      "VStack {",
+      "\tspacing: ${1:12},",
+      "\tchildren: [",
+      "\t\t$0",
+      "\t]",
+      "}"
+    ],
+    "description": "UI vertical stack"
   }
 }

@@ -483,10 +483,28 @@ std::vector<std::string> Interpreter::resolveModule(const std::string &name,
   return out;
 }
 
+namespace {
+
+std::string absoluteSourcePath(const std::string &atFile) {
+  if (atFile.empty())
+    return atFile;
+  std::error_code ec;
+  auto abs = std::filesystem::absolute(atFile, ec);
+  return ec ? atFile : abs.string();
+}
+
+void stampFnFile(FnDecl &fn, const std::string &atFile) {
+  if (fn.file.empty() && !atFile.empty())
+    fn.file = absoluteSourcePath(atFile);
+}
+
+} // namespace
+
 void Interpreter::ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod,
                const std::string &modName, const std::string &atFile) {
   for (auto &fn : fns) {
     fn.module = modName;
+    stampFnFile(fn, atFile);
     if (m.fns.count(fn.name)) {
       FnDecl *prev = m.fns[fn.name];
       if (fn.isUfcs && prev && prev->isUfcs) {
@@ -524,6 +542,7 @@ void Interpreter::ingestStructs(LoadedMod &m, std::vector<structDecl> &items, bo
     recordFieldAccess(st.name, st.fields, st.fieldVis);
     for (auto &method : st.methods) {
       method.module = modName;
+      stampFnFile(method, atFile);
       typeMethods[st.name][method.name] = &method;
     }
     for (const auto &t : st.implTraits)
@@ -721,6 +740,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
     auto &slot = typeMethods[c.name];
     for (auto &method : c.methods) {
       method.module = modName;
+      stampFnFile(method, atFile);
       if (slot.count(method.name))
         loadFail(atFile,
                   "duplicate method '" + method.name + "' on " + c.name,
@@ -735,6 +755,7 @@ void Interpreter::ingestClasses(LoadedMod *m, std::vector<ClassDecl> &items, boo
                       params, c.line);
       for (auto &method : block.methods) {
         method.module = modName;
+        stampFnFile(method, atFile);
         if (slot.count(method.name))
           loadFail(atFile,
                     "duplicate method '" + method.name + "' on " + c.name,
@@ -791,6 +812,7 @@ void Interpreter::ingestImpls(std::vector<ImplDecl> &impls, const std::string &a
       }
     }
     for (auto &method : im.methods) {
+      stampFnFile(method, atFile);
       if (st) {
         for (const auto &fld : st->fields) {
           if (fld == method.name)

@@ -1,14 +1,16 @@
 {
   "name": "rosegoldc",
   "displayName": "RoseGoldC",
-  "description": "Language support for RoseGoldC: highlighting, diagnostics, outline, CodeLens, color chips, completion, hover, signature help, find references, go to definition, highlight, rename, code actions, run, and tests",
-  "version": "0.0.5",
+  "description": "Language support for RoseGoldC: highlighting, diagnostics, formatting, inlay hints, folding, semantic tokens, DAP debug, outline, CodeLens, color chips, completion, hover, run, and tests",
+  "version": "0.0.11",
   "publisher": "rosegoldc",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Programming Languages",
+    "Formatters",
+    "Debuggers",
     "Snippets"
   ],
   "keywords": [
@@ -18,7 +20,8 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "workspaceContains:**/*.rg"
+    "workspaceContains:**/*.rg",
+    "onDebugResolve:rosegoldc"
   ],
   "contributes": {
     "languages": [
@@ -63,9 +66,46 @@
         "icon": "$(beaker)"
       },
       {
+        "command": "rosegoldc.testSuite",
+        "title": "RoseGoldC: Test Suite",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "rosegoldc.recheck",
         "title": "RoseGoldC: Recheck File",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "rosegoldc.restartLsp",
+        "title": "RoseGoldC: Restart Language Server",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "rosegoldc.formatDocument",
+        "title": "RoseGoldC: Format Document",
+        "icon": "$(symbol-ruler)"
+      },
+      {
+        "command": "rosegoldc.debugFile",
+        "title": "RoseGoldC: Debug File",
+        "icon": "$(debug-alt)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "rosegoldc.testFile",
+        "key": "ctrl+shift+t",
+        "when": "resourceLangId == rosegold"
+      },
+      {
+        "command": "rosegoldc.testSuite",
+        "key": "ctrl+alt+t",
+        "when": "resourceLangId == rosegold"
+      },
+      {
+        "command": "rosegoldc.formatDocument",
+        "key": "shift+alt+f",
+        "when": "resourceLangId == rosegold"
       }
     ],
     "menus": {
@@ -79,6 +119,11 @@
           "command": "rosegoldc.testFile",
           "when": "resourceLangId == rosegold",
           "group": "navigation@2"
+        },
+        {
+          "command": "rosegoldc.debugFile",
+          "when": "resourceLangId == rosegold",
+          "group": "navigation@3"
         }
       ],
       "editor/context": [
@@ -91,6 +136,16 @@
           "command": "rosegoldc.testFile",
           "when": "resourceLangId == rosegold",
           "group": "rosegoldc@2"
+        },
+        {
+          "command": "rosegoldc.testSuite",
+          "when": "resourceLangId == rosegold",
+          "group": "rosegoldc@3"
+        },
+        {
+          "command": "rosegoldc.debugFile",
+          "when": "resourceLangId == rosegold",
+          "group": "rosegoldc@4"
         }
       ],
       "commandPalette": [
@@ -103,11 +158,31 @@
           "when": "resourceLangId == rosegold"
         },
         {
+          "command": "rosegoldc.testSuite"
+        },
+        {
+          "command": "rosegoldc.debugFile",
+          "when": "resourceLangId == rosegold"
+        },
+        {
           "command": "rosegoldc.recheck",
+          "when": "resourceLangId == rosegold"
+        },
+        {
+          "command": "rosegoldc.restartLsp",
+          "when": "resourceLangId == rosegold"
+        },
+        {
+          "command": "rosegoldc.formatDocument",
           "when": "resourceLangId == rosegold"
         }
       ]
     },
+    "breakpoints": [
+      {
+        "language": "rosegold"
+      }
+    ],
     "configuration": {
       "title": "RoseGoldC",
       "properties": {
@@ -121,9 +196,96 @@
           "default": 400,
           "minimum": 0,
           "description": "How long to wait after you stop typing before re-checking."
+        },
+        "rosegoldc.format.compact": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --compact to fmt (no blank lines between top-level items). Spawn/fallback formatter only; LSP formatting uses defaults."
+        },
+        "rosegoldc.format.stripComments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --no-comments to fmt (drop // and /#…#/ comments). Spawn/fallback formatter only; LSP formatting uses defaults."
+        },
+        "rosegoldc.format.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "After save (and after format), run fmt --check and warn in the status bar if the file needs formatting."
         }
       }
     },
+    "taskDefinitions": [
+      {
+        "type": "rosegoldc",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "RoseGoldC task: build, test-suite, run, test, …"
+          }
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "rosegoldc",
+        "label": "RoseGoldC",
+        "languages": ["rosegold"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .rg file to debug."
+              },
+              "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Arguments passed to main via argv.",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop on the first statement in main.",
+                "default": true
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "rosegoldc",
+            "request": "launch",
+            "name": "RoseGoldC: Debug current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "RoseGoldC: Launch",
+            "description": "Debug a RoseGold .rg file",
+            "body": {
+              "type": "rosegoldc",
+              "request": "launch",
+              "name": "RoseGoldC: Debug",
+              "program": "^\"\\${file}\"",
+              "cwd": "^\"\\${workspaceFolder}\"",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
+    ],
     "problemMatchers": [
       {
         "name": "rosegoldc",
@@ -156,6 +318,11 @@
       }
     ],
     "configurationDefaults": {
+      "[rosegold]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "rosegoldc.rosegoldc",
+        "editor.inlayHints.enabled": "on"
+      },
       "editor.tokenColorCustomizations": {
         "textMateRules": [
           {

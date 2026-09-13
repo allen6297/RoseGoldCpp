@@ -106,9 +106,13 @@ static DispatchResult dispatch(const Invocation &inv) {
     printAliases("check");
     std::cout << "      check [--json] [--stdin] <file>\n";
     printAliases("fmt");
-    std::cout << "      fmt [--write|-w] [--check] <file>\n";
+    std::cout
+        << "      fmt [--write|-w] [--check] [--compact] [--no-comments] "
+           "<file>\n";
     printAliases("lsp");
     std::cout << "      lsp             language server (stdin/stdout JSON-RPC)\n";
+    printAliases("dap");
+    std::cout << "      dap             debug adapter (stdin/stdout DAP)\n";
     printAliases("test");
     std::cout << "      test            language suite\n";
     std::cout << "      test <file>     @test functions in one file\n";
@@ -169,17 +173,23 @@ static DispatchResult dispatch(const Invocation &inv) {
   if (command(inv.cmd, "fmt")) {
     bool write = false;
     bool checkOnly = false;
+    FormatOptions opts;
     std::string path;
     for (const auto &a : inv.args) {
       if (a == "--write" || a == "-w")
         write = true;
       else if (a == "--check")
         checkOnly = true;
+      else if (a == "--compact")
+        opts.blankBetweenItems = false;
+      else if (a == "--no-comments")
+        opts.keepComments = false;
       else if (path.empty())
         path = a;
     }
     if (path.empty()) {
-      std::cerr << "Usage: fmt [--write|-w] [--check] <file>\n";
+      std::cerr << "Usage: fmt [--write|-w] [--check] [--compact] "
+                   "[--no-comments] <file>\n";
       result.exitCode = 2;
       return result;
     }
@@ -192,7 +202,7 @@ static DispatchResult dispatch(const Invocation &inv) {
     std::ostringstream ss;
     ss << in.rdbuf();
     const std::string original = ss.str();
-    FormatResult fmt = formatSource(original, path);
+    FormatResult fmt = formatSource(original, path, opts);
     if (!fmt.ok) {
       std::cerr << path << ": " << fmt.message << "\n";
       result.exitCode = fmt.exitCode ? fmt.exitCode : 1;
@@ -222,6 +232,10 @@ static DispatchResult dispatch(const Invocation &inv) {
   }
   if (command(inv.cmd, "lsp")) {
     result.exitCode = runLanguageServer();
+    return result;
+  }
+  if (command(inv.cmd, "dap")) {
+    result.exitCode = runDebugAdapter();
     return result;
   }
   if (command(inv.cmd, "test")) {

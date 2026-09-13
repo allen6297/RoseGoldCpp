@@ -128,6 +128,15 @@ struct Parser {
     return advance();
   }
 
+  void expectSemi(Stmt &s) {
+    const Token &semi = expect(Tok::Semi, "expected ';'");
+    if (i < tokens.size() && isComment(tokens[i].kind) &&
+        tokens[i].line == semi.line) {
+      s.trailingComment = tokens[i].text;
+      ++i;
+    }
+  }
+
   std::string parseType() {
     if (check(Tok::Function)) {
       expect(Tok::Function, "expected 'fn'");
@@ -312,6 +321,17 @@ struct Parser {
       expect(Tok::RBrace, "expected '}' after map");
       return e;
     }
+    if (check(Tok::Async)) {
+      const size_t n = nextSignificant(i + 1);
+      if (n < tokens.size() && tokens[n].kind == Tok::Function) {
+        const size_t m = nextSignificant(n + 1);
+        if (m < tokens.size()) {
+          const Tok k = tokens[m].kind;
+          if (k == Tok::LParen || k == Tok::LBracket || k == Tok::LArrow)
+            return parseLambda();
+        }
+      }
+    }
     if (check(Tok::Function)) {
       const size_t n = nextSignificant(i + 1);
       if (n < tokens.size()) {
@@ -485,6 +505,12 @@ struct Parser {
   }
   // MARK: EXPRESSIONS
   Expr parseUnary() {
+    if (match(Tok::Await)) {
+      const Token &op = prev();
+      Expr e = make(Expr::Kind::Await, op.line, op.col);
+      e.kids.push_back(parseUnary());
+      return e;
+    }
     if (match(Tok::Try)) {
       const Token &op = prev();
       Expr e = make(Expr::Kind::Try, op.line, op.col);
@@ -599,9 +625,21 @@ struct Parser {
   std::vector<Stmt> parseBlock() {
     expect(Tok::LBrace, "expected '{'");
     std::vector<Stmt> stmts;
-    while (!check(Tok::RBrace) && !check(Tok::Eof)) {
+    while (true) {
+      std::vector<std::string> leading = takeLeadingComments();
+      if (check(Tok::RBrace) || check(Tok::Eof)) {
+        if (!leading.empty()) {
+          Stmt c;
+          c.kind = Stmt::Kind::Comment;
+          c.leadingComments = std::move(leading);
+          stmts.push_back(std::move(c));
+        }
+        break;
+      }
       try {
-        stmts.push_back(parseStmt());
+        Stmt s = parseStmt();
+        s.leadingComments = std::move(leading);
+        stmts.push_back(std::move(s));
       } catch (const ParseError &) {
         synchronizeStmt();
       }
@@ -648,7 +686,7 @@ struct Parser {
       s.line = t.line;
       s.col = t.col;
       s.expr = parseExpr();
-      expect(Tok::Semi, "expected ';'");
+      expectSemi(s);
       return s;
     }
     if (match(Tok::While)) {
@@ -682,7 +720,7 @@ struct Parser {
         s.expr = parseExpr();
         s.hasExpr = true;
       }
-      expect(Tok::Semi, "expected ';'");
+      expectSemi(s);
       return s;
     }
     if (match(Tok::Pass) || match(Tok::Break) || match(Tok::Continue)) {
@@ -695,7 +733,7 @@ struct Parser {
         s.kind = Stmt::Kind::Continue;
       s.line = t.line;
       s.col = t.col;
-      expect(Tok::Semi, "expected ';'");
+      expectSemi(s);
       return s;
     }
     if (match(Tok::Variable) || match(Tok::Constant)) {
@@ -710,7 +748,7 @@ struct Parser {
       s.expr = parseExpr();
       s.line = name.line;
       s.col = name.col;
-      expect(Tok::Semi, "expected ';'");
+      expectSemi(s);
       return s;
     }
     auto isAssignTok = [](Tok k) {
@@ -747,7 +785,7 @@ struct Parser {
         s.expr = parseExpr();
         s.line = name.line;
         s.col = name.col;
-        expect(Tok::Semi, "expected ';'");
+        expectSemi(s);
         return s;
       }
     }
@@ -769,7 +807,7 @@ struct Parser {
       s.target = std::move(s.expr);
       s.expr = parseExpr();
     }
-    expect(Tok::Semi, "expected ';'");
+    expectSemi(s);
     return s;
   }
 
@@ -911,6 +949,7 @@ struct Parser {
   }
 
   FnDecl parseFn(const FnAttrs &attrs, bool isPub, bool abstractMethod = false) {
+    const bool isAsync = match(Tok::Async);
     const Token &fnTok = expect(Tok::Function, "expected 'fn'");
     const Token &name = expect(Tok::Identifier, "expected function name");
     FnDecl fn;
@@ -921,10 +960,13 @@ struct Parser {
     fn.isUfcs = attrs.isUfcs;
     fn.isPub = isPub;
     fn.isAbstract = abstractMethod;
+    fn.isAsync = isAsync;
     fn.line = fnTok.line;
     fn.typeParams = parseTypeParams();
     fillFnSig(fn);
     if (abstractMethod) {
+      if (isAsync)
+        errorNote("abstract methods cannot be async");
       expect(Tok::Semi, "expected ';' after abstract method");
       return fn;
     }
@@ -947,10 +989,12 @@ struct Parser {
   }
 
   Expr parseLambda() {
+    const bool isAsync = match(Tok::Async);
     const Token &fnTok = expect(Tok::Function, "expected 'fn'");
     FnDecl fn;
     fn.name = "<fn>";
     fn.line = fnTok.line;
+    fn.isAsync = isAsync;
     fn.typeParams = parseTypeParams();
     fillFnSig(fn);
     fn.body = parseBlock();
@@ -1115,7 +1159,7 @@ struct Parser {
       try {
         MemberPrefix p;
         parseMemberPrefix(p);
-        if (check(Tok::Function)) {
+        if (check(Tok::Function) || check(Tok::Async)) {
           rejectClassMods(p.isAbstract, p.isFinal,
                           (std::string(kind) + " method").c_str());
           if (p.vis == Vis::Protected)
@@ -1321,7 +1365,7 @@ struct Parser {
         c.traitImpls.push_back(std::move(block));
         continue;
       }
-      if (check(Tok::Function)) {
+      if (check(Tok::Function) || check(Tok::Async)) {
         rejectMethodAttrs(p.attrs);
         if (p.isAbstract && p.isFinal)
           errorNote("method cannot be both abstract and final");
@@ -1736,4 +1780,26 @@ Program parseSource(const std::string &source, const std::string &file,
   if (!errors && !local.empty())
     throw std::runtime_error(diagnosticError(local[0], file));
   return program;
+}
+
+Expr parseExprSource(const std::string &source, const std::string &file,
+                     std::vector<Diagnostic> *errors) {
+  std::vector<Diagnostic> local;
+  std::vector<Diagnostic> *out = errors ? errors : &local;
+  try {
+    Parser p(tokenize(source, file, out), file, out);
+    Expr e = p.parseExpr();
+    if (!p.check(Tok::Eof) && !p.check(Tok::Semi))
+      p.errorHere("unexpected tokens after expression");
+    p.match(Tok::Semi);
+    if (!errors && !local.empty())
+      throw std::runtime_error(diagnosticError(local[0], file));
+    return e;
+  } catch (...) {
+    if (!errors && !local.empty())
+      throw std::runtime_error(diagnosticError(local[0], file));
+    if (!errors)
+      throw;
+    return Expr{};
+  }
 }

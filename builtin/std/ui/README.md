@@ -54,7 +54,7 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 |---|---|
 | `Label` | `text`, soft-wrap + `\n`; `.foreground(Color)`, `.set_text` |
 | `Labeled` | title above a child; `theme.form_row("Name", field)` |
-| `TextField` | caret + selection (click/drag, arrows, Shift, Ctrl+A); blink; `changed` / `submitted`; `enabled`; `.on_change` |
+| `TextField` | caret + selection; blink; single-line or `multiline`/`rows`; Ctrl+A/C/X/V clipboard; `changed` / `submitted`; `enabled`; `.on_change`; `theme.area` for multiline |
 | `Button` | `clicked`; hover / pressed; `enabled` / `set_enabled`; `.on_click` |
 | `Toggle` | `on` bool; `changed`; `enabled`; `theme.toggle` |
 | `Checkbox` | `checked` + label; `changed`; `enabled`; `theme.checkbox` |
@@ -70,7 +70,7 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
 | `FilteredLabels` | `LabelRows` + query filter + `real_index` |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
-| `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm"\|"x.png")` |
+| `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image` (`.png` / `.jpg` / `.bmp` / `.gif` / `.ppm` / `.svg`) |
 | `Spacer` | expanding gap in rows |
 
 ## Color and theme
@@ -100,7 +100,7 @@ Theme factories: `button`, `label`, `field`, `form_row`, `toggle`, `checkbox`, `
 | `ui.open` / `ui.open_hidden` | Create (`throws`) |
 | `ui.open_theme` / `ui.open_hidden_theme` | Create with `theme` applied |
 | `w.add(widget)` | Attach root child |
-| `w.run()` / `w.poll()` | Event loop / one pump |
+| `w.run()` / `w.poll()` / `await w.next_frame()` | Event loop / one pump / async one pump |
 | `w.confirm` / `w.alert` | One-shot dialogs |
 | `w.menu([...])` | Build a `PopupMenu` |
 | `w.mark_dirty` / `w.mark_clean` / `w.request_close` | Dirty flag + confirm-on-close |

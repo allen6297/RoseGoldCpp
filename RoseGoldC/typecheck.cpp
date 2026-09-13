@@ -25,6 +25,7 @@ struct TypeChecker {
   std::string currentSelf;
   std::string currentSuper;
   bool currentThrows = false;
+  bool currentAsync = false;
   bool inTry = false;
   bool throwingTry = false;
   std::set<std::string> genericParams;
@@ -102,7 +103,7 @@ struct TypeChecker {
     return head == "Int" || head == "Float" || head == "String" ||
            head == "Str" || head == "Bool" || head == "Void" ||
            head == "Array" || head == "Map" || head == "Range" ||
-           head == "None" || head == "Self";
+           head == "None" || head == "Self" || head == "Future";
   }
 
   void checkTypeName(const std::string &ty, int line, int col) {
@@ -152,6 +153,26 @@ struct TypeChecker {
     if (ty.size() > 6 && ty.compare(0, 6, "Array[") == 0 && ty.back() == ']')
       return ty.substr(6, ty.size() - 7);
     return "";
+  }
+
+  static bool isFutureTy(const std::string &ty) {
+    return ty == "Future" ||
+           (ty.size() > 7 && ty.compare(0, 7, "Future[") == 0 &&
+            ty.back() == ']');
+  }
+
+  static std::string futureElem(const std::string &ty) {
+    if (ty.size() > 7 && ty.compare(0, 7, "Future[") == 0 && ty.back() == ']')
+      return ty.substr(7, ty.size() - 8);
+    return "";
+  }
+
+  static std::string wrapAsyncReturn(const FnDecl &fn,
+                                     const std::string &inner) {
+    const std::string t = inner.empty() ? "Void" : inner;
+    if (fn.isAsync)
+      return "Future[" + t + "]";
+    return t;
   }
 
   static bool isMapTy(const std::string &ty) {
@@ -245,8 +266,7 @@ struct TypeChecker {
       if (p.empty())
         return "Fn";
     }
-    return encodeFnType(fn.paramTypes,
-                        fn.returnType.empty() ? "Void" : fn.returnType);
+    return encodeFnType(fn.paramTypes, wrapAsyncReturn(fn, fn.returnType));
   }
 
   bool isTraitType(const std::string &ty) const {
@@ -279,6 +299,11 @@ struct TypeChecker {
       if (a == "Array" || b == "Array")
         return true;
       return compatible(arrayElem(a), arrayElem(b));
+    }
+    if (isFutureTy(a) && isFutureTy(b)) {
+      if (a == "Future" || b == "Future")
+        return true;
+      return compatible(futureElem(a), futureElem(b));
     }
     if (isMapTy(a) && isMapTy(b)) {
       auto aa = typeArgList(a);
@@ -546,6 +571,16 @@ struct TypeChecker {
       return inferStructLit(e);
     case Expr::Kind::Try:
       return e.kids.empty() ? "" : infer(e.kids[0]);
+    case Expr::Kind::Await: {
+      if (e.kids.empty())
+        return "";
+      const std::string ty = infer(e.kids[0]);
+      if (!known(ty))
+        return "";
+      if (!isFutureTy(ty))
+        return "";
+      return futureElem(ty);
+    }
     }
     return "";
   }
@@ -581,11 +616,11 @@ struct TypeChecker {
       if (e.kids[0].kind == Expr::Kind::Lambda && e.kids[0].lambda) {
         const FnDecl &fn = *e.kids[0].lambda;
         if (fn.typeParams.empty())
-          return fn.returnType;
+          return wrapAsyncReturn(fn, fn.returnType);
         std::vector<Expr> args(e.kids.begin() + 1, e.kids.end());
         auto env =
             inferEnv(fn.typeParams, e.typeArgs, fn.paramTypes, args);
-        return substType(fn.returnType, env);
+        return wrapAsyncReturn(fn, substType(fn.returnType, env));
       }
       std::string ty = infer(e.kids[0]);
       if (isFnType(ty)) {
@@ -615,10 +650,10 @@ struct TypeChecker {
       return "Void";
     if (FnDecl *fn = I().findLocalFn(e.text)) {
       if (fn->typeParams.empty())
-        return fn->returnType;
+        return wrapAsyncReturn(*fn, fn->returnType);
       auto env =
           inferEnv(fn->typeParams, e.typeArgs, fn->paramTypes, e.kids);
-      return substType(fn->returnType, env);
+      return wrapAsyncReturn(*fn, substType(fn->returnType, env));
     }
     return inferCall(e.text);
   }
@@ -633,17 +668,50 @@ struct TypeChecker {
     if (name == "print" || name == "assert")
       return "Void";
     if (FnDecl *fn = I().findLocalFn(name))
-      return fn->returnType;
+      return wrapAsyncReturn(*fn, fn->returnType);
     if (!currentSelf.empty()) {
       auto found = I().lookupMethod(currentSelf, name);
       if (found.second)
-        return found.second->returnType;
+        return wrapAsyncReturn(*found.second, found.second->returnType);
     }
     return "";
   }
 
   std::string inferMethod(const Expr &e) {
     const Expr &recv = e.kids[0];
+    if (recv.kind == Expr::Kind::Var && recv.text == "Future") {
+      if (e.text == "all") {
+        if (e.kids.size() < 2)
+          return "Future[Array]";
+        const std::string argTy = infer(e.kids[1]);
+        if (isArrayTy(argTy)) {
+          const std::string elem = arrayElem(argTy);
+          if (isFutureTy(elem)) {
+            const std::string inner = futureElem(elem);
+            if (inner.empty())
+              return "Future[Array]";
+            return "Future[Array[" + inner + "]]";
+          }
+          if (elem.empty() || argTy == "Array")
+            return "Future[Array]";
+        }
+        return "Future[Array]";
+      }
+      if (e.text == "race") {
+        if (e.kids.size() < 2)
+          return "Future";
+        const std::string argTy = infer(e.kids[1]);
+        if (isArrayTy(argTy)) {
+          const std::string elem = arrayElem(argTy);
+          if (isFutureTy(elem)) {
+            const std::string inner = futureElem(elem);
+            return inner.empty() ? std::string("Future")
+                                 : ("Future[" + inner + "]");
+          }
+        }
+        return "Future";
+      }
+    }
     if (recv.kind == Expr::Kind::Var && isHostModule(recv.text)) {
       if (recv.text == "process" && e.text == "argv")
         return "String";
@@ -683,6 +751,8 @@ struct TypeChecker {
       if (recv.text == "__time") {
         if (e.text == "now")
           return "Int";
+        if (e.text == "delay")
+          return "Future[Void]";
         return "Void";
       }
       if (recv.text == "__path")
@@ -698,12 +768,14 @@ struct TypeChecker {
         if (e.text == "open")
           return "Int";
         if (e.text == "title" || e.text == "backend" || e.text == "platform" ||
-            e.text == "key_text")
+            e.text == "key_text" || e.text == "clipboard_get")
           return "String";
         if (e.text == "alive" || e.text == "poll" || e.text == "mouse_down" ||
             e.text == "take_click" || e.text == "take_right_click" ||
             e.text == "take_key" || e.text == "take_scroll")
           return "Bool";
+        if (e.text == "next_frame")
+          return "Future[Bool]";
         if (e.text == "width" || e.text == "height" || e.text == "count" ||
             e.text == "mouse_x" || e.text == "mouse_y" || e.text == "key_code" ||
             e.text == "scroll_dx" || e.text == "scroll_dy" ||
@@ -728,7 +800,7 @@ struct TypeChecker {
         if (lit != I().loaded.end()) {
           auto eit = lit->second.exports.find(e.text);
           if (eit != lit->second.exports.end())
-            return eit->second->returnType;
+            return wrapAsyncReturn(*eit->second, eit->second->returnType);
         }
       }
       if (I().findEnum(recv.text))
@@ -739,7 +811,7 @@ struct TypeChecker {
       if (lit != I().loaded.end()) {
         auto eit = lit->second.exports.find(e.text);
         if (eit != lit->second.exports.end())
-          return eit->second->returnType;
+          return wrapAsyncReturn(*eit->second, eit->second->returnType);
       }
     }
     std::string obj = infer(recv);
@@ -763,6 +835,8 @@ struct TypeChecker {
         return "";
     } else if (isString(obj) && e.text == "len") {
       return "Int";
+    } else if (isFutureTy(obj) && e.text == "cancel") {
+      return "Void";
     }
     if (known(obj)) {
       if (BoundHit hit = traitObjectMethod(obj, e.text); hit.m)
@@ -782,19 +856,20 @@ struct TypeChecker {
                                args);
           env.insert(more.begin(), more.end());
         }
-        return substType(found.second->returnType, env);
+        return wrapAsyncReturn(*found.second,
+                               substType(found.second->returnType, env));
       }
     }
     if (FnDecl *fn = I().findUfcs(e.text, recvTy)) {
       if (fn->typeParams.empty())
-        return fn->returnType;
+        return wrapAsyncReturn(*fn, fn->returnType);
       std::vector<std::string> patterns = fn->paramTypes;
       std::vector<Expr> vals;
       vals.push_back(e.kids.empty() ? Expr{} : e.kids[0]);
       for (size_t i = 1; i < e.kids.size(); ++i)
         vals.push_back(e.kids[i]);
       auto env = inferEnv(fn->typeParams, e.typeArgs, patterns, vals);
-      return substType(fn->returnType, env);
+      return wrapAsyncReturn(*fn, substType(fn->returnType, env));
     }
     return "";
   }
@@ -1422,7 +1497,7 @@ struct TypeChecker {
         arity(0);
         return;
       }
-      if (name == "sleep") {
+      if (name == "sleep" || name == "delay") {
         arity(1);
         return;
       }
@@ -1496,11 +1571,16 @@ struct TypeChecker {
         arity(2);
         return;
       }
+      if (name == "clipboard_set") {
+        arity(1);
+        return;
+      }
       if (name == "close" || name == "show" || name == "hide" ||
-          name == "poll" || name == "alive" || name == "title" ||
-          name == "width" || name == "height" || name == "present" ||
-          name == "mouse_x" || name == "mouse_y" || name == "mouse_down" ||
-          name == "take_click" || name == "take_right_click" ||
+          name == "poll" || name == "next_frame" || name == "alive" ||
+          name == "title" || name == "width" || name == "height" ||
+          name == "present" || name == "mouse_x" || name == "mouse_y" ||
+          name == "mouse_down" || name == "take_click" ||
+          name == "take_right_click" ||
           name == "take_key" || name == "key_code" ||
           name == "key_text" || name == "take_scroll" || name == "scroll_dx" ||
           name == "scroll_dy" || name == "clip_pop") {
@@ -1508,7 +1588,8 @@ struct TypeChecker {
         return;
       }
       if (name == "run" || name == "count" || name == "backend" ||
-          name == "platform" || name == "wait" || name == "font_height") {
+          name == "platform" || name == "wait" || name == "font_height" ||
+          name == "clipboard_get") {
         arity(0);
         return;
       }
@@ -1612,6 +1693,14 @@ struct TypeChecker {
       if (checkUfcs(e, n))
         return;
       fail(e.line, e.col, "String has no method '" + e.text + "'");
+      return;
+    }
+    if (isFutureTy(obj)) {
+      if (e.text == "cancel") {
+        arity(0);
+        return;
+      }
+      fail(e.line, e.col, "Future has no method '" + e.text + "'");
     }
   }
 
@@ -1620,6 +1709,27 @@ struct TypeChecker {
     const size_t n = e.kids.size() > 0 ? e.kids.size() - 1 : 0;
     std::vector<Expr> args(e.kids.begin() + (e.kids.empty() ? 0 : 1),
                            e.kids.end());
+    if (recv.kind == Expr::Kind::Var && recv.text == "Future") {
+      if (e.text != "all" && e.text != "race") {
+        fail(e.line, e.col, "Future has no method '" + e.text + "'");
+        return;
+      }
+      checkArity("Future." + e.text, 1, n, e.line, e.col);
+      if (n == 1) {
+        const std::string argTy = infer(e.kids[1]);
+        if (known(argTy) && !isArrayTy(argTy)) {
+          fail(e.line, e.col,
+               "Future." + e.text + " expects Array of Future, got " + argTy);
+        } else if (known(argTy) && isArrayTy(argTy)) {
+          const std::string elem = arrayElem(argTy);
+          if (known(elem) && !isFutureTy(elem))
+            fail(e.line, e.col,
+                 "Future." + e.text + " expects Array of Future, got Array[" +
+                     elem + "]");
+        }
+      }
+      return;
+    }
     if (recv.kind == Expr::Kind::Var && recv.text == "super") {
       if (currentSuper.empty()) {
         fail(e.line, e.col,
@@ -1760,7 +1870,7 @@ struct TypeChecker {
       }
     }
     std::string obj = infer(recv);
-    if (isArrayTy(obj) || isMapTy(obj) || isString(obj)) {
+    if (isArrayTy(obj) || isMapTy(obj) || isString(obj) || isFutureTy(obj)) {
       checkValueMethod(isString(obj) ? "String" : obj, e, n);
       return;
     }
@@ -1805,6 +1915,17 @@ struct TypeChecker {
       inTry = prev;
       return;
     }
+    if (e.kind == Expr::Kind::Await) {
+      if (!currentAsync)
+        fail(e.line, e.col, "'await' is only allowed in async functions");
+      if (e.kids.empty())
+        return;
+      walkExpr(e.kids[0]);
+      const std::string ty = infer(e.kids[0]);
+      if (known(ty) && !isFutureTy(ty))
+        fail(e.line, e.col, "can only await Future, got " + ty);
+      return;
+    }
     if (e.kind == Expr::Kind::Lambda) {
       if (e.lambda)
         checkFn(*e.lambda, currentSelf);
@@ -1830,8 +1951,12 @@ struct TypeChecker {
       return;
     }
     if (e.kind == Expr::Kind::MethodCall) {
-      for (const auto &kid : e.kids)
-        walkExpr(kid);
+      for (size_t i = 0; i < e.kids.size(); ++i) {
+        if (i == 0 && e.kids[0].kind == Expr::Kind::Var &&
+            e.kids[0].text == "Future")
+          continue;
+        walkExpr(e.kids[i]);
+      }
       checkMethod(e);
       return;
     }
@@ -1994,6 +2119,7 @@ struct TypeChecker {
     case Stmt::Kind::Pass:
     case Stmt::Kind::Break:
     case Stmt::Kind::Continue:
+    case Stmt::Kind::Comment:
       return;
     case Stmt::Kind::Throw:
       if (!currentThrows)
@@ -2011,9 +2137,13 @@ struct TypeChecker {
         scopes.pop_back();
       }
       return;
-    case Stmt::Kind::Expr:
+    case Stmt::Kind::Expr: {
       walkExpr(stmt.expr);
+      const std::string ty = infer(stmt.expr);
+      if (known(ty) && isFutureTy(ty))
+        fail(stmt.line, stmt.col, "unused Future; await or bind it");
       return;
+    }
     case Stmt::Kind::Var:
     case Stmt::Kind::Const: {
       walkExpr(stmt.expr);
@@ -2215,12 +2345,16 @@ struct TypeChecker {
     const std::string prevSelf = currentSelf;
     const std::string prevSuper = currentSuper;
     const bool prevThrows = currentThrows;
+    const bool prevAsync = currentAsync;
     currentReturn = fn.returnType;
     currentSelf = selfType;
     currentSuper = "";
     currentThrows = fn.throws;
+    currentAsync = fn.isAsync;
     if (fn.isConstexpr && fn.throws)
       fail(fn.line, 1, "constexpr function cannot throw");
+    if (fn.isConstexpr && fn.isAsync)
+      fail(fn.line, 1, "constexpr function cannot be async");
     auto prevParams = genericParams;
     auto prevBounds = genericBounds;
     auto pushParams = [&](const std::vector<TypeParam> &params) {
@@ -2272,6 +2406,7 @@ struct TypeChecker {
     currentSelf = prevSelf;
     currentSuper = prevSuper;
     currentThrows = prevThrows;
+    currentAsync = prevAsync;
   }
 
   void run() {

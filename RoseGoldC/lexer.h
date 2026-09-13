@@ -61,6 +61,8 @@ enum class Tok {
   Throws,
   Throw,
   Catch,
+  Async,
+  Await,
   True,
   False,
   //SYMBOLS

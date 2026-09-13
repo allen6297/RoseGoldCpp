@@ -1,4 +1,5 @@
 #include "eval.h"
+#include "format.h"
 #include "interp.h"
 #include "lexer.h"
 #include "parser.h"
@@ -1252,6 +1253,319 @@ bool findCallInProgram(const Program &p, int line, int col, Expr &out) {
   return false;
 }
 
+bool findExprStmtInStmts(const std::vector<Stmt> &stmts, int line,
+                         const Stmt *&out) {
+  for (const auto &s : stmts) {
+    if (s.kind == Stmt::Kind::Comment)
+      continue;
+    if (s.kind == Stmt::Kind::Expr && s.line == line) {
+      out = &s;
+      return true;
+    }
+    if (findExprStmtInStmts(s.body, line, out) ||
+        findExprStmtInStmts(s.elseBody, line, out))
+      return true;
+    for (const auto &arm : s.arms) {
+      if (findExprStmtInStmts(arm.body, line, out))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool findExprStmtInFns(const std::vector<FnDecl> &fns, int line,
+                       const Stmt *&out) {
+  for (const auto &fn : fns) {
+    if (findExprStmtInStmts(fn.body, line, out))
+      return true;
+  }
+  return false;
+}
+
+bool findExprStmtInMod(const ModDecl &m, int line, const Stmt *&out) {
+  if (findExprStmtInFns(m.fns, line, out))
+    return true;
+  for (const auto &st : m.structs) {
+    if (findExprStmtInFns(st.methods, line, out))
+      return true;
+  }
+  for (const auto &c : m.classes) {
+    if (findExprStmtInFns(c.methods, line, out))
+      return true;
+    for (const auto &ti : c.traitImpls) {
+      if (findExprStmtInFns(ti.methods, line, out))
+        return true;
+    }
+  }
+  for (const auto &im : m.impls) {
+    if (findExprStmtInFns(im.methods, line, out))
+      return true;
+  }
+  for (const auto &nested : m.mods) {
+    if (findExprStmtInMod(nested, line, out))
+      return true;
+  }
+  return false;
+}
+
+bool findExprStmtInProgram(const Program &p, int line, const Stmt *&out) {
+  if (findExprStmtInFns(p.fns, line, out))
+    return true;
+  for (const auto &st : p.structs) {
+    if (findExprStmtInFns(st.methods, line, out))
+      return true;
+  }
+  for (const auto &c : p.classes) {
+    if (findExprStmtInFns(c.methods, line, out))
+      return true;
+    for (const auto &ti : c.traitImpls) {
+      if (findExprStmtInFns(ti.methods, line, out))
+        return true;
+    }
+  }
+  for (const auto &im : p.impls) {
+    if (findExprStmtInFns(im.methods, line, out))
+      return true;
+  }
+  for (const auto &m : p.mods) {
+    if (findExprStmtInMod(m, line, out))
+      return true;
+  }
+  return false;
+}
+
+void endPosOf(const std::string &text, int &line, int &col) {
+  line = 0;
+  col = 0;
+  for (char c : text) {
+    if (c == '\n') {
+      ++line;
+      col = 0;
+    } else {
+      ++col;
+    }
+  }
+}
+
+std::string paramInlayName(const std::string &p) {
+  size_t c = p.find(':');
+  std::string name = c == std::string::npos ? p : p.substr(0, c);
+  size_t a = 0;
+  while (a < name.size() &&
+         std::isspace(static_cast<unsigned char>(name[a])))
+    ++a;
+  size_t b = name.size();
+  while (b > a && std::isspace(static_cast<unsigned char>(name[b - 1])))
+    --b;
+  return name.substr(a, b - a);
+}
+
+std::string guessExprType(const Expr &e) {
+  switch (e.kind) {
+  case Expr::Kind::Int:
+    return "Int";
+  case Expr::Kind::Float:
+    return "Float";
+  case Expr::Kind::String:
+    return "String";
+  case Expr::Kind::Bool:
+    return "Bool";
+  default:
+    return "";
+  }
+}
+
+int semanticTokType(Tok k, const std::string &text, bool afterFn) {
+  switch (k) {
+  case Tok::LineComment:
+  case Tok::BlockComment:
+    return 1;
+  case Tok::String:
+    return 2;
+  case Tok::Integer:
+  case Tok::Float:
+    return 3;
+  case Tok::Identifier:
+    if (afterFn)
+      return 4;
+    if (!text.empty() && std::isupper(static_cast<unsigned char>(text[0])))
+      return 5;
+    return 6;
+  case Tok::Module:
+    return 8;
+  case Tok::True:
+  case Tok::False:
+  case Tok::Function:
+  case Tok::Struct:
+  case Tok::Data:
+  case Tok::Class:
+  case Tok::Trait:
+  case Tok::Enum:
+  case Tok::Implements:
+  case Tok::Extends:
+  case Tok::For:
+  case Tok::In:
+  case Tok::Super:
+  case Tok::Import:
+  case Tok::From:
+  case Tok::As:
+  case Tok::Pub:
+  case Tok::Abstract:
+  case Tok::Final:
+  case Tok::Private:
+  case Tok::Protected:
+  case Tok::Variable:
+  case Tok::Constant:
+  case Tok::Signal:
+  case Tok::Return:
+  case Tok::Pass:
+  case Tok::Continue:
+  case Tok::Break:
+  case Tok::If:
+  case Tok::Elif:
+  case Tok::Else:
+  case Tok::Switch:
+  case Tok::Match:
+  case Tok::While:
+  case Tok::Try:
+  case Tok::Do:
+  case Tok::Throws:
+  case Tok::Throw:
+  case Tok::Catch:
+  case Tok::Async:
+  case Tok::Await:
+    return 0;
+  default:
+    return 7;
+  }
+}
+
+Json hintPos(int line, int character) {
+  Json p = Json::object();
+  p.set("line", Json::num(line));
+  p.set("character", Json::num(character));
+  return p;
+}
+
+void walkStmtsForInlay(const std::vector<Stmt> &stmts,
+                       const std::map<std::string, std::vector<std::string>>
+                           &fnParams,
+                       Json &hints);
+
+void walkExprForInlay(const Expr &e,
+                      const std::map<std::string, std::vector<std::string>>
+                          &fnParams,
+                      Json &hints) {
+  auto pushParam = [&](const std::string &fn, size_t argIndex, const Expr &arg) {
+    auto it = fnParams.find(fn);
+    if (it == fnParams.end() || argIndex >= it->second.size())
+      return;
+    const std::string name = paramInlayName(it->second[argIndex]);
+    if (name.empty() || name == "...")
+      return;
+    Json h = Json::object();
+    h.set("position", hintPos(arg.line > 0 ? arg.line - 1 : 0,
+                              arg.col > 0 ? arg.col - 1 : 0));
+    h.set("label", Json::str(name + ":"));
+    h.set("kind", Json::num(2));
+    h.set("paddingRight", Json::boolean(true));
+    hints.a.push_back(std::move(h));
+  };
+  if (e.kind == Expr::Kind::Call) {
+    std::string name = e.text;
+    size_t start = 0;
+    if (name.empty() && !e.kids.empty()) {
+      if (e.kids[0].kind == Expr::Kind::Var)
+        name = e.kids[0].text;
+      else if (e.kids[0].kind == Expr::Kind::Member)
+        name = e.kids[0].text;
+      start = 1;
+    }
+    for (size_t i = start; i < e.kids.size(); ++i)
+      pushParam(name, i - start, e.kids[i]);
+  } else if (e.kind == Expr::Kind::MethodCall) {
+    for (size_t i = 1; i < e.kids.size(); ++i)
+      pushParam(e.text, i - 1, e.kids[i]);
+  }
+  for (const auto &k : e.kids)
+    walkExprForInlay(k, fnParams, hints);
+}
+
+void walkStmtsForInlay(const std::vector<Stmt> &stmts,
+                       const std::map<std::string, std::vector<std::string>>
+                           &fnParams,
+                       Json &hints) {
+  for (const auto &s : stmts) {
+    if (s.kind == Stmt::Kind::Comment)
+      continue;
+    if ((s.kind == Stmt::Kind::Var || s.kind == Stmt::Kind::Const) &&
+        s.typeName.empty()) {
+      const std::string ty = guessExprType(s.expr);
+      if (!ty.empty()) {
+        Json h = Json::object();
+        const int line = s.line > 0 ? s.line - 1 : 0;
+        const int col =
+            (s.col > 0 ? s.col - 1 : 0) + static_cast<int>(s.name.size());
+        h.set("position", hintPos(line, col));
+        h.set("label", Json::str(": " + ty));
+        h.set("kind", Json::num(1));
+        h.set("paddingLeft", Json::boolean(true));
+        hints.a.push_back(std::move(h));
+      }
+    }
+    walkExprForInlay(s.expr, fnParams, hints);
+    walkExprForInlay(s.target, fnParams, hints);
+    walkStmtsForInlay(s.body, fnParams, hints);
+    walkStmtsForInlay(s.elseBody, fnParams, hints);
+    for (const auto &arm : s.arms)
+      walkStmtsForInlay(arm.body, fnParams, hints);
+  }
+}
+
+void walkFnsForInlay(const std::vector<FnDecl> &fns,
+                     const std::map<std::string, std::vector<std::string>>
+                         &fnParams,
+                     Json &hints) {
+  for (const auto &fn : fns)
+    walkStmtsForInlay(fn.body, fnParams, hints);
+}
+
+void walkModForInlay(const ModDecl &m,
+                     const std::map<std::string, std::vector<std::string>>
+                         &fnParams,
+                     Json &hints) {
+  walkFnsForInlay(m.fns, fnParams, hints);
+  for (const auto &st : m.structs)
+    walkFnsForInlay(st.methods, fnParams, hints);
+  for (const auto &c : m.classes) {
+    walkFnsForInlay(c.methods, fnParams, hints);
+    for (const auto &ti : c.traitImpls)
+      walkFnsForInlay(ti.methods, fnParams, hints);
+  }
+  for (const auto &im : m.impls)
+    walkFnsForInlay(im.methods, fnParams, hints);
+  for (const auto &nested : m.mods)
+    walkModForInlay(nested, fnParams, hints);
+}
+
+void collectProgramInlays(const Program &p,
+                          const std::map<std::string, std::vector<std::string>>
+                              &fnParams,
+                          Json &hints) {
+  walkFnsForInlay(p.fns, fnParams, hints);
+  for (const auto &st : p.structs)
+    walkFnsForInlay(st.methods, fnParams, hints);
+  for (const auto &c : p.classes) {
+    walkFnsForInlay(c.methods, fnParams, hints);
+    for (const auto &ti : c.traitImpls)
+      walkFnsForInlay(ti.methods, fnParams, hints);
+  }
+  for (const auto &im : p.impls)
+    walkFnsForInlay(im.methods, fnParams, hints);
+  for (const auto &m : p.mods)
+    walkModForInlay(m, fnParams, hints);
+}
+
 const TraitDecl *findTraitInMod(const ModDecl &m, const std::string &name) {
   for (const auto &t : m.traits) {
     if (t.name == name)
@@ -1922,6 +2236,27 @@ Json initializeResult() {
   caps.set("codeActionProvider", std::move(codeAction));
   caps.set("codeLensProvider", Json::boolean(true));
   caps.set("colorProvider", Json::boolean(true));
+  caps.set("documentFormattingProvider", Json::boolean(true));
+  caps.set("foldingRangeProvider", Json::boolean(true));
+  Json inlay = Json::object();
+  inlay.set("resolveProvider", Json::boolean(false));
+  caps.set("inlayHintProvider", std::move(inlay));
+  Json semLegend = Json::object();
+  Json semTypes = Json::array();
+  for (const char *t :
+       {"keyword", "comment", "string", "number", "function", "type",
+        "variable", "operator", "namespace", "method", "property"})
+    semTypes.a.push_back(Json::str(t));
+  Json semMods = Json::array();
+  semMods.a.push_back(Json::str("declaration"));
+  semMods.a.push_back(Json::str("deprecated"));
+  semLegend.set("tokenTypes", std::move(semTypes));
+  semLegend.set("tokenModifiers", std::move(semMods));
+  Json sem = Json::object();
+  sem.set("legend", std::move(semLegend));
+  sem.set("full", Json::boolean(true));
+  sem.set("range", Json::boolean(false));
+  caps.set("semanticTokensProvider", std::move(sem));
   Json info = Json::object();
   info.set("name", Json::str("RoseGoldC"));
   info.set("version", Json::str(version));
@@ -3234,6 +3569,26 @@ struct Server {
         consider(crate);
       }
     }
+
+    for (const auto &d : hit) {
+      if (d.message.find("unused Future") == std::string::npos)
+        continue;
+      const Stmt *stmt = nullptr;
+      if (!findExprStmtInProgram(program, d.line, stmt) || !stmt)
+        continue;
+      if (stmt->expr.kind == Expr::Kind::Await)
+        continue;
+      int line = stmt->expr.line;
+      int col = stmt->expr.col;
+      leftmostExpr(stmt->expr, line, col);
+      const int il = line > 0 ? line - 1 : 0;
+      const int ic = col > 0 ? col - 1 : 0;
+      Json edits = Json::array();
+      edits.a.push_back(textEditJson(il, ic, il, ic, "await "));
+      actions.a.push_back(codeActionJson("Await Future", "quickfix",
+                                         workspaceEditJson(uri, std::move(edits)),
+                                         true));
+    }
     return actions;
   }
 
@@ -3291,6 +3646,107 @@ struct Server {
            std::to_string(gi) + ", " + std::to_string(bi) + ")");
     }
     return arr;
+  }
+
+  Json formatting(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    FormatResult fmt = formatSource(text, uriToPath(uri));
+    if (!fmt.ok || fmt.out == text)
+      return Json::array();
+    int el = 0, ec = 0;
+    endPosOf(text, el, ec);
+    Json edits = Json::array();
+    edits.a.push_back(textEditJson(0, 0, el, ec, fmt.out));
+    return edits;
+  }
+
+  Json foldingRange(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<NavSymbol> syms;
+    collectFromSource(text, uri, syms);
+    Json arr = Json::array();
+    for (const auto &s : syms) {
+      if (s.endLine <= s.line)
+        continue;
+      Json r = Json::object();
+      r.set("startLine", Json::num(s.line));
+      r.set("endLine", Json::num(s.endLine));
+      r.set("kind", Json::str("region"));
+      arr.a.push_back(std::move(r));
+    }
+    return arr;
+  }
+
+  Json semanticTokensFull(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::null();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<Token> tokens;
+    try {
+      tokens = tokenize(text, uriToPath(uri));
+    } catch (...) {
+      return Json::null();
+    }
+    Json data = Json::array();
+    int prevLine = 0;
+    int prevCol = 0;
+    bool afterFn = false;
+    for (const auto &t : tokens) {
+      if (t.kind == Tok::Eof)
+        break;
+      const int line = t.line > 0 ? t.line - 1 : 0;
+      const int col = t.col > 0 ? t.col - 1 : 0;
+      int len = static_cast<int>(t.text.size());
+      if (len <= 0) {
+        afterFn = t.kind == Tok::Function;
+        continue;
+      }
+      const int type = semanticTokType(t.kind, t.text, afterFn);
+      afterFn = t.kind == Tok::Function;
+      int deltaLine = line - prevLine;
+      int deltaStart = deltaLine == 0 ? col - prevCol : col;
+      data.a.push_back(Json::num(deltaLine));
+      data.a.push_back(Json::num(deltaStart));
+      data.a.push_back(Json::num(len));
+      data.a.push_back(Json::num(type));
+      data.a.push_back(Json::num(0));
+      prevLine = line;
+      prevCol = col;
+    }
+    Json result = Json::object();
+    result.set("data", std::move(data));
+    return result;
+  }
+
+  Json inlayHint(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<Diagnostic> parseErrs;
+    Program program = parseSource(text, uriToPath(uri), &parseErrs);
+    std::map<std::string, std::vector<std::string>> fnParams;
+    for (const auto &s : symbols()) {
+      if ((s.kind == "fn" || s.kind == "signal") && !s.params.empty())
+        fnParams[s.name] = s.params;
+    }
+    fnParams["print"] = {"..."};
+    fnParams["len"] = {"xs"};
+    fnParams["assert"] = {"cond"};
+    Json hints = Json::array();
+    collectProgramInlays(program, fnParams, hints);
+    return hints;
   }
 
   void didOpen(const Json &params) {
@@ -3419,6 +3875,22 @@ struct Server {
     }
     if (method == "textDocument/colorPresentation") {
       writeResponse(id, colorPresentation(p));
+      return;
+    }
+    if (method == "textDocument/formatting") {
+      writeResponse(id, formatting(p));
+      return;
+    }
+    if (method == "textDocument/foldingRange") {
+      writeResponse(id, foldingRange(p));
+      return;
+    }
+    if (method == "textDocument/semanticTokens/full") {
+      writeResponse(id, semanticTokensFull(p));
+      return;
+    }
+    if (method == "textDocument/inlayHint") {
+      writeResponse(id, inlayHint(p));
       return;
     }
     if (isReq)
@@ -3688,6 +4160,50 @@ bool jsonRpcSelfTest() {
         hasRgb = true;
     }
     if (!hasRgb)
+      return false;
+    srv.docs["file:///fmt.rg"] = "fn main():Int{return 0;}";
+    Json fp = Json::object();
+    Json ftd = Json::object();
+    ftd.set("uri", Json::str("file:///fmt.rg"));
+    fp.set("textDocument", std::move(ftd));
+    Json fedits = srv.formatting(fp);
+    if (fedits.a.empty())
+      return false;
+    srv.docs["file:///fold.rg"] =
+        "fn main(): Int {\n    return 0;\n}\nfn other(): Int {\n    return "
+        "1;\n}\n";
+    Json foldp = Json::object();
+    Json foldtd = Json::object();
+    foldtd.set("uri", Json::str("file:///fold.rg"));
+    foldp.set("textDocument", std::move(foldtd));
+    Json folds = srv.foldingRange(foldp);
+    if (folds.a.empty())
+      return false;
+    Json semp = Json::object();
+    Json semtd = Json::object();
+    semtd.set("uri", Json::str("file:///fold.rg"));
+    semp.set("textDocument", std::move(semtd));
+    Json sem = srv.semanticTokensFull(semp);
+    if (!sem.getArr("data") || sem.getArr("data")->a.size() < 5)
+      return false;
+    srv.docs["file:///inlay.rg"] =
+        "fn add(a: Int, b: Int): Int {\n    return a + b;\n}\nfn main(): Int "
+        "{\n    var x = 1;\n    return add(1, 2);\n}\n";
+    Json ip = Json::object();
+    Json itd = Json::object();
+    itd.set("uri", Json::str("file:///inlay.rg"));
+    ip.set("textDocument", std::move(itd));
+    Json hints = srv.inlayHint(ip);
+    bool sawParam = false;
+    bool sawType = false;
+    for (const auto &h : hints.a) {
+      const std::string lab = h.getStr("label");
+      if (lab.find("a:") != std::string::npos)
+        sawParam = true;
+      if (lab.find(": Int") != std::string::npos)
+        sawType = true;
+    }
+    if (!sawParam || !sawType)
       return false;
     return true;
   } catch (...) {

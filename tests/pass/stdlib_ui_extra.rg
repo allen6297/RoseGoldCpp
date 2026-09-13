@@ -60,5 +60,15 @@ fn main(): Int {
     wp.add(png);
     wp.hover_at(20, 20);
     wp.close();
+
+    var bmp = ui.load_image("examples/assets/dot.bmp");
+    checks.eq(bmp.img_w, 2);
+    checks.eq(bmp.img_h, 2);
+    var jpg = ui.load_image("examples/assets/dot.jpg");
+    checks.that(jpg.img_w >= 1);
+    checks.that(jpg.img_h >= 1);
+    var svg = ui.load_image("examples/assets/dot.svg");
+    checks.eq(svg.img_w, 16);
+    checks.eq(svg.img_h, 16);
     return 0;
 }

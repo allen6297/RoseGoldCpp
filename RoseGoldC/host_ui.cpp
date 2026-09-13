@@ -1,9 +1,17 @@
 #include "interp.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
 #define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
+#define STBI_ONLY_GIF
 #define STBI_NO_STDIO
 #include "stb_image.h"
+
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
 
 #include <algorithm>
 #include <cmath>
@@ -114,6 +122,7 @@ long long gNext = 1;
 Interpreter *gUiInterp = nullptr;
 std::map<long long, Value> gFrameFns;
 bool gInFrame = false;
+std::string gClipboard;
 
 bool anyAlive() {
   for (const auto &kv : gWins) {
@@ -499,7 +508,7 @@ bool loadPpmFile(const std::string &path, RgbImage &out) {
   return true;
 }
 
-bool loadPngFile(const std::string &path, RgbImage &out) {
+bool loadStbImageFile(const std::string &path, RgbImage &out) {
   std::ifstream in(path, std::ios::binary);
   if (!in)
     return false;
@@ -538,12 +547,65 @@ bool loadPngFile(const std::string &path, RgbImage &out) {
   return true;
 }
 
+bool loadSvgFile(const std::string &path, RgbImage &out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    return false;
+  in.seekg(0, std::ios::end);
+  const std::streamoff sz = in.tellg();
+  if (sz <= 0 || sz > 32 * 1024 * 1024)
+    return false;
+  in.seekg(0, std::ios::beg);
+  std::vector<char> file(static_cast<size_t>(sz) + 1);
+  in.read(file.data(), sz);
+  if (!in)
+    return false;
+  file[static_cast<size_t>(sz)] = '\0';
+  NSVGimage *svg = nsvgParse(file.data(), "px", 96.0f);
+  if (!svg)
+    return false;
+  int w = static_cast<int>(svg->width + 0.5f);
+  int h = static_cast<int>(svg->height + 0.5f);
+  if (w < 1)
+    w = 1;
+  if (h < 1)
+    h = 1;
+  if (w > 8192 || h > 8192) {
+    nsvgDelete(svg);
+    return false;
+  }
+  NSVGrasterizer *rast = nsvgCreateRasterizer();
+  if (!rast) {
+    nsvgDelete(svg);
+    return false;
+  }
+  std::vector<unsigned char> rgba(static_cast<size_t>(w) * h * 4);
+  nsvgRasterize(rast, svg, 0, 0, 1.0f, rgba.data(), w, h, w * 4);
+  nsvgDeleteRasterizer(rast);
+  nsvgDelete(svg);
+  out.w = w;
+  out.h = h;
+  out.px.resize(static_cast<size_t>(w) * h);
+  for (size_t i = 0; i < out.px.size(); ++i) {
+    const unsigned char *p = &rgba[i * 4];
+    const unsigned a = p[3];
+    const unsigned r = (p[0] * a + 255 * (255 - a)) / 255;
+    const unsigned g = (p[1] * a + 255 * (255 - a)) / 255;
+    const unsigned b = (p[2] * a + 255 * (255 - a)) / 255;
+    const long long color =
+        (static_cast<long long>(r) << 16) | (static_cast<long long>(g) << 8) | b;
+    out.px[i] = packRgb(color);
+  }
+  return true;
+}
+
 const RgbImage *cachedImage(const std::string &path) {
   auto it = gImages.find(path);
   if (it != gImages.end())
     return &it->second;
   RgbImage img;
-  const bool ok = loadPpmFile(path, img) || loadPngFile(path, img);
+  const bool ok = loadPpmFile(path, img) || loadStbImageFile(path, img) ||
+                  loadSvgFile(path, img);
   if (!ok)
     return nullptr;
   auto &slot = gImages[path];
@@ -1117,7 +1179,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       runFrame(id);
       return 0;
     }
-    if (ctrl && (vk == 'A' || vk == 'a')) {
+    if (ctrl && (vk == 'A' || vk == 'a' || vk == 'C' || vk == 'c' ||
+                 vk == 'X' || vk == 'x' || vk == 'V' || vk == 'v')) {
       feedKey(*win, vk, "ctrl");
       runFrame(id);
       return 0;
@@ -2649,6 +2712,7 @@ void uiHostReset() {
   gFrameFns.clear();
   gUiInterp = nullptr;
   gImages.clear();
+  gClipboard.clear();
   for (auto &kv : gWins) {
     if (hasNative(kv.second))
       nativeClose(kv.second);
@@ -2656,6 +2720,19 @@ void uiHostReset() {
   }
   gWins.clear();
   nativePoll();
+}
+
+bool uiPumpFrameJobs(Interpreter &I) {
+  if (I.frameJobs.empty())
+    return false;
+  nativePoll();
+  auto jobs = std::move(I.frameJobs);
+  I.frameJobs.clear();
+  for (auto &job : jobs) {
+    const bool alive = findAlive(job.winId) != nullptr;
+    I.settleFuture(job.future, Value::makeBool(alive));
+  }
+  return true;
 }
 
 Value uiHostCall(Interpreter &I, const std::string &name,
@@ -3150,12 +3227,73 @@ Value uiHostCall(Interpreter &I, const std::string &name,
       nativeWait();
     return Value::makeVoid();
   }
+  if (name == "clipboard_get") {
+    if (!args.empty())
+      I.runtime("__ui.clipboard_get takes 0 arguments", line, col);
+#ifdef _WIN32
+    if (OpenClipboard(nullptr)) {
+      HANDLE h = GetClipboardData(CF_UNICODETEXT);
+      if (h) {
+        const wchar_t *w = static_cast<const wchar_t *>(GlobalLock(h));
+        if (w) {
+          const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0,
+                                            nullptr, nullptr);
+          if (n > 1) {
+            std::string utf8(static_cast<size_t>(n - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, utf8.data(), n, nullptr,
+                                nullptr);
+            gClipboard = utf8;
+          }
+          GlobalUnlock(h);
+        }
+      }
+      CloseClipboard();
+    }
+#endif
+    return Value::makeString(gClipboard);
+  }
+  if (name == "clipboard_set") {
+    if (args.size() != 1)
+      I.runtime("__ui.clipboard_set takes 1 argument", line, col);
+    gClipboard = needStr(0);
+#ifdef _WIN32
+    if (OpenClipboard(nullptr)) {
+      EmptyClipboard();
+      const int n = MultiByteToWideChar(CP_UTF8, 0, gClipboard.c_str(), -1,
+                                        nullptr, 0);
+      if (n > 0) {
+        HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(n) *
+                                                     sizeof(wchar_t));
+        if (mem) {
+          wchar_t *dst = static_cast<wchar_t *>(GlobalLock(mem));
+          if (dst) {
+            MultiByteToWideChar(CP_UTF8, 0, gClipboard.c_str(), -1, dst, n);
+            GlobalUnlock(mem);
+            SetClipboardData(CF_UNICODETEXT, mem);
+          } else {
+            GlobalFree(mem);
+          }
+        }
+      }
+      CloseClipboard();
+    }
+#endif
+    return Value::makeVoid();
+  }
   if (name == "poll") {
     if (args.size() != 1)
       I.runtime("__ui.poll takes 1 argument", line, col);
     const long long id = needInt(0);
     nativePoll();
     return Value::makeBool(findAlive(id) != nullptr);
+  }
+  if (name == "next_frame") {
+    if (args.size() != 1)
+      I.runtime("__ui.next_frame takes 1 argument", line, col);
+    const long long id = needInt(0);
+    auto fut = std::make_shared<FutureData>();
+    I.frameJobs.push_back(FrameJob{id, fut});
+    return Value::makeFuture(std::move(fut));
   }
   if (name == "run") {
     if (!args.empty())

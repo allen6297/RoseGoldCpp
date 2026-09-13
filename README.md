@@ -43,8 +43,11 @@ Then **Developer: Reload Window**. Details: [vscode/README.md](vscode/README.md)
 .\build\RoseGoldC.exe fmt <file>       # print formatted source (rgfmt)
 .\build\RoseGoldC.exe fmt -w <file>    # format file in place
 .\build\RoseGoldC.exe fmt --check <file>  # exit 1 if formatting would change
-# fmt keeps float spelling (1.0, 2.50) and top-level // / /#…#/ comments
+.\build\RoseGoldC.exe fmt --compact <file>     # no blank lines between items
+.\build\RoseGoldC.exe fmt --no-comments <file> # strip // and /#…#/ comments
+# fmt keeps float spelling (1.0, 2.50), // / /#…#/ comments (incl. inside blocks), and same-line stmt comments
 .\build\RoseGoldC.exe lsp              # language server (JSON-RPC on stdin/stdout)
+.\build\RoseGoldC.exe dap              # debug adapter (DAP on stdin/stdout)
 .\build\RoseGoldC.exe test             # language suite (@test + tests/pass + tests/fail)
 .\build\RoseGoldC.exe test <file>      # @test functions in one file
 .\build\RoseGoldC.exe help
@@ -64,13 +67,13 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe test
 ```
 
-Language samples live under `examples/` (`class.rg`, `control.rg`, `array.rg`, `generics.rg`, …). UI demos: `window.rg` (hello), `widgets.rg` (controls + canvas), `contacts.rg` / `todo.rg` (small apps). Images are in `examples/assets/`.
+Language samples live under `examples/` (`class.rg`, `control.rg`, `array.rg`, `generics.rg`, `async.rg`, …). UI demos: `window.rg` (hello), `widgets.rg` (controls + canvas), `contacts.rg` / `todo.rg` (small apps). Images are in `examples/assets/`.
 
 `run` only calls `main`. Extra args after the file are `argv` (`argv(0)` is the file path). `check` lexes, parses, and typechecks without calling `main`. Parse, load, `@constexpr`, and type errors are all collected: `check` and the LSP list every one. `run` still stops at the first. `--json` prints `[{file, line, col, severity, message}, ...]`; `--stdin` reads the buffer and uses `<file>` for imports. `lsp` speaks the Language Server Protocol over stdin/stdout (JSON-RPC with `Content-Length` framing). The editor starts it once and keeps it running for diagnostics, hover, go to definition, find references, completion, outline, highlight, rename (workspace refs, not `builtin/`), CodeLens, and code actions. `test <file>` only calls `@test` functions. `test` with no file runs `examples/tests.rg` plus `tests/pass` (must succeed; files without `fn main` are libraries and are skipped) and `tests/fail` (must error; first `# expect: …` comment is a substring of the message; files without `# expect:` are libraries and are skipped).
 
 ## Language (now)
 
-`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), function types (`fn (Int): Int` on params/locals; lambdas infer that encoding), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`, `std.ui`).
+`fn`, `async` / `await` / `Future[T]`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), function types (`fn (Int): Int` on params/locals; lambdas infer that encoding), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`, `std.ui`).
 
 Ints, Floats, strings, bools, `+ - * / % == != < > <= >= && ||`, unary `-` / `!`, `+= -= *= /=`, user functions. Int/Int `+ - * / %` stay Int (`3 / 2` is `1`). If either side is Float, the result is Float (`3 / 2.0` is `1.5`). `1 == 1.0` is true. `&&` / `||` short-circuit and return Bool (`false && (1 / 0 == 1)` does not divide). Any truthy value works: `1 && "x"` is true. `n += 1` is `n = n + 1` (same for fields and indexes). String `+=` concatenates.
 
@@ -127,6 +130,25 @@ fn main(): Int {
     } catch e {
         print(e);
     }
+    return 0;
+}
+```
+
+**`async fn` returns `Future[T]`.** The annotated return type is the inner `T`; calling the function yields `Future[T]`. `await e` (only inside `async`) unwraps `Future[T]` → `T`. Uncaught throws in an async body fail the Future; awaiting a failed Future re-throws (so `do` / `catch` around `await` works). An async body that `throw`s still needs `throws` on the fn, and callers use `try` on the call (`await try boom()`). `async fn main()` is allowed — the runtime pumps timers and microtasks until that Future settles, then uses the Int exit code. First awaitable: `time.delay(ms)` → `Future[Void]` (non-blocking). Blocking `time.sleep(ms)` stays as-is. Combinators: `Future.all([f1, f2])` → `Future[Array[T]]` (every Future must settle; empty array is ready `[]`); `Future.race([f1, f2])` → `Future[T]` (first to settle wins; empty array fails). UI: `await w.next_frame()` → `Bool` (one non-blocking poll + widget tick; false when the window is gone). Sync `w.poll()` / `w.run()` stay as-is. Cancel a pending Future with `f.cancel()` (no-op if already settled); `await` then re-throws `"cancelled"` (catch with `do` / `catch`). A bare Future as a statement is a type error — `await` it or bind it (`var f = work();`).
+
+```text
+import std.time;
+
+async fn work(): Int {
+    await time.delay(10);
+    return 42;
+}
+
+async fn main(): Int {
+    var n = await work();
+    print(n);
+    var xs = await Future.all([work(), work()]);
+    print(xs[0]);
     return 0;
 }
 ```
@@ -559,7 +581,7 @@ fn main(): Int {
 }
 ```
 
-**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `io.read_lines` is `Array[String]`. `time.now()` is unix epoch milliseconds; `time.sleep(ms)` waits. `path.join` / `path.parent` / `path.stem` use `/` in the returned string. `json.parse(s)` (`throws`) turns a JSON object into a Map, an array into an Array, and numbers/strings/bools into those values; `json.stringify` goes the other way (structs become objects; enums become the variant name). JSON `null` is not in this subset — parse throws. `json.valid(s)` is true when parse would succeed. `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). After `import std;`, `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `ui` opens a native window on the current OS (`ui.backend()` is the blit host: `win32`, `x11`, `wayland`, `cocoa`, or `none`; later `android`, `ios`, `web`). `ui.platform()` is the OS family (`windows`, `linux`, `macos`; later `android`, `ios`, `web`). `ui.kind()` is `desktop`, `mobile`, or `web` so layout can branch without listing OS names. Android, iOS, and web hosts are not implemented yet — the same `.rg` widget tree paints pixels; each OS only blits. `try ui.open("RoseGold", 800, 600)` or `Window { title: "Hi", width: 640, height: 480 }` then `try w.show()`. Layout is Swift-ish: nest `VStack` / `HStack` (`children:` or `.add()`), then chain `.padding(n)`, `.background(Color.Blue)`, `.foreground(Color.Red)`, or `.style(Style { fill, ink, pad })`. Named colors are `Color.Black` / `Red` / `Green` / `Yellow` / `Blue` / `Magenta` / `Cyan` / `White`; custom is `ui.rgb(r, g, b)` or `Color.Rgb(r, g, b)` (`.value()` is the packed Int the host draws). `w.add(Label { text: "Hi" })` and `Button { text: "OK" }` (`clicked` signal) still stack vertically if you skip the stacks. `TextField` / `Toggle` take keyboard and click focus; `ScrollView` clips a tall child; `Canvas` strokes a frame and diagonal. Connect signals on the `Button` before wrapping it. `w.run()` pumps until that window closes. `ui.run()` still pumps every window that has no widget tree. `open` / `show` are `throws`. `ui.open_hidden` is the same window with no flash (tests). Visible `open` still needs a display; hidden windows can run offscreen if the display is missing. Drawing is fill plus the OS UI font on Windows (`Segoe UI` / the message font) and an 8×8 bitmap fallback elsewhere. `ui.font_height()` / `ui.text_width(s)` measure that font. `checks` stays a host builtin and does not need import.
+**Stdlib** lives in `builtin/std/` and is resolved from the repo (walk up from the script). `math` keeps Int helpers (`abs`, `sign`, `min`, `max`, `clamp`, `gcd`, `pow`, `rand_int`) and adds Float host ops (`sin`, `cos`, `atan2`, `sqrt`, `powf`, `to_int`, `to_float`, `floor`, `ceil`, `random`) plus `lerp` / `move_toward` in RoseGold. Comparisons and unary minus also work on Float, so `math.abs(-3.0)` is `3.0`. `str` wraps host primitives (`contains`, `starts_with`, `ends_with`, `length`, `is_empty`, `repeat`, `upper`, `lower`, `trim`, `slice`, `split`, `replace`, `find`). `io.exists` / `io.remove` return Bool; `io.read_text` / `io.read_lines` / `io.write_text` are `throws` (catch with `do` / `catch`; this subset has no Result). `io.read_lines` is `Array[String]`. `time.now()` is unix epoch milliseconds; `time.sleep(ms)` waits (blocking); `time.delay(ms)` returns `Future[Void]` for `await` (non-blocking). `path.join` / `path.parent` / `path.stem` use `/` in the returned string. `json.parse(s)` (`throws`) turns a JSON object into a Map, an array into an Array, and numbers/strings/bools into those values; `json.stringify` goes the other way (structs become objects; enums become the variant name). JSON `null` is not in this subset — parse throws. `json.valid(s)` is true when parse would succeed. `vec` is `Vec2` / `Vec3` classes (`Vec2 { x: 3.0, y: 4.0 }` — type names are not `std.vec.Vec2 { }`). `UUID` is frozen `data` (`value: String`). After `import std;`, `std.v4()`, `std.nil()`, `std.parse(s)` (`throws`), `std.valid(s)`, plus `u.to_string()` / `u.hex()` / `u.is_nil()`. `std.parse` accepts dashed or 32-hex, upper or lower, and stores canonical lowercase dashed form. `ui` opens a native window on the current OS (`ui.backend()` is the blit host: `win32`, `x11`, `wayland`, `cocoa`, or `none`; later `android`, `ios`, `web`). `ui.platform()` is the OS family (`windows`, `linux`, `macos`; later `android`, `ios`, `web`). `ui.kind()` is `desktop`, `mobile`, or `web` so layout can branch without listing OS names. Android, iOS, and web hosts are not implemented yet — the same `.rg` widget tree paints pixels; each OS only blits. `try ui.open("RoseGold", 800, 600)` or `Window { title: "Hi", width: 640, height: 480 }` then `try w.show()`. Layout is Swift-ish: nest `VStack` / `HStack` (`children:` or `.add()`), then chain `.padding(n)`, `.background(Color.Blue)`, `.foreground(Color.Red)`, or `.style(Style { fill, ink, pad })`. Named colors are `Color.Black` / `Red` / `Green` / `Yellow` / `Blue` / `Magenta` / `Cyan` / `White`; custom is `ui.rgb(r, g, b)` or `Color.Rgb(r, g, b)` (`.value()` is the packed Int the host draws). `w.add(Label { text: "Hi" })` and `Button { text: "OK" }` (`clicked` signal) still stack vertically if you skip the stacks. `TextField` / `Toggle` take keyboard and click focus; `ScrollView` clips a tall child; `Canvas` strokes a frame and diagonal. Connect signals on the `Button` before wrapping it. `w.run()` pumps until that window closes. `ui.run()` still pumps every window that has no widget tree. `open` / `show` are `throws`. `ui.open_hidden` is the same window with no flash (tests). Visible `open` still needs a display; hidden windows can run offscreen if the display is missing. Drawing is fill plus the OS UI font on Windows (`Segoe UI` / the message font) and an 8×8 bitmap fallback elsewhere. `ui.font_height()` / `ui.text_width(s)` measure that font. `checks` stays a host builtin and does not need import.
 
 A **framework** here is an optional stack behind `import`, not new syntax. Windowing is `import ui`. Widgets are `Label` (wrap), `Button`, `TextField`, `Toggle`, `Slider`, `VStack`, `HStack`, `Spacer`, `ScrollView`, `LazyColumn` (`LazyRows` / `LabelRows`), `Canvas`, and `ImageView`, plus modifiers (`.padding`, `.background`, `.style`), `Theme`, and HStack `align` (`fill` / `leading` / `center` / `trailing`). Write once: that widget tree paints a software framebuffer; win32/X11/Wayland/Cocoa blit it today, and Android/iOS/web are reserved names for the same `__ui` surface later. Details: [builtin/std/ui/README.md](builtin/std/ui/README.md).
 
@@ -603,13 +625,13 @@ fn main(): Int {
 
 **Desktop UI**
 
-1. Wayland input parity; more image formats beyond PPM/PNG.
-2. Optional: richer TextField (multi-line, clipboard).
+1. Wayland input parity.
+2. Optional: further TextField polish (soft-wrap, scroll inside multiline).
 
 **Tooling / language**
 
+- Optional: more DAP (hit-count breakpoints, set variable).
 - Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).
-- Grow `fmt` / rgfmt style knobs (inline comments, blank-line policy).
 
 **Later / when you have a concrete target**
 

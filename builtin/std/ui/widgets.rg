@@ -877,6 +877,8 @@ class TextField impl Widget {
     var placeholder: String = "";
     var focused: Bool = false;
     var enabled: Bool = true;
+    var multiline: Bool = false;
+    var rows: Int = 3;
     var caret: Int = 0;
     var sel: Int = -1;
     var fill: Color = Color.White;
@@ -944,18 +946,116 @@ class TextField impl Widget {
         }
     }
 
-    fn index_at_x(lx: Int): Int {
+    fn selected_text(): String {
+        if (!has_sel()) {
+            return "";
+        }
+        return str_slice(text, sel_lo(), sel_hi());
+    }
+
+    fn line_height(): Int {
+        var h = font_height();
+        if (h < 12) {
+            h = 12;
+        }
+        return h + 2;
+    }
+
+    fn line_start_at(idx: Int): Int {
+        var i = idx;
+        if (i > len(text)) {
+            i = len(text);
+        }
+        while (i > 0) {
+            if (str_slice(text, i - 1, i) == "\n") {
+                return i;
+            }
+            i = i - 1;
+        }
+        return 0;
+    }
+
+    fn line_end_at(idx: Int): Int {
+        var i = idx;
+        var n = len(text);
+        while (i < n) {
+            if (str_slice(text, i, i + 1) == "\n") {
+                return i;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    fn line_col_at(idx: Int): Int {
+        return idx - line_start_at(idx);
+    }
+
+    fn index_at_line_col(line: Int, col: Int): Int {
+        var i = 0;
+        var ln = 0;
+        var n = len(text);
+        while (i < n && ln < line) {
+            if (str_slice(text, i, i + 1) == "\n") {
+                ln = ln + 1;
+            }
+            i = i + 1;
+        }
+        var start = i;
+        var end = line_end_at(start);
+        var c = col;
+        if (c < 0) {
+            c = 0;
+        }
+        if (c > end - start) {
+            c = end - start;
+        }
+        return start + c;
+    }
+
+    fn line_of(idx: Int): Int {
+        var i = 0;
+        var ln = 0;
+        var n = idx;
+        if (n > len(text)) {
+            n = len(text);
+        }
+        while (i < n) {
+            if (str_slice(text, i, i + 1) == "\n") {
+                ln = ln + 1;
+            }
+            i = i + 1;
+        }
+        return ln;
+    }
+
+    fn line_count(): Int {
+        if (len(text) == 0) {
+            return 1;
+        }
+        var n = 1;
+        var i = 0;
+        while (i < len(text)) {
+            if (str_slice(text, i, i + 1) == "\n") {
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    fn index_at_x_on_line(line_text: String, lx: Int): Int {
         var x = lx - 6;
         if (x <= 0) {
             return 0;
         }
-        var n = len(text);
+        var n = len(line_text);
         var i = 0;
         while (i < n) {
             var mid = i + 1;
-            var w = text_width(str_slice(text, 0, mid));
+            var w = text_width(str_slice(line_text, 0, mid));
             if (w > x) {
-                var prev = text_width(str_slice(text, 0, i));
+                var prev = text_width(str_slice(line_text, 0, i));
                 if (x - prev < w - x) {
                     return i;
                 }
@@ -964,6 +1064,28 @@ class TextField impl Widget {
             i = i + 1;
         }
         return n;
+    }
+
+    fn index_at_xy(lx: Int, ly: Int): Int {
+        if (!multiline) {
+            return index_at_x_on_line(text, lx);
+        }
+        var row = (ly - 4) / line_height();
+        if (row < 0) {
+            row = 0;
+        }
+        var max_row = line_count() - 1;
+        if (row > max_row) {
+            row = max_row;
+        }
+        var start = index_at_line_col(row, 0);
+        var end = line_end_at(start);
+        var line_text = str_slice(text, start, end);
+        return start + index_at_x_on_line(line_text, lx);
+    }
+
+    fn index_at_x(lx: Int): Int {
+        return index_at_xy(lx, 4);
     }
 
     fn set_text(s: String) {
@@ -986,7 +1108,14 @@ class TextField impl Widget {
     }
 
     fn height(w: Int): Int {
-        return control_height(28, 10);
+        if (!multiline) {
+            return control_height(28, 10);
+        }
+        var n = rows;
+        if (n < 2) {
+            n = 2;
+        }
+        return n * line_height() + 8;
     }
 
     fn flex(): Int {
@@ -1002,7 +1131,8 @@ class TextField impl Widget {
         if (focused && enabled && __ui.mouse_down(win_id) &&
             pointer_over(win_id, x, y, w, h)) {
             var mx = __ui.mouse_x(win_id);
-            caret = index_at_x(mx - x);
+            var my = __ui.mouse_y(win_id);
+            caret = index_at_xy(mx - x, my - y);
             if (sel < 0) {
                 sel = caret;
             }
@@ -1019,40 +1149,77 @@ class TextField impl Widget {
         }
         fill_round(win_id, x, y, w, h, corner_r(), bg.value());
         stroke_round(win_id, x, y, w, h, corner_r(), bcol.value());
-        var ty = y + (h - font_height()) / 2;
         if (len(text) == 0 && !focused) {
             var ph = Color.Rgb(140, 140, 140);
             if (!enabled) {
                 ph = Color.Rgb(170, 170, 178);
             }
+            var ty = y + (h - font_height()) / 2;
+            if (multiline) {
+                ty = y + 4;
+            }
             __ui.text(win_id, x + 6, ty, placeholder, ph.value());
         } else {
-            if (has_sel()) {
-                var lo = sel_lo();
-                var hi = sel_hi();
-                var x0 = x + 6 + text_width(str_slice(text, 0, lo));
-                var x1 = x + 6 + text_width(str_slice(text, 0, hi));
-                var sw = x1 - x0;
-                if (sw < 1) {
-                    sw = 1;
+            var row = 0;
+            var i = 0;
+            var n = len(text);
+            while (true) {
+                var start = i;
+                while (i < n && str_slice(text, i, i + 1) != "\n") {
+                    i = i + 1;
                 }
-                __ui.fill(win_id, x0, y + 4, sw, h - 8, select_fill.value());
+                var line_text = str_slice(text, start, i);
+                var ty = y + 4 + row * line_height();
+                if (!multiline) {
+                    ty = y + (h - font_height()) / 2;
+                }
+                if (has_sel()) {
+                    var lo = sel_lo();
+                    var hi = sel_hi();
+                    var a = start;
+                    var b = i;
+                    if (lo < b && hi > a) {
+                        var s0 = lo;
+                        if (s0 < a) {
+                            s0 = a;
+                        }
+                        var s1 = hi;
+                        if (s1 > b) {
+                            s1 = b;
+                        }
+                        var x0 = x + 6 + text_width(str_slice(text, start, s0));
+                        var x1 = x + 6 + text_width(str_slice(text, start, s1));
+                        var sw = x1 - x0;
+                        if (sw < 1) {
+                            sw = 1;
+                        }
+                        __ui.fill(win_id, x0, ty, sw, line_height(), select_fill.value());
+                    }
+                }
+                __ui.text(win_id, x + 6, ty, line_text, col.value());
+                if (i >= n) {
+                    break;
+                }
+                i = i + 1;
+                row = row + 1;
             }
-            __ui.text(win_id, x + 6, ty, text, col.value());
         }
         if (focused && enabled) {
             var blink = (__time.now() / 500) % 2 == 0;
             if (blink || has_sel()) {
-                var cx = x + 6 + text_width(str_slice(text, 0, caret));
+                var start = line_start_at(caret);
+                var row = line_of(caret);
+                var ty = y + 4 + row * line_height();
+                if (!multiline) {
+                    ty = y + (h - font_height()) / 2;
+                }
+                var cx = x + 6 + text_width(str_slice(text, start, caret));
                 var ch = font_height();
                 if (ch < 12) {
                     ch = 12;
                 }
-                if (ch > h - 8) {
-                    ch = h - 8;
-                }
                 if (!has_sel() || blink) {
-                    __ui.fill(win_id, cx, y + (h - ch) / 2, 1, ch, ink.value());
+                    __ui.fill(win_id, cx, ty, 1, ch, ink.value());
                 }
             }
         }
@@ -1063,7 +1230,7 @@ class TextField impl Widget {
             return true;
         }
         focused = true;
-        caret = index_at_x(lx);
+        caret = index_at_xy(lx, ly);
         sel = caret;
         return true;
     }
@@ -1081,6 +1248,30 @@ class TextField impl Widget {
         if (ctrl && (code == 65 || code == 97)) {
             sel = 0;
             caret = len(text);
+            return true;
+        }
+        if (ctrl && (code == 67 || code == 99)) {
+            if (has_sel()) {
+                clipboard_set(selected_text());
+            }
+            return true;
+        }
+        if (ctrl && (code == 88 || code == 120)) {
+            if (has_sel()) {
+                clipboard_set(selected_text());
+                delete_sel();
+            }
+            return true;
+        }
+        if (ctrl && (code == 86 || code == 118)) {
+            var clip = clipboard_get();
+            if (len(clip) > 0) {
+                erase_sel();
+                text = str_slice(text, 0, caret) + clip + str_slice(text, caret, len(text));
+                caret = caret + len(clip);
+                clear_sel();
+                changed.emit();
+            }
             return true;
         }
         if (code == 37) {
@@ -1119,6 +1310,32 @@ class TextField impl Widget {
             }
             return true;
         }
+        if (multiline && code == 38) {
+            var col = line_col_at(caret);
+            var row = line_of(caret);
+            if (shift && sel < 0) {
+                sel = caret;
+            } elif (!shift) {
+                clear_sel();
+            }
+            if (row > 0) {
+                caret = index_at_line_col(row - 1, col);
+            }
+            return true;
+        }
+        if (multiline && code == 40) {
+            var col = line_col_at(caret);
+            var row = line_of(caret);
+            if (shift && sel < 0) {
+                sel = caret;
+            } elif (!shift) {
+                clear_sel();
+            }
+            if (row + 1 < line_count()) {
+                caret = index_at_line_col(row + 1, col);
+            }
+            return true;
+        }
         if (code == 36) {
             if (shift) {
                 if (sel < 0) {
@@ -1127,7 +1344,11 @@ class TextField impl Widget {
             } else {
                 clear_sel();
             }
-            caret = 0;
+            if (multiline) {
+                caret = line_start_at(caret);
+            } else {
+                caret = 0;
+            }
             return true;
         }
         if (code == 35) {
@@ -1138,7 +1359,11 @@ class TextField impl Widget {
             } else {
                 clear_sel();
             }
-            caret = len(text);
+            if (multiline) {
+                caret = line_end_at(caret);
+            } else {
+                caret = len(text);
+            }
             return true;
         }
         if (code == 8) {
@@ -1163,7 +1388,15 @@ class TextField impl Widget {
             return true;
         }
         if (code == 13) {
-            submitted.emit();
+            if (multiline) {
+                erase_sel();
+                text = str_slice(text, 0, caret) + "\n" + str_slice(text, caret, len(text));
+                caret = caret + 1;
+                clear_sel();
+                changed.emit();
+            } else {
+                submitted.emit();
+            }
             return true;
         }
         if (len(text_in) > 0 && !shift && !ctrl) {
@@ -2943,6 +3176,17 @@ fn label(t: Theme, text: String): Label {
 fn field(t: Theme, placeholder: String): TextField {
     return TextField {
         placeholder: placeholder,
+        fill: t.field_fill,
+        border: t.field_border
+    };
+}
+
+@ufcs
+fn area(t: Theme, placeholder: String): TextField {
+    return TextField {
+        placeholder: placeholder,
+        multiline: true,
+        rows: 4,
         fill: t.field_fill,
         border: t.field_border
     };

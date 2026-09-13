@@ -682,6 +682,15 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
       return callUfcs(*fn, obj, args, line, col);
     runtime("String has no method '" + name + "'", line, col);
   }
+  if (obj.kind == Value::Kind::Future) {
+    if (name == "cancel") {
+      if (!args.empty())
+        runtime("Future.cancel takes 0 arguments", line, col);
+      cancelFuture(obj.fut, line, col);
+      return Value::makeVoid();
+    }
+    runtime("Future has no method '" + name + "'", line, col);
+  }
   if (FnDecl *fn = findUfcs(name))
     return callUfcs(*fn, obj, args, line, col);
   runtime("cannot call method '" + name + "' on " + obj.toString(), line,
@@ -833,6 +842,14 @@ Value Interpreter::eval(const Expr &e) {
   }
   case Expr::Kind::Try:
     return eval(e.kids[0]);
+  case Expr::Kind::Await: {
+    if (e.kids.empty())
+      runtime("invalid await", e.line, e.col);
+    Value f = eval(e.kids[0]);
+    if (f.kind != Value::Kind::Future || !f.fut)
+      runtime("can only await a Future", e.line, e.col);
+    return awaitFuture(f.fut, e.line, e.col);
+  }
   case Expr::Kind::Lambda:
     return evalLambda(e);
   case Expr::Kind::Call: {
@@ -886,7 +903,7 @@ Value Interpreter::eval(const Expr &e) {
           return constructEnum(*en, e.text, std::move(args), e.line, e.col);
         }
         if (obj.kind == Value::Kind::Array || obj.kind == Value::Kind::String ||
-            obj.kind == Value::Kind::Map)
+            obj.kind == Value::Kind::Map || obj.kind == Value::Kind::Future)
           return callValueMethod(obj, e.text, args, e.line, e.col);
         if (FnDecl *fn = findUfcs(e.text))
           return callUfcs(*fn, obj, args, e.line, e.col);
@@ -909,7 +926,7 @@ Value Interpreter::eval(const Expr &e) {
       return constructEnum(*en, e.text, std::move(args), e.line, e.col);
     }
     if (obj.kind == Value::Kind::Array || obj.kind == Value::Kind::String ||
-        obj.kind == Value::Kind::Map)
+        obj.kind == Value::Kind::Map || obj.kind == Value::Kind::Future)
       return callValueMethod(obj, e.text, args, e.line, e.col);
     if (FnDecl *fn = findUfcs(e.text))
       return callUfcs(*fn, obj, args, e.line, e.col);
@@ -1413,6 +1430,87 @@ bool jsonStringify(const Value &v, std::string &out, int depth,
 
 Value Interpreter::callBuiltin(const std::string &module, const std::string &name,
                   const std::vector<Value> &args, int line, int col) {
+  if (module == "Future") {
+    if (name == "all" || name == "race") {
+      if (args.size() != 1)
+        runtime("Future." + name + " takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::Array || !args[0].items)
+        runtime("Future." + name + " expects Array of Future", line, col);
+      const auto &items = *args[0].items;
+      for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].kind != Value::Kind::Future || !items[i].fut)
+          runtime("Future." + name + " expects Array of Future", line, col);
+      }
+      auto out = std::make_shared<FutureData>();
+      if (items.empty()) {
+        if (name == "all")
+          settleFuture(out, Value::makeArray());
+        else
+          failFuture(out, Value::makeString("Future.race on empty Array"), line,
+                     col);
+        return Value::makeFuture(std::move(out));
+      }
+      std::vector<std::shared_ptr<FutureData>> futs;
+      futs.reserve(items.size());
+      for (const auto &item : items)
+        futs.push_back(item.fut);
+      if (name == "all") {
+        struct AllState {
+          std::shared_ptr<FutureData> out;
+          std::vector<Value> results;
+          size_t remaining = 0;
+          bool done = false;
+        };
+        auto state = std::make_shared<AllState>();
+        state->out = out;
+        state->results.resize(futs.size());
+        state->remaining = futs.size();
+        for (size_t i = 0; i < futs.size(); ++i) {
+          watchFuture(futs[i], [this, state, fut = futs[i], i]() {
+            if (state->done)
+              return;
+            if (fut->state == FutureData::State::Failed) {
+              state->done = true;
+              failFuture(state->out, fut->error, fut->errLine, fut->errCol);
+              return;
+            }
+            if (fut->state != FutureData::State::Ready)
+              return;
+            state->results[i] = fut->result;
+            if (--state->remaining == 0) {
+              state->done = true;
+              settleFuture(state->out,
+                           Value::makeArray(std::move(state->results)));
+            }
+          });
+        }
+      } else {
+        struct RaceState {
+          std::shared_ptr<FutureData> out;
+          bool done = false;
+        };
+        auto state = std::make_shared<RaceState>();
+        state->out = out;
+        for (const auto &fut : futs) {
+          watchFuture(fut, [this, state, fut]() {
+            if (state->done)
+              return;
+            if (fut->state == FutureData::State::Failed) {
+              state->done = true;
+              failFuture(state->out, fut->error, fut->errLine, fut->errCol);
+              return;
+            }
+            if (fut->state != FutureData::State::Ready)
+              return;
+            state->done = true;
+            settleFuture(state->out, fut->result);
+          });
+        }
+      }
+      return Value::makeFuture(std::move(out));
+    }
+    runtime("unknown function Future." + name, line, col);
+  }
   if (module.empty() && name == "print") {
     std::string parts;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -1874,6 +1972,21 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       std::this_thread::sleep_for(std::chrono::milliseconds(ms));
       return Value::makeVoid();
     }
+    if (name == "delay") {
+      if (args.size() != 1)
+        runtime("__time.delay takes 1 argument", line, col);
+      if (args[0].kind != Value::Kind::Int)
+        runtime("__time.delay expects Int", line, col);
+      long long ms = args[0].i;
+      if (ms < 0)
+        ms = 0;
+      auto fut = std::make_shared<FutureData>();
+      const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+      timers.push_back(TimerJob{now + ms, fut});
+      return Value::makeFuture(std::move(fut));
+    }
     runtime("unknown function __time." + name, line, col);
   }
   if (module == "__path") {
@@ -1938,8 +2051,9 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
           line, col);
 }
 
-Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, int line,
-               int col, const std::map<std::string, Binding> *caps) {
+Value Interpreter::runUserBody(const FnDecl &fn, const std::vector<Value> &args,
+                               int line, int col,
+                               const std::map<std::string, Binding> *caps) {
   struct ModGuard {
     Interpreter *self;
     std::string prev;
@@ -1965,6 +2079,21 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
     env.back() = *caps;
   for (size_t i = 0; i < fn.params.size(); ++i)
     env.back()[fn.params[i]] = Binding{args[i], false};
+  DebugFrame frame;
+  frame.name = fn.name;
+  frame.path = !fn.file.empty() ? fn.file : file;
+  frame.line = fn.line > 0 ? fn.line : 1;
+  frame.col = 1;
+  frame.envIndex = env.size() - 1;
+  debug.stack.push_back(frame);
+  struct StackPop {
+    Interpreter *self;
+    explicit StackPop(Interpreter *s) : self(s) {}
+    ~StackPop() {
+      if (!self->debug.stack.empty())
+        self->debug.stack.pop_back();
+    }
+  } stackPop(this);
   Value ret = Value::makeVoid();
   Flow f = execBlock(fn.body);
   if (f.kind == Flow::Kind::Throw)
@@ -1976,6 +2105,174 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
   else if (f.kind == Flow::Kind::Continue)
     runtime("continue outside loop", fn.line, 1);
   return ret;
+}
+
+Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, int line,
+               int col, const std::map<std::string, Binding> *caps) {
+  if (fn.isAsync) {
+    auto fut = std::make_shared<FutureData>();
+    std::vector<Value> capturedArgs = args;
+    std::shared_ptr<std::map<std::string, Binding>> capturedCaps;
+    if (caps)
+      capturedCaps = std::make_shared<std::map<std::string, Binding>>(*caps);
+    const FnDecl *fnPtr = &fn;
+    enqueueMicrotask([this, fut, fnPtr, capturedArgs, capturedCaps, line,
+                      col]() {
+      try {
+        Value ret =
+            runUserBody(*fnPtr, capturedArgs, line, col,
+                        capturedCaps ? capturedCaps.get() : nullptr);
+        settleFuture(fut, std::move(ret));
+      } catch (ThrowEscape &ex) {
+        failFuture(fut, std::move(ex.value), ex.line, ex.col);
+      }
+    });
+    return Value::makeFuture(std::move(fut));
+  }
+  return runUserBody(fn, args, line, col, caps);
+}
+
+void Interpreter::enqueueMicrotask(std::function<void()> fn) {
+  microtasks.push_back(std::move(fn));
+}
+
+void Interpreter::settleFuture(const std::shared_ptr<FutureData> &fut,
+                               Value value) {
+  if (!fut || fut->state != FutureData::State::Pending)
+    return;
+  fut->state = FutureData::State::Ready;
+  fut->result = std::move(value);
+  auto waiters = std::move(fut->waiters);
+  fut->waiters.clear();
+  for (auto &fn : waiters)
+    enqueueMicrotask(std::move(fn));
+}
+
+void Interpreter::failFuture(const std::shared_ptr<FutureData> &fut, Value error,
+                             int line, int col) {
+  if (!fut || fut->state != FutureData::State::Pending)
+    return;
+  fut->state = FutureData::State::Failed;
+  fut->error = std::move(error);
+  fut->errLine = line;
+  fut->errCol = col;
+  auto waiters = std::move(fut->waiters);
+  fut->waiters.clear();
+  for (auto &fn : waiters)
+    enqueueMicrotask(std::move(fn));
+}
+
+void Interpreter::watchFuture(const std::shared_ptr<FutureData> &fut,
+                              std::function<void()> fn) {
+  if (!fut) {
+    enqueueMicrotask(std::move(fn));
+    return;
+  }
+  if (fut->state != FutureData::State::Pending) {
+    enqueueMicrotask(std::move(fn));
+    return;
+  }
+  fut->waiters.push_back(std::move(fn));
+}
+
+void Interpreter::cancelFuture(const std::shared_ptr<FutureData> &fut, int line,
+                               int col) {
+  if (!fut || fut->state != FutureData::State::Pending)
+    return;
+  for (auto it = timers.begin(); it != timers.end();) {
+    if (it->future == fut)
+      it = timers.erase(it);
+    else
+      ++it;
+  }
+  for (auto it = frameJobs.begin(); it != frameJobs.end();) {
+    if (it->future == fut)
+      it = frameJobs.erase(it);
+    else
+      ++it;
+  }
+  failFuture(fut, Value::makeString("cancelled"), line, col);
+}
+
+bool Interpreter::pumpEventLoopOnce(bool mayWait) {
+  flushDeferred();
+  bool progress = false;
+  while (!microtasks.empty()) {
+    progress = true;
+    auto fn = std::move(microtasks.front());
+    microtasks.erase(microtasks.begin());
+    fn();
+    flushDeferred();
+  }
+  const auto nowMs = [&]() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  long long now = nowMs();
+  std::vector<std::shared_ptr<FutureData>> due;
+  for (auto it = timers.begin(); it != timers.end();) {
+    if (it->deadlineMs <= now) {
+      due.push_back(it->future);
+      it = timers.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto &fut : due) {
+    progress = true;
+    settleFuture(fut, Value::makeVoid());
+  }
+  if (uiPumpFrameJobs(*this))
+    progress = true;
+  if (progress)
+    return true;
+  if (!mayWait || timers.empty())
+    return false;
+  long long next = timers.front().deadlineMs;
+  for (const auto &t : timers) {
+    if (t.deadlineMs < next)
+      next = t.deadlineMs;
+  }
+  now = nowMs();
+  if (next > now)
+    std::this_thread::sleep_for(std::chrono::milliseconds(next - now));
+  now = nowMs();
+  for (auto it = timers.begin(); it != timers.end();) {
+    if (it->deadlineMs <= now) {
+      settleFuture(it->future, Value::makeVoid());
+      it = timers.erase(it);
+      progress = true;
+    } else {
+      ++it;
+    }
+  }
+  return progress || !microtasks.empty();
+}
+
+void Interpreter::drainEventLoop() {
+  for (int i = 0; i < 100000; ++i) {
+    if (!pumpEventLoopOnce(false)) {
+      if (microtasks.empty() && timers.empty() && frameJobs.empty())
+        return;
+      if (!pumpEventLoopOnce(true))
+        return;
+    }
+  }
+  runtime("event loop exceeded iteration limit", 1, 1);
+}
+
+Value Interpreter::awaitFuture(const std::shared_ptr<FutureData> &fut, int line,
+                               int col) {
+  if (!fut)
+    runtime("can only await a Future", line, col);
+  while (fut->state == FutureData::State::Pending) {
+    if (!pumpEventLoopOnce(true))
+      runtime("await deadlock: Future never settles", line, col);
+  }
+  if (fut->state == FutureData::State::Failed)
+    throw ThrowEscape{fut->error, fut->errLine, fut->errCol};
+  return fut->result;
 }
 
 Value Interpreter::evalLambda(const Expr &e) {
@@ -2241,7 +2538,105 @@ Flow Interpreter::execBlock(const std::vector<Stmt> &stmts) {
   return Flow::next();
 }
 
+std::string Interpreter::debugNormPath(std::string p) {
+  for (char &c : p) {
+    if (c == '/')
+      c = '\\';
+#ifdef _WIN32
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+#endif
+  }
+  return p;
+}
+
+Value Interpreter::debugEval(const std::string &source, std::string &err) {
+  err.clear();
+  std::vector<Diagnostic> diags;
+  Expr e = parseExprSource(source, "<watch>", &diags);
+  if (!diags.empty()) {
+    err = diags[0].message;
+    return Value::makeVoid();
+  }
+  try {
+    return eval(e);
+  } catch (const std::exception &ex) {
+    err = ex.what();
+    return Value::makeVoid();
+  }
+}
+
+void Interpreter::debugCheck(const Stmt &stmt) {
+  if (!debug.enabled || debug.abort)
+    return;
+  if (stmt.kind == Stmt::Kind::Comment)
+    return;
+  if (debug.stack.empty())
+    return;
+  DebugFrame &top = debug.stack.back();
+  top.line = stmt.line > 0 ? stmt.line : top.line;
+  top.col = stmt.col > 0 ? stmt.col : top.col;
+  const std::string path = debugNormPath(top.path.empty() ? file : top.path);
+  bool stop = false;
+  std::string reason;
+  auto bit = debug.breakpoints.find(path);
+  if (bit != debug.breakpoints.end()) {
+    for (const auto &bp : bit->second) {
+      if (bp.line != top.line)
+        continue;
+      if (bp.condition.empty()) {
+        stop = true;
+        reason = "breakpoint";
+        break;
+      }
+      std::string err;
+      Value cond = debugEval(bp.condition, err);
+      if (err.empty() && cond.truthy()) {
+        stop = true;
+        reason = "breakpoint";
+        break;
+      }
+    }
+  }
+  if (!stop && debug.stopOnEntry && !debug.entrySeen) {
+    debug.entrySeen = true;
+    stop = true;
+    reason = "entry";
+  }
+  if (!stop) {
+    switch (debug.mode) {
+    case DebugState::Mode::Next:
+      if (debug.stack.size() <= debug.stepDepth) {
+        stop = true;
+        reason = "step";
+      }
+      break;
+    case DebugState::Mode::StepIn:
+      stop = true;
+      reason = "step";
+      break;
+    case DebugState::Mode::StepOut:
+      if (debug.stack.size() < debug.stepDepth) {
+        stop = true;
+        reason = "step";
+      }
+      break;
+    case DebugState::Mode::Run:
+      break;
+    }
+  }
+  if (!stop)
+    return;
+  debug.stopPath = top.path.empty() ? file : top.path;
+  debug.stopLine = top.line;
+  debug.stopCol = top.col;
+  if (debug.pauseAndWait)
+    debug.pauseAndWait(reason);
+  if (debug.abort)
+    throw std::runtime_error("debug session ended");
+}
+
 Flow Interpreter::execStmt(const Stmt &stmt) {
+  debugCheck(stmt);
   switch (stmt.kind) {
   case Stmt::Kind::Expr:
     eval(stmt.expr);
@@ -2470,6 +2865,8 @@ Flow Interpreter::execStmt(const Stmt &stmt) {
   }
   case Stmt::Kind::Pass:
     return Flow::next();
+  case Stmt::Kind::Comment:
+    return Flow::next();
   case Stmt::Kind::Throw:
     return Flow::thr(eval(stmt.expr));
   case Stmt::Kind::Do: {
@@ -2523,7 +2920,10 @@ Value Interpreter::callNamed(const std::string &name) {
                      "unknown function '" + name + "'"));
   try {
     Value ret = callUser(*it->second, {}, it->second->line, 1);
+    if (ret.kind == Value::Kind::Future && ret.fut)
+      ret = awaitFuture(ret.fut, it->second->line, 1);
     flushDeferred();
+    drainEventLoop();
     return ret;
   } catch (const ThrowEscape &ex) {
     runtime("uncaught throw: " + ex.value.toString(), ex.line, ex.col);

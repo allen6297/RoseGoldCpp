@@ -23,4 +23,5 @@ std::vector<Diagnostic> checkFile(const std::string &path);
 std::string diagnosticsToJson(const std::vector<Diagnostic> &diags);
 std::string diagnosticToHuman(const Diagnostic &d);
 int runLanguageServer();
+int runDebugAdapter();
 bool jsonRpcSelfTest();

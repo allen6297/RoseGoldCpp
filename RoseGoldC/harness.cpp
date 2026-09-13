@@ -522,6 +522,49 @@ static void appendCheckSelfTest(RunResult &result) {
     require(again.ok && again.out == f.out, "fmt_block_idempotent",
             again.ok ? "output changed on second format" : again.message);
   }
+  {
+    const std::string src =
+        "fn a(): Int {\n  return 1; // trail\n}\n\nfn b(): Int {\n  return "
+        "2;\n}\n";
+    FormatResult f = formatSource(src, "fmt_inline.rg");
+    require(f.ok, "fmt_inline_parse", f.message);
+    require(f.out.find("return 1; // trail") != std::string::npos,
+            "fmt_inline_comment", f.out);
+    FormatResult again = formatSource(f.out, "fmt_inline.rg");
+    require(again.ok && again.out == f.out, "fmt_inline_idempotent",
+            again.ok ? "output changed on second format" : again.message);
+
+    FormatOptions compact;
+    compact.blankBetweenItems = false;
+    FormatResult c = formatSource(src, "fmt_compact.rg", compact);
+    require(c.ok, "fmt_compact_parse", c.message);
+    require(c.out.find("}\nfn b()") != std::string::npos, "fmt_compact_blank",
+            c.out);
+    require(c.out.find("}\n\nfn b()") == std::string::npos,
+            "fmt_compact_no_blank", c.out);
+
+    FormatOptions noc;
+    noc.keepComments = false;
+    FormatResult n = formatSource(src, "fmt_nocomment.rg", noc);
+    require(n.ok, "fmt_nocomment_parse", n.message);
+    require(n.out.find("// trail") == std::string::npos, "fmt_nocomment_strip",
+            n.out);
+    require(n.out.find("return 1;") != std::string::npos, "fmt_nocomment_keep",
+            n.out);
+  }
+  {
+    const std::string src =
+        "fn main(): Int {\n  // inside\n  return 0; // trail\n}\n";
+    FormatResult f = formatSource(src, "fmt_body_comment.rg");
+    require(f.ok, "fmt_body_parse", f.message);
+    require(f.out.find("// inside") != std::string::npos, "fmt_body_comment",
+            f.out);
+    require(f.out.find("return 0; // trail") != std::string::npos,
+            "fmt_body_trail", f.out);
+    FormatResult again = formatSource(f.out, "fmt_body_comment.rg");
+    require(again.ok && again.out == f.out, "fmt_body_idempotent",
+            again.ok ? "output changed on second format" : again.message);
+  }
   require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
 }
 

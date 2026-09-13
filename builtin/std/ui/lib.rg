@@ -1168,6 +1168,17 @@ class Window {
         return ok;
     }
 
+    async fn next_frame(): Bool {
+        if (id == 0) {
+            return false;
+        }
+        var ok = await __ui.next_frame(id);
+        width = __ui.width(id);
+        height = __ui.height(id);
+        tick();
+        return ok;
+    }
+
     fn alive(): Bool {
         if (id == 0) {
             return false;
@@ -1568,6 +1579,14 @@ fn font_height(): Int {
 
 fn text_width(s: String): Int {
     return __ui.text_width(s);
+}
+
+fn clipboard_get(): String {
+    return __ui.clipboard_get();
+}
+
+fn clipboard_set(s: String) {
+    __ui.clipboard_set(s);
 }
 
 fn run() {

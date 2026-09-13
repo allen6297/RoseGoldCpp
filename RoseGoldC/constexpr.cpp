@@ -122,6 +122,7 @@ void Interpreter::checkConstexprStmt(const Stmt &stmt) {
     constexprFail(stmt.line, stmt.col, "constexpr function cannot use 'do'");
     return;
   case Stmt::Kind::Pass:
+  case Stmt::Kind::Comment:
     return;
   case Stmt::Kind::Expr:
   case Stmt::Kind::Const:

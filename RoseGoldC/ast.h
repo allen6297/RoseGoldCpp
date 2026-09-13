@@ -34,7 +34,8 @@ struct Expr {
     StructLit,
     Range,
     Try,
-    Lambda
+    Lambda,
+    Await
   } kind{};
   long long number = 0;
   double real = 0;
@@ -82,7 +83,8 @@ struct Stmt {
     Break,
     Continue,
     Throw,
-    Do
+    Do,
+    Comment
   } kind{};
   std::string name;
   Expr expr;
@@ -92,6 +94,8 @@ struct Stmt {
   std::vector<MatchArm> arms;
   std::string typeName;
   std::string op = "=";
+  std::vector<std::string> leadingComments;
+  std::string trailingComment;
   bool hasExpr = false;
   int line = 1;
   int col = 1;
@@ -115,11 +119,13 @@ struct FnDecl {
   bool isConstexpr = false;
   bool isUfcs = false;
   bool throws = false;
+  bool isAsync = false;
   bool isPub = true;
   bool isAbstract = false;
   bool isFinal = false;
   Vis vis = Vis::Pub;
   int line = 1;
+  std::string file;
 };
 
 struct SignalDecl {

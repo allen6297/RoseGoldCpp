@@ -5,6 +5,7 @@
 #include "lexer.h"
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -134,6 +135,7 @@ struct TraitImplInfo {
 struct StructData;
 struct MapData;
 struct ClosureData;
+struct FutureData;
 
 struct Value {
   enum class Kind {
@@ -149,7 +151,8 @@ struct Value {
     Range,
     EnumType,
     Enum,
-    SignalRef
+    SignalRef,
+    Future
   } kind = Kind::Void;
   bool b = false;
   long long i = 0;
@@ -161,6 +164,7 @@ struct Value {
   std::shared_ptr<std::vector<Value>> items;
   std::shared_ptr<MapData> dict;
   std::shared_ptr<ClosureData> clo;
+  std::shared_ptr<FutureData> fut;
 
   static Value makeVoid() { return {}; }
   static Value makeBool(bool v) {
@@ -249,10 +253,35 @@ struct Value {
     x.payload = std::move(payload);
     return x;
   }
+  static Value makeFuture(std::shared_ptr<FutureData> data) {
+    Value x;
+    x.kind = Kind::Future;
+    x.fut = std::move(data);
+    return x;
+  }
 
   std::string toString() const;
   bool truthy() const;
   bool equals(const Value &other) const;
+};
+
+struct FutureData {
+  enum class State { Pending, Ready, Failed } state = State::Pending;
+  Value result;
+  Value error;
+  int errLine = 1;
+  int errCol = 1;
+  std::vector<std::function<void()>> waiters;
+};
+
+struct TimerJob {
+  long long deadlineMs = 0;
+  std::shared_ptr<FutureData> future;
+};
+
+struct FrameJob {
+  long long winId = 0;
+  std::shared_ptr<FutureData> future;
 };
 
 struct StructData {
@@ -422,6 +451,9 @@ struct Interpreter {
   std::map<std::string, std::size_t> signalArity;
   std::map<std::string, std::vector<Value>> listeners;
   std::vector<DeferredEmit> deferred;
+  std::vector<std::function<void()>> microtasks;
+  std::vector<TimerJob> timers;
+  std::vector<FrameJob> frameJobs;
   std::vector<std::map<std::string, Binding>> env;
   int loopDepth = 0;
   std::string file;
@@ -434,6 +466,36 @@ struct Interpreter {
   std::string currentModule;
   std::string superType;
   std::vector<Diagnostic> diagnostics;
+
+  struct DebugFrame {
+    std::string name;
+    std::string path;
+    int line = 1;
+    int col = 1;
+    size_t envIndex = 0;
+  };
+  struct DebugBreakpoint {
+    int line = 0;
+    std::string condition;
+  };
+  struct DebugState {
+    bool enabled = false;
+    bool stopOnEntry = false;
+    bool entrySeen = false;
+    bool abort = false;
+    enum class Mode { Run, Next, StepIn, StepOut } mode = Mode::Run;
+    size_t stepDepth = 0;
+    std::map<std::string, std::vector<DebugBreakpoint>> breakpoints;
+    std::vector<DebugFrame> stack;
+    std::function<void(const std::string &reason)> pauseAndWait;
+    std::string stopPath;
+    int stopLine = 1;
+    int stopCol = 1;
+  } debug;
+
+  void debugCheck(const Stmt &stmt);
+  static std::string debugNormPath(std::string p);
+  Value debugEval(const std::string &source, std::string &err);
 
   explicit Interpreter(Program p, std::string f, std::vector<std::string> a,
                        bool failFast = true);
@@ -565,6 +627,18 @@ struct Interpreter {
   Value dispatchSignal(const Value &sig, const std::string &name,
                        const std::vector<Value> &args, int line, int col);
   void flushDeferred();
+  void enqueueMicrotask(std::function<void()> fn);
+  void settleFuture(const std::shared_ptr<FutureData> &fut, Value value);
+  void failFuture(const std::shared_ptr<FutureData> &fut, Value error, int line,
+                  int col);
+  void watchFuture(const std::shared_ptr<FutureData> &fut,
+                   std::function<void()> fn);
+  void cancelFuture(const std::shared_ptr<FutureData> &fut, int line, int col);
+  bool pumpEventLoopOnce(bool mayWait);
+  void drainEventLoop();
+  Value awaitFuture(const std::shared_ptr<FutureData> &fut, int line, int col);
+  Value runUserBody(const FnDecl &fn, const std::vector<Value> &args, int line,
+                    int col, const std::map<std::string, Binding> *caps);
   Value evalLambda(const Expr &e);
   Value call(const std::string &module, const std::string &name,
              const std::vector<Value> &args, int line, int col);
@@ -619,6 +693,7 @@ struct Interpreter {
 void uiHostReset();
 Value uiHostCall(Interpreter &I, const std::string &name,
                  const std::vector<Value> &args, int line, int col);
+bool uiPumpFrameJobs(Interpreter &I);
 
 std::string readFile(const std::string &path);
 bool isNumeric(const Value &v);

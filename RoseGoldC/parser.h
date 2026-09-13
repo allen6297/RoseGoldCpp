@@ -8,3 +8,5 @@
 
 Program parseSource(const std::string &source, const std::string &file = "",
                     std::vector<Diagnostic> *errors = nullptr);
+Expr parseExprSource(const std::string &source, const std::string &file = "",
+                     std::vector<Diagnostic> *errors = nullptr);

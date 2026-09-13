@@ -1,6 +1,7 @@
 const vscode = require("vscode");
 const { spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 /** @type {vscode.DiagnosticCollection} */
@@ -11,9 +12,12 @@ let diagTimer;
 let statusBar;
 /** @type {vscode.OutputChannel | undefined} */
 let lspLog;
-/** @type {{ child: import("child_process").ChildProcess, nextId: number, pending: Map<number, {resolve: Function, reject: Function}>, buf: Buffer, ready: boolean } | null} */
+/** @type {{ child: import("child_process").ChildProcess, nextId: number, pending: Map<number, {resolve: Function, reject: Function}>, buf: Buffer, ready: boolean, cliPath: string } | null} */
 let rpc = null;
 let lspStopping = false;
+let lspStartGen = 0;
+/** @type {Promise<void> | null} */
+let lspStartLock = null;
 
 function findCli(startDir) {
   const found = [];
@@ -50,6 +54,18 @@ function newest(paths) {
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 }
 
+function pickCanonicalCli(paths) {
+  if (!paths.length) return null;
+  const pick = (name) =>
+    paths.find((p) => path.basename(p).toLowerCase() === name.toLowerCase());
+  return (
+    pick("RoseGoldC.exe") ||
+    pick("RoseGoldC") ||
+    pick("RoseGoldC.stage.exe") ||
+    newest(paths)
+  );
+}
+
 function resolveCli(hintPath) {
   const cfg = vscode.workspace.getConfiguration("rosegoldc");
   const raw = (cfg.get("cliPath", "") || "").trim();
@@ -63,10 +79,41 @@ function resolveCli(hintPath) {
 
   const found = [];
   for (const dir of dirs) found.push(...findCli(dir));
-  const hit = newest(found);
+  const hit = pickCanonicalCli(found);
   if (hit) return hit;
 
   return process.platform === "win32" ? "RoseGoldC.exe" : "RoseGoldC";
+}
+
+/** Copy CLI to a unique temp path so the LSP does not lock build/RoseGoldC.exe. */
+function lspCliPath(source) {
+  if (!path.isAbsolute(source)) return source;
+  const cacheDir = path.join(os.tmpdir(), "rosegoldc-lsp");
+  const stamp = `${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const dest = path.join(cacheDir, `RoseGoldC-${stamp}.exe`);
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.copyFileSync(source, dest);
+    // Drop older copies that are no longer in use (best-effort).
+    try {
+      for (const name of fs.readdirSync(cacheDir)) {
+        if (!/^RoseGoldC-.*\.exe$/i.test(name)) continue;
+        const full = path.join(cacheDir, name);
+        if (full === dest) continue;
+        try {
+          fs.unlinkSync(full);
+        } catch (_) {
+          /* still running */
+        }
+      }
+    } catch (_) {
+      /* ignore cleanup */
+    }
+    return dest;
+  } catch (err) {
+    if (lspLog) lspLog.appendLine(`lsp cache: ${err}; using ${source}`);
+    return source;
+  }
 }
 
 function workspaceCwd(filePath) {
@@ -88,6 +135,161 @@ async function activeRgFile() {
   return null;
 }
 
+function spawnCapture(cli, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cli, args, {
+      cwd: cwd || undefined,
+      env: process.env,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => {
+      stdout += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else
+        reject(
+          new Error(
+            (stderr || stdout || `fmt exited with code ${code}`).trim()
+          )
+        );
+    });
+  });
+}
+
+function workspaceRoot(hintPath) {
+  if (hintPath) {
+    const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(hintPath));
+    if (folder) return folder.uri.fsPath;
+  }
+  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length) {
+    return vscode.workspace.workspaceFolders[0].uri.fsPath;
+  }
+  return hintPath ? path.dirname(hintPath) : process.cwd();
+}
+
+async function formatDocumentText(doc) {
+  const file = filePathOf(doc);
+  const cli = resolveCli(file);
+  if (path.isAbsolute(cli) && !fs.existsSync(cli)) {
+    throw new Error(
+      `RoseGoldC.exe not found at ${cli}. Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`
+    );
+  }
+  const cfg = vscode.workspace.getConfiguration("rosegoldc");
+  const args = ["fmt"];
+  if (cfg.get("format.compact", false)) args.push("--compact");
+  if (cfg.get("format.stripComments", false)) args.push("--no-comments");
+
+  const tmp = path.join(
+    os.tmpdir(),
+    `rosegoldc-fmt-${process.pid}-${Date.now()}.rg`
+  );
+  fs.writeFileSync(tmp, doc.getText(), "utf8");
+  try {
+    args.push(tmp);
+    return await spawnCapture(cli, args, workspaceCwd(file));
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+/** @type {boolean} */
+let fmtNeedsFormat = false;
+
+async function checkFormatStatus(doc) {
+  if (!doc || doc.languageId !== "rosegold") return;
+  const cfg = vscode.workspace.getConfiguration("rosegoldc");
+  if (!cfg.get("format.checkOnSave", true)) return;
+  const file = filePathOf(doc);
+  if (!file || doc.uri.scheme !== "file") return;
+  const cli = resolveCli(file);
+  if (path.isAbsolute(cli) && !fs.existsSync(cli)) return;
+  try {
+    await spawnCapture(cli, ["fmt", "--check", file], workspaceCwd(file));
+    fmtNeedsFormat = false;
+    updateStatus(diagnostics.get(doc.uri) || []);
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (/needs formatting/i.test(msg)) {
+      fmtNeedsFormat = true;
+      if (statusBar) {
+        statusBar.text = "$(warning) RoseGoldC fmt";
+        statusBar.tooltip = "needs formatting";
+      }
+    }
+  }
+}
+
+const documentFormattingProvider = {
+  async provideDocumentFormattingEdits(doc) {
+    try {
+      if (rpc && rpc.ready) {
+        try {
+          const payload = await request("textDocument/formatting", {
+            textDocument: { uri: doc.uri.toString() },
+            options: { tabSize: 4, insertSpaces: true },
+          });
+          if (payload) {
+            const raw = Array.isArray(payload) ? payload : [];
+            const edits = raw
+              .filter((e) => e && e.range)
+              .map(
+                (e) =>
+                  new vscode.TextEdit(lspRange(e.range), e.newText || "")
+              );
+            fmtNeedsFormat = false;
+            updateStatus(diagnostics.get(doc.uri) || []);
+            return edits;
+          }
+        } catch (_) {
+          /* fall through to spawn fmt */
+        }
+      }
+      const formatted = await formatDocumentText(doc);
+      const current = doc.getText();
+      fmtNeedsFormat = false;
+      updateStatus(diagnostics.get(doc.uri) || []);
+      if (formatted === current) return [];
+      const full = new vscode.Range(
+        doc.positionAt(0),
+        doc.positionAt(current.length)
+      );
+      return [vscode.TextEdit.replace(full, formatted)];
+    } catch (err) {
+      vscode.window.showErrorMessage(
+        `RoseGoldC format failed: ${err.message || err}`
+      );
+      return [];
+    }
+  },
+};
+
+async function ensureCli(cli) {
+  const abs = path.isAbsolute(cli) ? cli : cli;
+  if (path.isAbsolute(abs) && !fs.existsSync(abs)) {
+    const pick = await vscode.window.showErrorMessage(
+      `RoseGoldC.exe not found at ${abs}. Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`,
+      "Build"
+    );
+    if (pick === "Build") {
+      await vscode.commands.executeCommand("workbench.action.tasks.build");
+    }
+    return false;
+  }
+  return true;
+}
+
 async function runCli(subcommand, filePath) {
   let file = filePath;
   if (file && typeof file !== "string")
@@ -99,6 +301,31 @@ async function runCli(subcommand, filePath) {
       /* keep */
     }
   }
+
+  // Explicit null = full test suite (no file argument).
+  if (file === null && subcommand === "test") {
+    const cwd = workspaceRoot();
+    const cli = resolveCli(cwd);
+    if (!(await ensureCli(cli))) return;
+    const def = { type: "rosegoldc", task: "test-suite" };
+    const exec = new vscode.ShellExecution(cli, ["test"], { cwd });
+    const task = new vscode.Task(
+      def,
+      vscode.TaskScope.Workspace,
+      "RoseGoldC test suite",
+      "rosegoldc",
+      exec
+    );
+    task.presentationOptions = {
+      reveal: vscode.TaskRevealKind.Always,
+      panel: vscode.TaskPanelKind.Dedicated,
+      clear: true,
+    };
+    task.problemMatchers = ["$rosegoldc", "$rosegoldc-located"];
+    await vscode.tasks.executeTask(task);
+    return;
+  }
+
   if (!file) {
     file = await activeRgFile();
     if (!file) return;
@@ -110,17 +337,7 @@ async function runCli(subcommand, filePath) {
   }
 
   const cli = resolveCli(file);
-  const abs = path.isAbsolute(cli) ? cli : cli;
-  if (path.isAbsolute(abs) && !fs.existsSync(abs)) {
-    const pick = await vscode.window.showErrorMessage(
-      `RoseGoldC.exe not found at ${abs}. Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`,
-      "Build"
-    );
-    if (pick === "Build") {
-      await vscode.commands.executeCommand("workbench.action.tasks.build");
-    }
-    return;
-  }
+  if (!(await ensureCli(cli))) return;
 
   const cwd = workspaceCwd(file);
   const def = { type: "rosegoldc", task: subcommand };
@@ -154,6 +371,9 @@ function updateStatus(items) {
   if (errs) {
     statusBar.text = `$(error) RoseGoldC ${errs}`;
     statusBar.tooltip = `${errs} error(s), ${warns} warning(s)`;
+  } else if (fmtNeedsFormat) {
+    statusBar.text = "$(warning) RoseGoldC fmt";
+    statusBar.tooltip = "needs formatting";
   } else if (warns) {
     statusBar.text = `$(warning) RoseGoldC ${warns}`;
     statusBar.tooltip = `${warns} warning(s)`;
@@ -291,82 +511,100 @@ function refreshDiagnostics(doc) {
 }
 
 function startLanguageServer() {
-  const hint =
-    (vscode.workspace.workspaceFolders &&
-      vscode.workspace.workspaceFolders[0] &&
-      vscode.workspace.workspaceFolders[0].uri.fsPath) ||
-    "";
-  const cli = resolveCli(hint);
-  if (!lspLog) lspLog = vscode.window.createOutputChannel("RoseGoldC LSP");
-  lspLog.appendLine(`starting ${cli} lsp`);
-  lspStopping = false;
+  if (lspStartLock) return lspStartLock;
+  const gen = ++lspStartGen;
+  lspStartLock = (async () => {
+    try {
+      if (rpc) await stopLanguageServer();
+      if (gen !== lspStartGen) return;
 
-  const child = spawn(cli, ["lsp"], {
-    cwd: hint || undefined,
-    env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  rpc = {
-    child,
-    nextId: 1,
-    pending: new Map(),
-    buf: Buffer.alloc(0),
-    ready: false,
-  };
+      const hint =
+        (vscode.workspace.workspaceFolders &&
+          vscode.workspace.workspaceFolders[0] &&
+          vscode.workspace.workspaceFolders[0].uri.fsPath) ||
+        "";
+      const source = resolveCli(hint);
+      const cli = lspCliPath(source);
+      if (!lspLog) lspLog = vscode.window.createOutputChannel("RoseGoldC LSP");
+      lspLog.appendLine(`starting ${cli} lsp (from ${source})`);
+      lspStopping = false;
 
-  child.stdout.on("data", (chunk) => {
-    if (!rpc) return;
-    rpc.buf = Buffer.concat([rpc.buf, chunk]);
-    while (true) {
-      let msg;
-      try {
-        msg = pullMessage(rpc);
-      } catch (err) {
+      const child = spawn(cli, ["lsp"], {
+        cwd: hint || undefined,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      rpc = {
+        child,
+        nextId: 1,
+        pending: new Map(),
+        buf: Buffer.alloc(0),
+        ready: false,
+        cliPath: cli,
+      };
+
+      child.stdout.on("data", (chunk) => {
+        if (!rpc || rpc.child !== child) return;
+        rpc.buf = Buffer.concat([rpc.buf, chunk]);
+        while (true) {
+          let msg;
+          try {
+            msg = pullMessage(rpc);
+          } catch (err) {
+            lspLog.appendLine(String(err));
+            break;
+          }
+          if (!msg) break;
+          dispatchRpc(msg);
+        }
+      });
+      child.stderr.on("data", (d) => {
+        if (lspLog) lspLog.append(d.toString());
+      });
+      child.on("error", (err) => {
+        if (statusBar) {
+          statusBar.text = "$(error) RoseGoldC";
+          statusBar.tooltip = `${err.message} (cmd=${cli}). Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`;
+        }
         lspLog.appendLine(String(err));
-        break;
-      }
-      if (!msg) break;
-      dispatchRpc(msg);
-    }
-  });
-  child.stderr.on("data", (d) => {
-    if (lspLog) lspLog.append(d.toString());
-  });
-  child.on("error", (err) => {
-    if (statusBar) {
-      statusBar.text = "$(error) RoseGoldC";
-      statusBar.tooltip = `${err.message} (cmd=${cli}). Build with Ctrl+Shift+B, or set RoseGoldC › Cli Path.`;
-    }
-    lspLog.appendLine(String(err));
-  });
-  child.on("close", (code) => {
-    if (rpc && rpc.child === child) {
-      rpc.ready = false;
-      rpc = null;
-    }
-    lspLog.appendLine(`lsp exited ${code}`);
-    if (lspStopping) return;
-    if (statusBar) {
-      statusBar.text = "$(error) RoseGoldC";
-      statusBar.tooltip = `language server exited (${code ?? "?"})`;
-    }
-  });
+      });
+      child.on("close", (code, signal) => {
+        if (rpc && rpc.child === child) {
+          rpc.ready = false;
+          rpc = null;
+        }
+        const why = signal ? `signal ${signal}` : `code ${code}`;
+        lspLog.appendLine(`lsp exited (${why})`);
+        if (cli.includes("rosegoldc-lsp")) {
+          try {
+            fs.unlinkSync(cli);
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        if (lspStopping || gen !== lspStartGen) return;
+        if (statusBar) {
+          statusBar.text = "$(error) RoseGoldC";
+          statusBar.tooltip = `language server exited (${why})`;
+        }
+      });
 
-  const root =
-    vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
-  const init = request("initialize", {
-    processId: process.pid,
-    rootUri: root ? root.uri.toString() : null,
-    capabilities: {
-      textDocument: { publishDiagnostics: {} },
-    },
-  });
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("initialize timed out")), 8000)
-  );
-  return Promise.race([init, timeout])
-    .then(() => {
-      if (!rpc || rpc.child !== child) return;
+      const root =
+        vscode.workspace.workspaceFolders &&
+        vscode.workspace.workspaceFolders[0];
+      const init = request("initialize", {
+        processId: process.pid,
+        rootUri: root ? root.uri.toString() : null,
+        capabilities: {
+          textDocument: { publishDiagnostics: {} },
+        },
+      });
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("initialize timed out")), 8000)
+      );
+      await Promise.race([init, timeout]);
+      if (!rpc || rpc.child !== child || gen !== lspStartGen) return;
       notify("initialized", {});
       rpc.ready = true;
       if (statusBar) {
@@ -374,40 +612,72 @@ function startLanguageServer() {
         statusBar.tooltip = "Language server ready";
       }
       for (const doc of vscode.workspace.textDocuments) didOpen(doc);
-    })
-    .catch((err) => {
+    } catch (err) {
       if (statusBar) {
         statusBar.text = "$(error) RoseGoldC";
         statusBar.tooltip = String(err.message || err);
       }
-      lspLog.appendLine(String(err));
-      try {
-        child.kill();
-      } catch (_) {
-        /* ignore */
+      if (lspLog) lspLog.appendLine(String(err));
+      if (rpc) {
+        try {
+          rpc.child.kill();
+        } catch (_) {
+          /* ignore */
+        }
+        rpc = null;
       }
-    });
+    } finally {
+      if (lspStartLock && gen === lspStartGen) lspStartLock = null;
+    }
+  })();
+  return lspStartLock;
 }
 
 async function stopLanguageServer() {
   if (!rpc) return;
   lspStopping = true;
   const child = rpc.child;
+  const cliPath = rpc.cliPath;
+  const closed = new Promise((resolve) => {
+    child.once("close", () => resolve());
+    setTimeout(resolve, 1500);
+  });
   const shutdown = request("shutdown", null).catch(() => {});
-  const timeout = new Promise((resolve) => setTimeout(resolve, 800));
   try {
-    await Promise.race([shutdown, timeout]);
-    notify("exit", undefined);
+    await Promise.race([
+      shutdown.then(() => notify("exit", undefined)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
   } catch (_) {
     /* ignore */
   }
-  rpc.ready = false;
+  if (rpc && rpc.child === child) {
+    rpc.ready = false;
+  }
   try {
     child.kill();
   } catch (_) {
     /* ignore */
   }
-  rpc = null;
+  await closed;
+  if (rpc && rpc.child === child) rpc = null;
+  if (cliPath && cliPath.includes("rosegoldc-lsp")) {
+    try {
+      fs.unlinkSync(cliPath);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+async function restartLanguageServer() {
+  await stopLanguageServer();
+  lspStopping = false;
+  await startLanguageServer();
+  const ed = vscode.window.activeTextEditor;
+  if (ed && ed.document.languageId === "rosegold") {
+    refreshDiagnostics(ed.document);
+  }
 }
 
 function lspRange(r) {
@@ -757,6 +1027,175 @@ const documentColorProvider = {
   },
 };
 
+const foldingRangeProvider = {
+  async provideFoldingRanges(doc) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/foldingRange", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((r) => r && r.startLine != null && r.endLine != null)
+      .map(
+        (r) =>
+          new vscode.FoldingRange(
+            r.startLine,
+            r.endLine,
+            r.kind === "comment"
+              ? vscode.FoldingRangeKind.Comment
+              : r.kind === "imports"
+                ? vscode.FoldingRangeKind.Imports
+                : vscode.FoldingRangeKind.Region
+          )
+      );
+  },
+};
+
+const semanticTokensLegend = new vscode.SemanticTokensLegend(
+  [
+    "keyword",
+    "comment",
+    "string",
+    "number",
+    "function",
+    "type",
+    "variable",
+    "operator",
+    "namespace",
+    "method",
+    "property",
+  ],
+  ["declaration", "deprecated"]
+);
+
+const documentSemanticTokensProvider = {
+  async provideDocumentSemanticTokens(doc) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/semanticTokens/full", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+    if (!payload || !payload.data) return;
+    return new vscode.SemanticTokens(Uint32Array.from(payload.data));
+  },
+};
+
+const inlayHintsProvider = {
+  async provideInlayHints(doc, range) {
+    if (!rpc || !rpc.ready) return;
+    const payload = await request("textDocument/inlayHint", {
+      textDocument: { uri: doc.uri.toString() },
+      range: {
+        start: { line: range.start.line, character: range.start.character },
+        end: { line: range.end.line, character: range.end.character },
+      },
+    });
+    if (!payload) return;
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((h) => h && h.position)
+      .map((h) => {
+        const label =
+          typeof h.label === "string"
+            ? h.label
+            : Array.isArray(h.label)
+              ? h.label.map((p) => (typeof p === "string" ? p : p.value || "")).join("")
+              : String(h.label || "");
+        const kind =
+          h.kind === 1
+            ? vscode.InlayHintKind.Type
+            : h.kind === 2
+              ? vscode.InlayHintKind.Parameter
+              : undefined;
+        const hint = new vscode.InlayHint(
+          new vscode.Position(
+            Math.max(0, h.position.line || 0),
+            Math.max(0, h.position.character || 0)
+          ),
+          label,
+          kind
+        );
+        if (h.paddingLeft) hint.paddingLeft = true;
+        if (h.paddingRight) hint.paddingRight = true;
+        return hint;
+      });
+  },
+};
+
+function makeShellTask(def, name, args, cwd) {
+  const exec = new vscode.ShellExecution(args[0], args.slice(1), { cwd });
+  const task = new vscode.Task(
+    def,
+    vscode.TaskScope.Workspace,
+    name,
+    "rosegoldc",
+    exec
+  );
+  task.presentationOptions = {
+    reveal: vscode.TaskRevealKind.Always,
+    panel: vscode.TaskPanelKind.Dedicated,
+    clear: true,
+  };
+  task.problemMatchers = ["$rosegoldc", "$rosegoldc-located"];
+  return task;
+}
+
+const rosegoldTaskProvider = {
+  provideTasks() {
+    const cwd = workspaceRoot();
+    const cli = resolveCli(cwd);
+    const build = new vscode.Task(
+      { type: "rosegoldc", task: "build" },
+      vscode.TaskScope.Workspace,
+      "build",
+      "rosegoldc",
+      new vscode.ShellExecution(
+        "powershell",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          path.join(cwd, "build.ps1"),
+        ],
+        { cwd }
+      )
+    );
+    build.group = vscode.TaskGroup.Build;
+    build.problemMatchers = ["$rosegoldc", "$rosegoldc-located"];
+    build.presentationOptions = {
+      reveal: vscode.TaskRevealKind.Always,
+      panel: vscode.TaskPanelKind.Dedicated,
+      clear: true,
+    };
+
+    const suite = makeShellTask(
+      { type: "rosegoldc", task: "test-suite" },
+      "RoseGoldC: Test Suite",
+      [cli, "test"],
+      cwd
+    );
+
+    const ed = vscode.window.activeTextEditor;
+    const file =
+      ed && ed.document.languageId === "rosegold"
+        ? filePathOf(ed.document)
+        : null;
+    const runArgs = file ? [cli, "run", file] : [cli, "run"];
+    const run = makeShellTask(
+      { type: "rosegoldc", task: "run" },
+      "RoseGoldC: Run Current File",
+      runArgs,
+      file ? workspaceCwd(file) : cwd
+    );
+
+    return [build, suite, run];
+  },
+  resolveTask(task) {
+    return task;
+  },
+};
+
 function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("rosegoldc");
   context.subscriptions.push(diagnostics);
@@ -780,16 +1219,103 @@ function activate(context) {
     vscode.commands.registerCommand("rosegoldc.testFile", (uri) =>
       runCli("test", uri)
     ),
+    vscode.commands.registerCommand("rosegoldc.testSuite", () =>
+      runCli("test", null)
+    ),
     vscode.commands.registerCommand("rosegoldc.recheck", () => {
       const ed = vscode.window.activeTextEditor;
       if (ed && ed.document.languageId === "rosegold")
         refreshDiagnostics(ed.document);
     }),
+    vscode.commands.registerCommand("rosegoldc.restartLsp", () =>
+      restartLanguageServer()
+    ),
+    vscode.commands.registerCommand("rosegoldc.formatDocument", async () => {
+      const ed = vscode.window.activeTextEditor;
+      if (!ed || ed.document.languageId !== "rosegold") {
+        vscode.window.showErrorMessage("Open a .rg file first.");
+        return;
+      }
+      await vscode.commands.executeCommand("editor.action.formatDocument");
+    }),
+    vscode.commands.registerCommand("rosegoldc.debugFile", async (uri) => {
+      let file = null;
+      if (uri && uri.fsPath) file = uri.fsPath;
+      else {
+        const ed = vscode.window.activeTextEditor;
+        if (ed && ed.document.languageId === "rosegold") {
+          if (ed.document.isDirty) await ed.document.save();
+          file = ed.document.uri.fsPath;
+        }
+      }
+      if (!file) {
+        vscode.window.showErrorMessage("Open a .rg file first.");
+        return;
+      }
+      const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file));
+      await vscode.debug.startDebugging(folder, {
+        type: "rosegoldc",
+        request: "launch",
+        name: "RoseGoldC: Debug",
+        program: file,
+        cwd: folder ? folder.uri.fsPath : path.dirname(file),
+        stopOnEntry: true,
+      });
+    }),
+    vscode.debug.registerDebugConfigurationProvider("rosegoldc", {
+      provideDebugConfigurations() {
+        return [
+          {
+            type: "rosegoldc",
+            request: "launch",
+            name: "RoseGoldC: Debug current file",
+            program: "${file}",
+            cwd: "${workspaceFolder}",
+            stopOnEntry: true,
+          },
+        ];
+      },
+      resolveDebugConfiguration(_folder, config) {
+        if (!config.type && !config.request && !config.name) {
+          const ed = vscode.window.activeTextEditor;
+          if (ed && ed.document.languageId === "rosegold") {
+            config.type = "rosegoldc";
+            config.request = "launch";
+            config.name = "RoseGoldC: Debug";
+            config.program = ed.document.uri.fsPath;
+            config.cwd = workspaceCwd(ed.document.uri.fsPath);
+            config.stopOnEntry = true;
+          }
+        }
+        if (config.request === "launch" && !config.program) {
+          const ed = vscode.window.activeTextEditor;
+          if (ed && ed.document.languageId === "rosegold")
+            config.program = ed.document.uri.fsPath;
+        }
+        if (!config.cwd && config.program)
+          config.cwd = workspaceCwd(config.program);
+        if (config.stopOnEntry == null) config.stopOnEntry = true;
+        if (!config.program) {
+          vscode.window.showErrorMessage(
+            "RoseGoldC debug: set program to a .rg file (or open one and press F5)."
+          );
+          return undefined;
+        }
+        return config;
+      },
+    }),
+    vscode.languages.registerDocumentFormattingEditProvider(
+      "rosegold",
+      documentFormattingProvider
+    ),
     vscode.workspace.onDidChangeTextDocument((e) =>
       scheduleDiagnostics(e.document)
     ),
     vscode.workspace.onDidOpenTextDocument((doc) => didOpen(doc)),
-    vscode.workspace.onDidSaveTextDocument((doc) => refreshDiagnostics(doc)),
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      refreshDiagnostics(doc);
+      checkFormatStatus(doc);
+    }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
       didClose(doc);
       diagnostics.delete(doc.uri);
@@ -825,7 +1351,31 @@ function activate(context) {
       { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
     ),
     vscode.languages.registerCodeLensProvider("rosegold", codeLensProvider),
-    vscode.languages.registerColorProvider("rosegold", documentColorProvider)
+    vscode.languages.registerColorProvider("rosegold", documentColorProvider),
+    vscode.languages.registerFoldingRangeProvider(
+      "rosegold",
+      foldingRangeProvider
+    ),
+    vscode.languages.registerDocumentSemanticTokensProvider(
+      "rosegold",
+      documentSemanticTokensProvider,
+      semanticTokensLegend
+    ),
+    vscode.languages.registerInlayHintsProvider("rosegold", inlayHintsProvider),
+    vscode.tasks.registerTaskProvider("rosegoldc", rosegoldTaskProvider),
+    vscode.debug.registerDebugAdapterDescriptorFactory("rosegoldc", {
+      createDebugAdapterDescriptor() {
+        const hint =
+          (vscode.workspace.workspaceFolders &&
+            vscode.workspace.workspaceFolders[0] &&
+            vscode.workspace.workspaceFolders[0].uri.fsPath) ||
+          "";
+        const cli = resolveCli(hint);
+        return new vscode.DebugAdapterExecutable(cli, ["dap"], {
+          cwd: hint || undefined,
+        });
+      },
+    })
   );
 }
 

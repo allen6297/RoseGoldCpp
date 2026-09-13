@@ -8,6 +8,7 @@
 namespace {
 
 struct Printer {
+  FormatOptions opts;
   std::ostringstream out;
   int indent = 0;
 
@@ -235,9 +236,14 @@ struct Printer {
         expr(e.kids[1]);
       break;
     case Expr::Kind::Try:
+      write("try ");
       if (!e.kids.empty())
         expr(e.kids[0], 7);
-      write("?");
+      break;
+    case Expr::Kind::Await:
+      write("await ");
+      if (!e.kids.empty())
+        expr(e.kids[0], 7);
       break;
     case Expr::Kind::Lambda:
       if (e.lambda)
@@ -265,12 +271,25 @@ struct Printer {
       stmt(s);
   }
 
+  void endStmt(const Stmt &s) {
+    write(";");
+    if (opts.keepComments && !s.trailingComment.empty()) {
+      write(" ");
+      write(s.trailingComment);
+    }
+    write("\n");
+  }
+
   void stmt(const Stmt &s) {
+    if (opts.keepComments)
+      emitComments(s.leadingComments);
     switch (s.kind) {
+    case Stmt::Kind::Comment:
+      break;
     case Stmt::Kind::Expr:
       pad();
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::Var:
     case Stmt::Kind::Const:
@@ -283,7 +302,7 @@ struct Printer {
       }
       write(" = ");
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::Assign:
       pad();
@@ -292,7 +311,7 @@ struct Printer {
       write(s.op);
       write(" ");
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::FieldAssign:
       pad();
@@ -303,7 +322,7 @@ struct Printer {
       write(s.op);
       write(" ");
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::IndexAssign:
       pad();
@@ -318,7 +337,7 @@ struct Printer {
       write(s.op);
       write(" ");
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::Return:
       pad();
@@ -327,7 +346,7 @@ struct Printer {
         write(" ");
         expr(s.expr);
       }
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::If:
       pad();
@@ -455,19 +474,25 @@ struct Printer {
       writeln("}");
       break;
     case Stmt::Kind::Pass:
-      writeln("pass;");
+      pad();
+      write("pass");
+      endStmt(s);
       break;
     case Stmt::Kind::Break:
-      writeln("break;");
+      pad();
+      write("break");
+      endStmt(s);
       break;
     case Stmt::Kind::Continue:
-      writeln("continue;");
+      pad();
+      write("continue");
+      endStmt(s);
       break;
     case Stmt::Kind::Throw:
       pad();
       write("throw ");
       expr(s.expr);
-      write(";\n");
+      endStmt(s);
       break;
     case Stmt::Kind::Do:
       pad();
@@ -489,6 +514,8 @@ struct Printer {
   }
 
   void fnInline(const FnDecl &fn) {
+    if (fn.isAsync)
+      write("async ");
     write("fn (");
     for (size_t i = 0; i < fn.params.size(); ++i) {
       if (i)
@@ -500,6 +527,8 @@ struct Printer {
       }
     }
     write(")");
+    if (fn.throws)
+      write(" throws");
     if (!fn.returnType.empty()) {
       write(": ");
       write(fn.returnType);
@@ -536,6 +565,8 @@ struct Printer {
     if (fn.isFinal)
       write("final ");
     visPrefix(fn.vis, fn.isPub);
+    if (fn.isAsync)
+      write("async ");
     write("fn ");
     write(fn.name);
     typeParams(fn.typeParams);
@@ -817,6 +848,8 @@ struct Printer {
   void modDeclPrint(const ModDecl &m);
 
   void emitComments(const std::vector<std::string> &comments) {
+    if (!opts.keepComments)
+      return;
     for (const auto &c : comments) {
       pad();
       write(c);
@@ -838,7 +871,9 @@ struct Printer {
     ItemKind prev = ItemKind::Import;
     bool first = true;
     for (const auto &it : order) {
-      bool blank = !first && !(prev == ItemKind::Import && it.kind == ItemKind::Import);
+      bool blank =
+          opts.blankBetweenItems && !first &&
+          !(prev == ItemKind::Import && it.kind == ItemKind::Import);
       if (blank)
         line();
       first = false;
@@ -883,7 +918,7 @@ struct Printer {
         break;
       }
     }
-    if (!trailingComments.empty()) {
+    if (opts.keepComments && !trailingComments.empty()) {
       if (!first)
         line();
       emitComments(trailingComments);
@@ -912,8 +947,9 @@ void Printer::modDeclPrint(const ModDecl &m) {
 
 } // namespace
 
-std::string formatProgram(const Program &program) {
+std::string formatProgram(const Program &program, const FormatOptions &opts) {
   Printer p;
+  p.opts = opts;
   p.program(program);
   std::string s = p.out.str();
   if (!s.empty() && s.back() != '\n')
@@ -921,7 +957,8 @@ std::string formatProgram(const Program &program) {
   return s;
 }
 
-FormatResult formatSource(const std::string &source, const std::string &path) {
+FormatResult formatSource(const std::string &source, const std::string &path,
+                          const FormatOptions &opts) {
   FormatResult r;
   std::vector<Diagnostic> diags;
   Program program = parseSource(source, path, &diags);
@@ -931,11 +968,11 @@ FormatResult formatSource(const std::string &source, const std::string &path) {
     r.message = diags[0].message;
     return r;
   }
-  r.out = formatProgram(program);
+  r.out = formatProgram(program, opts);
   return r;
 }
 
-FormatResult formatFile(const std::string &path) {
+FormatResult formatFile(const std::string &path, const FormatOptions &opts) {
   std::ifstream in(path);
   if (!in) {
     FormatResult r;
@@ -946,5 +983,5 @@ FormatResult formatFile(const std::string &path) {
   }
   std::ostringstream ss;
   ss << in.rdbuf();
-  return formatSource(ss.str(), path);
+  return formatSource(ss.str(), path, opts);
 }

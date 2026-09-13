@@ -199,6 +199,10 @@ struct Lexer {
       t.kind = Tok::Throw;
     else if (text == "catch")
       t.kind = Tok::Catch;
+    else if (text == "async")
+      t.kind = Tok::Async;
+    else if (text == "await")
+      t.kind = Tok::Await;
     else if (text == "true")
       t.kind = Tok::True;
     else if (text == "false")

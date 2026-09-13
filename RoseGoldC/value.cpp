@@ -100,6 +100,8 @@ std::string Value::toString() const {
     if (rec)
       return rec->name + "." + s;
     return s;
+  case Kind::Future:
+    return "<Future>";
   }
   return "";
 }
@@ -122,6 +124,7 @@ bool Value::truthy() const {
   case Kind::EnumType:
   case Kind::Enum:
   case Kind::SignalRef:
+  case Kind::Future:
     return true;
   default:
     return false;
@@ -224,6 +227,8 @@ bool Value::equals(const Value &other) const {
   }
   case Kind::SignalRef:
     return s == other.s && rec == other.rec;
+  case Kind::Future:
+    return fut == other.fut;
   }
   return false;
 }
