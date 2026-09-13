@@ -2189,6 +2189,9 @@ bool readMessage(std::string &body) {
   }
   if (!found)
     throw ParseError("missing Content-Length");
+  constexpr size_t kMaxLspBody = 16u * 1024u * 1024u;
+  if (length > kMaxLspBody)
+    throw ParseError("LSP Content-Length too large");
 
   body.assign(length, '\0');
   size_t got = 0;

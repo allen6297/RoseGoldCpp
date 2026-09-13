@@ -345,6 +345,11 @@ bool readMessage(std::string &body) {
   if (!p)
     return false;
   len = static_cast<size_t>(std::strtoul(p + 15, nullptr, 10));
+  constexpr size_t kMaxDapBody = 16u * 1024u * 1024u;
+  if (len > kMaxDapBody)
+    return false;
+  if (header.size() > 65536)
+    return false;
   body.assign(len, '\0');
   size_t got = 0;
   while (got < len) {

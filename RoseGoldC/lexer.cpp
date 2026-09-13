@@ -68,12 +68,6 @@ struct Lexer {
         advance();
         continue;
       }
-      // Keep '#' line comments as skipped trivia (not emitted).
-      if (c == '#') {
-        while (peek() != '\0' && peek() != '\n')
-          advance();
-        continue;
-      }
       break;
     }
   }
@@ -82,6 +76,19 @@ struct Lexer {
     std::string text;
     text.push_back(advance()); // /
     text.push_back(advance()); // /
+    while (peek() != '\0' && peek() != '\n')
+      text.push_back(advance());
+    Token t;
+    t.kind = Tok::LineComment;
+    t.text = std::move(text);
+    t.line = startLine;
+    t.col = startCol;
+    return t;
+  }
+
+  Token hashLineComment(int startLine, int startCol) {
+    std::string text;
+    text.push_back(advance()); // #
     while (peek() != '\0' && peek() != '\n')
       text.push_back(advance());
     Token t;
@@ -233,7 +240,30 @@ struct Lexer {
           text.push_back('\n');
         else if (e == 't')
           text.push_back('\t');
-        else
+        else if (e == 'r')
+          text.push_back('\r');
+        else if (e == 'x') {
+          auto hex = [&](char h) -> int {
+            if (h >= '0' && h <= '9')
+              return h - '0';
+            if (h >= 'a' && h <= 'f')
+              return h - 'a' + 10;
+            if (h >= 'A' && h <= 'F')
+              return h - 'A' + 10;
+            return -1;
+          };
+          char h1 = peek();
+          int d1 = hex(h1);
+          if (d1 < 0)
+            error("invalid \\x escape", startLine, startCol);
+          advance();
+          char h2 = peek();
+          int d2 = hex(h2);
+          if (d2 < 0)
+            error("invalid \\x escape", startLine, startCol);
+          advance();
+          text.push_back(static_cast<char>((d1 << 4) | d2));
+        } else
           text.push_back(e);
       } else {
         text.push_back(advance());
@@ -257,6 +287,8 @@ struct Lexer {
 
     if (c == '/' && peek(1) == '/')
       return lineComment(startLine, startCol);
+    if (c == '#')
+      return hashLineComment(startLine, startCol);
     if (c == '/' && peek(1) == '#')
       return blockComment(startLine, startCol);
 

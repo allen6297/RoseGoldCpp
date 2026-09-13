@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -22,6 +23,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace {
+constexpr long long kMaxRangeItems = 1000000;
+constexpr int kMaxJsonDepth = 64;
+constexpr size_t kMaxRepeatBytes = 16u * 1024u * 1024u;
+} // namespace
 
 static Value zeroOfType(const std::string &ty) {
   if (ty == "Int")
@@ -570,6 +577,8 @@ std::vector<Value> Interpreter::iterItems(const Value &iter, int line, int col) 
   if (iter.kind == Value::Kind::Int) {
     if (iter.i <= 0)
       return {};
+    if (iter.i > kMaxRangeItems)
+      runtime("range too large", line, col);
     std::vector<Value> nums;
     nums.reserve(static_cast<size_t>(iter.i));
     for (long long n = 0; n < iter.i; ++n)
@@ -581,11 +590,23 @@ std::vector<Value> Interpreter::iterItems(const Value &iter, int line, int col) 
     long long end = iter.payload.empty() ? 0 : iter.payload[0].i;
     std::vector<Value> nums;
     if (iter.b) {
-      for (long long n = start; n <= end; ++n)
+      for (long long n = start;; ++n) {
+        if (n > end)
+          break;
+        if (static_cast<long long>(nums.size()) >= kMaxRangeItems)
+          runtime("range too large", line, col);
         nums.push_back(Value::makeInt(n));
+        if (n == std::numeric_limits<long long>::max())
+          break;
+      }
     } else {
-      for (long long n = start; n < end; ++n)
+      for (long long n = start; n < end; ++n) {
+        if (static_cast<long long>(nums.size()) >= kMaxRangeItems)
+          runtime("range too large", line, col);
         nums.push_back(Value::makeInt(n));
+        if (n == std::numeric_limits<long long>::max())
+          break;
+      }
     }
     return nums;
   }
@@ -731,24 +752,38 @@ Value Interpreter::applyBinop(const std::string &op, const Value &a, const Value
   const bool bothInt =
       a.kind == Value::Kind::Int && b.kind == Value::Kind::Int;
   if (op == "+") {
-    if (bothInt)
-      return Value::makeInt(a.i + b.i);
+    if (bothInt) {
+      long long r = 0;
+      if (__builtin_add_overflow(a.i, b.i, &r))
+        runtime("integer overflow", line, col);
+      return Value::makeInt(r);
+    }
     return Value::makeFloat(asF64(a) + asF64(b));
   }
   if (op == "-") {
-    if (bothInt)
-      return Value::makeInt(a.i - b.i);
+    if (bothInt) {
+      long long r = 0;
+      if (__builtin_sub_overflow(a.i, b.i, &r))
+        runtime("integer overflow", line, col);
+      return Value::makeInt(r);
+    }
     return Value::makeFloat(asF64(a) - asF64(b));
   }
   if (op == "*") {
-    if (bothInt)
-      return Value::makeInt(a.i * b.i);
+    if (bothInt) {
+      long long r = 0;
+      if (__builtin_mul_overflow(a.i, b.i, &r))
+        runtime("integer overflow", line, col);
+      return Value::makeInt(r);
+    }
     return Value::makeFloat(asF64(a) * asF64(b));
   }
   if (op == "/") {
     if (bothInt) {
       if (b.i == 0)
         runtime("division by zero", line, col);
+      if (a.i == std::numeric_limits<long long>::min() && b.i == -1)
+        runtime("integer overflow", line, col);
       return Value::makeInt(a.i / b.i);
     }
     if (asF64(b) == 0.0)
@@ -759,6 +794,8 @@ Value Interpreter::applyBinop(const std::string &op, const Value &a, const Value
     if (bothInt) {
       if (b.i == 0)
         runtime("modulo by zero", line, col);
+      if (a.i == std::numeric_limits<long long>::min() && b.i == -1)
+        runtime("integer overflow", line, col);
       return Value::makeInt(a.i % b.i);
     }
     if (asF64(b) == 0.0)
@@ -821,6 +858,8 @@ Value Interpreter::eval(const Expr &e) {
         return Value::makeFloat(-v.real);
       if (v.kind != Value::Kind::Int)
         runtime("unary '-' expects a number", e.line, e.col);
+      if (v.i == std::numeric_limits<long long>::min())
+        runtime("integer overflow", e.line, e.col);
       return Value::makeInt(-v.i);
     }
     return Value::makeBool(!v.truthy());
@@ -1252,7 +1291,9 @@ struct JsonParser {
     return Value::makeFloat(0);
   }
 
-  Value parseValue() {
+  Value parseValue(int depth = 0) {
+    if (depth > kMaxJsonDepth)
+      fail("JSON nesting too deep");
     skip();
     char c = peek();
     if (c == '"')
@@ -1273,7 +1314,7 @@ struct JsonParser {
         skip();
         if (getc() != ':')
           fail("invalid JSON");
-        Value val = parseValue();
+        Value val = parseValue(depth + 1);
         if (!data->fields.count(key))
           data->order.push_back(key);
         data->fields[key] = std::move(val);
@@ -1294,7 +1335,7 @@ struct JsonParser {
         return Value::makeArray(std::move(items));
       }
       while (true) {
-        items.push_back(parseValue());
+        items.push_back(parseValue(depth + 1));
         skip();
         char sep = getc();
         if (sep == ']')
@@ -1730,6 +1771,13 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       long long n = needInt(1);
       if (n < 0)
         n = 0;
+      if (n > 0 && s.size() > 0) {
+        const unsigned long long need =
+            static_cast<unsigned long long>(s.size()) *
+            static_cast<unsigned long long>(n);
+        if (need > kMaxRepeatBytes)
+          runtime("str.repeat result too large", line, col);
+      }
       std::string out;
       out.reserve(s.size() * static_cast<size_t>(n));
       for (long long i = 0; i < n; ++i)
