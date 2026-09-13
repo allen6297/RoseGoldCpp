@@ -25,7 +25,6 @@ fn main(): Int {
 
 ```text
 .\build\RoseGoldC.exe run examples/window.rg
-.\build\RoseGoldC.exe run examples/canvas.rg
 .\build\RoseGoldC.exe run examples/widgets.rg
 .\build\RoseGoldC.exe run examples/contacts.rg
 ```

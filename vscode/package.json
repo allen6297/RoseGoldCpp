@@ -1,8 +1,8 @@
 {
   "name": "rosegoldc",
   "displayName": "RoseGoldC",
-  "description": "Language support for RoseGoldC: highlighting, diagnostics, outline, CodeLens, completion, hover, signature help, find references, go to definition, highlight, rename, code actions, run, and tests",
-  "version": "0.0.4",
+  "description": "Language support for RoseGoldC: highlighting, diagnostics, outline, CodeLens, color chips, completion, hover, signature help, find references, go to definition, highlight, rename, code actions, run, and tests",
+  "version": "0.0.5",
   "publisher": "rosegoldc",
   "engines": {
     "vscode": "^1.85.0"

@@ -702,6 +702,61 @@ const codeLensProvider = {
   },
 };
 
+const documentColorProvider = {
+  async provideDocumentColors(doc) {
+    if (!rpc || !rpc.ready) return [];
+    const payload = await request("textDocument/documentColor", {
+      textDocument: { uri: doc.uri.toString() },
+    });
+    if (!payload) return [];
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((c) => c && c.range && c.color)
+      .map((c) => {
+        const col = c.color;
+        return new vscode.ColorInformation(
+          lspRange(c.range),
+          new vscode.Color(
+            Number(col.red) || 0,
+            Number(col.green) || 0,
+            Number(col.blue) || 0,
+            col.alpha == null ? 1 : Number(col.alpha)
+          )
+        );
+      });
+  },
+  async provideColorPresentations(color, context) {
+    if (!rpc || !rpc.ready) return [];
+    const range = context.range;
+    const payload = await request("textDocument/colorPresentation", {
+      textDocument: { uri: context.document.uri.toString() },
+      color: {
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+        alpha: color.alpha,
+      },
+      range: {
+        start: { line: range.start.line, character: range.start.character },
+        end: { line: range.end.line, character: range.end.character },
+      },
+    });
+    if (!payload) return [];
+    const raw = Array.isArray(payload) ? payload : [];
+    return raw
+      .filter((p) => p && p.label)
+      .map((p) => {
+        const item = new vscode.ColorPresentation(p.label);
+        if (p.textEdit && p.textEdit.range)
+          item.textEdit = new vscode.TextEdit(
+            lspRange(p.textEdit.range),
+            p.textEdit.newText || p.label
+          );
+        return item;
+      });
+  },
+};
+
 function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("rosegoldc");
   context.subscriptions.push(diagnostics);
@@ -769,7 +824,8 @@ function activate(context) {
       codeActionProvider,
       { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
     ),
-    vscode.languages.registerCodeLensProvider("rosegold", codeLensProvider)
+    vscode.languages.registerCodeLensProvider("rosegold", codeLensProvider),
+    vscode.languages.registerColorProvider("rosegold", documentColorProvider)
   );
 }
 

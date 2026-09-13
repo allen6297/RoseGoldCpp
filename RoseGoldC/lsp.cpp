@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +51,13 @@ struct Json {
     j.integer = true;
     j.i = v;
     j.n = static_cast<double>(v);
+    return j;
+  }
+  static Json real(double v) {
+    Json j;
+    j.kind = Kind::Number;
+    j.integer = false;
+    j.n = v;
     return j;
   }
   static Json str(std::string v) {
@@ -1913,6 +1921,7 @@ Json initializeResult() {
   codeAction.set("codeActionKinds", std::move(actionKinds));
   caps.set("codeActionProvider", std::move(codeAction));
   caps.set("codeLensProvider", Json::boolean(true));
+  caps.set("colorProvider", Json::boolean(true));
   Json info = Json::object();
   info.set("name", Json::str("RoseGoldC"));
   info.set("version", Json::str(version));
@@ -1933,6 +1942,230 @@ void publishDiagnostics(const std::string &uri, const std::string &text,
   params.set("uri", Json::str(uri));
   params.set("diagnostics", std::move(arr));
   writeNotification("textDocument/publishDiagnostics", std::move(params));
+}
+
+struct ColorSpan {
+  int sl = 0;
+  int sc = 0;
+  int el = 0;
+  int ec = 0;
+  double r = 0;
+  double g = 0;
+  double b = 0;
+  double a = 1;
+};
+
+int colorByte(double x) {
+  long v = std::lround(x * 255.0);
+  if (v < 0)
+    v = 0;
+  if (v > 255)
+    v = 255;
+  return static_cast<int>(v);
+}
+
+double colorUnit(long long v) {
+  if (v < 0)
+    v = 0;
+  if (v > 255)
+    v = 255;
+  return static_cast<double>(v) / 255.0;
+}
+
+bool namedCssColor(const std::string &name, double &r, double &g, double &b) {
+  if (name == "Black") {
+    r = g = b = 0;
+    return true;
+  }
+  if (name == "White") {
+    r = g = b = 1;
+    return true;
+  }
+  if (name == "Red") {
+    r = 1;
+    g = b = 0;
+    return true;
+  }
+  if (name == "Green") {
+    g = 1;
+    r = b = 0;
+    return true;
+  }
+  if (name == "Blue") {
+    b = 1;
+    r = g = 0;
+    return true;
+  }
+  if (name == "Yellow") {
+    r = g = 1;
+    b = 0;
+    return true;
+  }
+  if (name == "Magenta") {
+    r = b = 1;
+    g = 0;
+    return true;
+  }
+  if (name == "Cyan") {
+    g = b = 1;
+    r = 0;
+    return true;
+  }
+  return false;
+}
+
+void tokenStart(const Token &t, int &sl, int &sc) {
+  sl = t.line > 0 ? t.line - 1 : 0;
+  sc = t.col > 0 ? t.col - 1 : 0;
+}
+
+void tokenEnd(const Token &t, int &el, int &ec) {
+  el = t.line > 0 ? t.line - 1 : 0;
+  ec = (t.col > 0 ? t.col - 1 : 0) + static_cast<int>(t.text.size());
+}
+
+bool readColorInt(const std::vector<Token> &tokens, size_t &i, long long &out) {
+  if (i >= tokens.size())
+    return false;
+  bool neg = false;
+  if (tokens[i].kind == Tok::Minus) {
+    neg = true;
+    ++i;
+    if (i >= tokens.size())
+      return false;
+  }
+  if (tokens[i].kind != Tok::Integer)
+    return false;
+  out = tokens[i].number;
+  if (neg)
+    out = -out;
+  ++i;
+  return true;
+}
+
+bool readColorArgs(const std::vector<Token> &tokens, size_t i,
+                   std::vector<long long> &args, size_t &rp) {
+  if (i >= tokens.size() || tokens[i].kind != Tok::LParen)
+    return false;
+  ++i;
+  args.clear();
+  while (i < tokens.size() && tokens[i].kind != Tok::RParen) {
+    long long v = 0;
+    if (!readColorInt(tokens, i, v))
+      return false;
+    args.push_back(v);
+    if (i < tokens.size() && tokens[i].kind == Tok::Comma) {
+      ++i;
+      continue;
+    }
+    break;
+  }
+  if (i >= tokens.size() || tokens[i].kind != Tok::RParen)
+    return false;
+  rp = i;
+  return true;
+}
+
+Json colorJson(double r, double g, double b, double a) {
+  Json c = Json::object();
+  c.set("red", Json::real(r));
+  c.set("green", Json::real(g));
+  c.set("blue", Json::real(b));
+  c.set("alpha", Json::real(a));
+  return c;
+}
+
+Json colorInfoJson(const ColorSpan &c) {
+  Json item = Json::object();
+  item.set("range", lspRange(c.sl, c.sc, c.el, c.ec));
+  item.set("color", colorJson(c.r, c.g, c.b, c.a));
+  return item;
+}
+
+void collectDocumentColors(const std::string &text,
+                           std::vector<ColorSpan> &out) {
+  std::vector<Token> tokens;
+  if (!tokenizeOk(text, tokens))
+    return;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (tokens[i].kind != Tok::Identifier)
+      continue;
+    const std::string &name = tokens[i].text;
+
+    if (name == "Color" && i + 2 < tokens.size() &&
+        tokens[i + 1].kind == Tok::Dot &&
+        tokens[i + 2].kind == Tok::Identifier) {
+      const std::string &var = tokens[i + 2].text;
+      double nr = 0, ng = 0, nb = 0;
+      if (namedCssColor(var, nr, ng, nb)) {
+        ColorSpan c;
+        tokenStart(tokens[i], c.sl, c.sc);
+        tokenEnd(tokens[i + 2], c.el, c.ec);
+        c.r = nr;
+        c.g = ng;
+        c.b = nb;
+        c.a = 1;
+        out.push_back(c);
+        continue;
+      }
+      if ((var == "Rgb" || var == "Argb") && i + 3 < tokens.size()) {
+        std::vector<long long> args;
+        size_t rp = 0;
+        if (!readColorArgs(tokens, i + 3, args, rp))
+          continue;
+        ColorSpan c;
+        tokenStart(tokens[i], c.sl, c.sc);
+        tokenEnd(tokens[rp], c.el, c.ec);
+        if (var == "Rgb" && args.size() == 3) {
+          c.r = colorUnit(args[0]);
+          c.g = colorUnit(args[1]);
+          c.b = colorUnit(args[2]);
+          c.a = 1;
+          out.push_back(c);
+        } else if (var == "Argb" && args.size() == 4) {
+          c.a = colorUnit(args[0]);
+          c.r = colorUnit(args[1]);
+          c.g = colorUnit(args[2]);
+          c.b = colorUnit(args[3]);
+          out.push_back(c);
+        }
+      }
+      continue;
+    }
+
+    bool ctor = (name == "rgb" || name == "argb");
+    size_t nameIdx = i;
+    if (!ctor && name == "ui" && i + 2 < tokens.size() &&
+        tokens[i + 1].kind == Tok::Dot &&
+        tokens[i + 2].kind == Tok::Identifier &&
+        (tokens[i + 2].text == "rgb" || tokens[i + 2].text == "argb")) {
+      ctor = true;
+      nameIdx = i + 2;
+    }
+    if (!ctor)
+      continue;
+    const bool isArgb = tokens[nameIdx].text == "argb";
+    std::vector<long long> args;
+    size_t rp = 0;
+    if (!readColorArgs(tokens, nameIdx + 1, args, rp))
+      continue;
+    ColorSpan c;
+    tokenStart(tokens[i], c.sl, c.sc);
+    tokenEnd(tokens[rp], c.el, c.ec);
+    if (!isArgb && args.size() == 3) {
+      c.r = colorUnit(args[0]);
+      c.g = colorUnit(args[1]);
+      c.b = colorUnit(args[2]);
+      c.a = 1;
+      out.push_back(c);
+    } else if (isArgb && args.size() == 4) {
+      c.a = colorUnit(args[0]);
+      c.r = colorUnit(args[1]);
+      c.g = colorUnit(args[2]);
+      c.b = colorUnit(args[3]);
+      out.push_back(c);
+    }
+  }
 }
 
 size_t offsetAt(const std::string &text, int line, int character) {
@@ -3004,6 +3237,62 @@ struct Server {
     return actions;
   }
 
+  Json documentColor(const Json &params) {
+    const Json *td = params.getObj("textDocument");
+    if (!td)
+      return Json::array();
+    const std::string uri = td->getStr("uri");
+    const std::string text = docText(uri);
+    std::vector<ColorSpan> colors;
+    collectDocumentColors(text, colors);
+    Json arr = Json::array();
+    arr.a.reserve(colors.size());
+    for (const auto &c : colors)
+      arr.a.push_back(colorInfoJson(c));
+    return arr;
+  }
+
+  Json colorPresentation(const Json &params) {
+    const Json *color = params.getObj("color");
+    const Json *range = params.getObj("range");
+    if (!color || !range)
+      return Json::array();
+    const double r = color->get("red") ? color->get("red")->n : 0;
+    const double g = color->get("green") ? color->get("green")->n : 0;
+    const double b = color->get("blue") ? color->get("blue")->n : 0;
+    const double a = color->get("alpha") ? color->get("alpha")->n : 1;
+    const int ri = colorByte(r);
+    const int gi = colorByte(g);
+    const int bi = colorByte(b);
+    const int ai = colorByte(a);
+    const Json *start = range->getObj("start");
+    const Json *end = range->getObj("end");
+    const int sl = start ? jsonInt(start, "line") : 0;
+    const int sc = start ? jsonInt(start, "character") : 0;
+    const int el = end ? jsonInt(end, "line") : sl;
+    const int ec = end ? jsonInt(end, "character") : sc;
+
+    Json arr = Json::array();
+    auto push = [&](const std::string &label) {
+      Json item = Json::object();
+      item.set("label", Json::str(label));
+      item.set("textEdit", textEditJson(sl, sc, el, ec, label));
+      arr.a.push_back(std::move(item));
+    };
+    if (ai >= 255) {
+      push("Color.Rgb(" + std::to_string(ri) + ", " + std::to_string(gi) +
+           ", " + std::to_string(bi) + ")");
+      push("rgb(" + std::to_string(ri) + ", " + std::to_string(gi) + ", " +
+           std::to_string(bi) + ")");
+    } else {
+      push("Color.Argb(" + std::to_string(ai) + ", " + std::to_string(ri) +
+           ", " + std::to_string(gi) + ", " + std::to_string(bi) + ")");
+      push("argb(" + std::to_string(ai) + ", " + std::to_string(ri) + ", " +
+           std::to_string(gi) + ", " + std::to_string(bi) + ")");
+    }
+    return arr;
+  }
+
   void didOpen(const Json &params) {
     const Json *td = params.getObj("textDocument");
     if (!td)
@@ -3122,6 +3411,14 @@ struct Server {
     }
     if (method == "textDocument/codeAction") {
       writeResponse(id, codeAction(p));
+      return;
+    }
+    if (method == "textDocument/documentColor") {
+      writeResponse(id, documentColor(p));
+      return;
+    }
+    if (method == "textDocument/colorPresentation") {
+      writeResponse(id, colorPresentation(p));
       return;
     }
     if (isReq)
@@ -3357,6 +3654,40 @@ bool jsonRpcSelfTest() {
     const Json *kcontents = khov.getObj("contents");
     if (!kcontents ||
         kcontents->getStr("value").find("crate") == std::string::npos)
+      return false;
+    srv.docs["file:///color.rg"] =
+        "fn main(): Int {\n    var c = Color.Rgb(245, 245, 248);\n    var d = "
+        "Color.Red;\n    var e = rgb(10, 20, 30);\n    return 0;\n}\n";
+    Json cp = Json::object();
+    Json ctd = Json::object();
+    ctd.set("uri", Json::str("file:///color.rg"));
+    cp.set("textDocument", std::move(ctd));
+    Json cols = srv.documentColor(cp);
+    if (cols.a.size() < 3)
+      return false;
+    const Json *c0 = cols.a[0].getObj("color");
+    if (!c0 || colorByte(c0->get("red") ? c0->get("red")->n : -1) != 245)
+      return false;
+    Json pp = Json::object();
+    pp.set("color", colorJson(245.0 / 255.0, 245.0 / 255.0, 248.0 / 255.0, 1));
+    Json pr = Json::object();
+    Json pst = Json::object();
+    pst.set("line", Json::num(1));
+    pst.set("character", Json::num(12));
+    Json pend = Json::object();
+    pend.set("line", Json::num(1));
+    pend.set("character", Json::num(34));
+    pr.set("start", std::move(pst));
+    pr.set("end", std::move(pend));
+    pp.set("range", std::move(pr));
+    Json presents = srv.colorPresentation(pp);
+    bool hasRgb = false;
+    for (const auto &pitem : presents.a) {
+      if (pitem.getStr("label").find("Color.Rgb(245, 245, 248)") !=
+          std::string::npos)
+        hasRgb = true;
+    }
+    if (!hasRgb)
       return false;
     return true;
   } catch (...) {
