@@ -22,7 +22,7 @@ chmod +x ./build.sh
 ./build/RoseGoldC test
 ```
 
-Linux needs `libx11` (`libx11-dev` on Debian/Ubuntu). If `libwayland-client` is also present (`libwayland-dev`), the same binary talks X11 and Wayland and picks at runtime (`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland` prefer Wayland). Wayland input (pointer, scroll, keyboard) works with the seat; install `libxkbcommon-dev` so `build.sh` enables full keymap/UTF-8 text entry. macOS needs the macOS SDK (Xcode or Command Line Tools). Hidden windows fall back to an offscreen host if there is no display, so `test` can still run over SSH.
+Linux needs `libx11` (`libx11-dev` on Debian/Ubuntu). If `libwayland-client` is also present (`libwayland-dev`), the same binary talks X11 and Wayland and picks at runtime (`WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland` prefer Wayland). Wayland seat input covers pointer, scroll, keyboard nav, and key repeat; install `libxkbcommon-dev` for full keymap/UTF-8 typing (without it, only special keys and Ctrl+A/C/X/V are mapped). macOS needs the macOS SDK (Xcode or Command Line Tools). Hidden windows fall back to an offscreen host if there is no display, so `test` can still run over SSH.
 
 ## Editor extension
 

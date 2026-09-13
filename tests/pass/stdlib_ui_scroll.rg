@@ -19,6 +19,14 @@ fn main(): Int {
     checks.that(scroll.offset < before);
     checks.eq(scroll.offset, 0);
 
+    // Small deltas accumulate (Wayland continuous axis feeds the same path).
+    var n = 0;
+    while (n < 8) {
+        w.scroll_at(0, -5, 40, 40);
+        n = n + 1;
+    }
+    checks.eq(scroll.offset, 40);
+
     // click near bottom of scrollbar track (window pad 12, content ~296 wide)
     var cw = 320 - 24;
     w.click_at(12 + cw - 4, 12 + 70);

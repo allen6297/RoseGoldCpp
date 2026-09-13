@@ -160,6 +160,8 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
-Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.
+Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn (Wayland hosts must send text `"shift"` with Tab for reverse focus, matching win32). Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.
+
+On Wayland, pointer scroll uses continuous axis accumulation (not one notch per event). Full UTF-8 typing needs `libxkbcommon` at build time (`-DROSEGOLD_XKB`).
 
 `LazyColumn` keeps a cache of visible row widgets so TextField/Button state survives paints; rows that scroll off are dropped. Hover uses `cursor_hand` / `cursor_ibeam` via `__ui.cursor`.

@@ -57,6 +57,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 #include <linux/input-event-codes.h>
 extern "C" {
@@ -1948,12 +1949,56 @@ HostWin *gWlPtrWin = nullptr;
 HostWin *gWlKeyWin = nullptr;
 double gWlPtrX = 0;
 double gWlPtrY = 0;
+double gWlScrollAccX = 0;
+double gWlScrollAccY = 0;
 uint32_t gWlMods = 0; // bit0 shift, bit1 ctrl
+struct {
+  bool on = false;
+  uint32_t key = 0;
+  int mapped = 0;
+  std::string text;
+  HostWin *win = nullptr;
+  int64_t next_ms = 0;
+  int32_t delay_ms = 400;
+  int32_t rate = 25; // repeats per second; 0 disables
+} gWlRepeat;
 #ifdef ROSEGOLD_XKB
 struct xkb_context *gXkbCtx = nullptr;
 struct xkb_keymap *gXkbMap = nullptr;
 struct xkb_state *gXkbState = nullptr;
 #endif
+
+int64_t wlNowMs() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<int64_t>(ts.tv_sec) * 1000LL +
+         static_cast<int64_t>(ts.tv_nsec) / 1000000LL;
+}
+
+void wlStopRepeat() {
+  gWlRepeat.on = false;
+  gWlRepeat.win = nullptr;
+  gWlRepeat.text.clear();
+}
+
+// Match Win32: Shift+Tab and Shift+arrows carry text "shift" for focus/selection.
+std::string wlNavModText(int code) {
+  if ((gWlMods & 1) == 0)
+    return "";
+  if (code == 9 || code == 33 || code == 34 || code == 35 || code == 36 ||
+      code == 37 || code == 38 || code == 39 || code == 40)
+    return "shift";
+  return "";
+}
+
+bool wlIsSpecialCode(int code) {
+  return code == 8 || code == 9 || code == 13 || code == 27 || code == 33 ||
+         code == 34 || code == 35 || code == 36 || code == 37 || code == 38 ||
+         code == 39 || code == 40 || code == 46;
+}
+
+// Accumulate continuous axis deltas (surface coords); flush whole pixels via
+// truncating gWlScrollAcc* in wlFlushScroll.
 
 HostWin *findByWls(struct wl_surface *surf) {
   if (!surf)
@@ -1965,17 +2010,62 @@ HostWin *findByWls(struct wl_surface *surf) {
   return nullptr;
 }
 
-void wlFeedSpecial(HostWin &win, int code) {
+void wlFeedKeyTo(HostWin &win, int code, std::string text, uint32_t key,
+                 bool start_repeat) {
+  if (start_repeat && gWlRepeat.rate > 0 && code != 0) {
+    gWlRepeat.on = true;
+    gWlRepeat.key = key;
+    gWlRepeat.mapped = code;
+    gWlRepeat.text = text;
+    gWlRepeat.win = &win;
+    gWlRepeat.next_ms = wlNowMs() + static_cast<int64_t>(gWlRepeat.delay_ms);
+  }
+  feedKey(win, code, std::move(text));
+  runFrame(win.id);
+}
+
+void wlFeedSpecial(HostWin &win, int code, uint32_t key, bool start_repeat) {
   std::string text;
-  if ((code == 37 || code == 39 || code == 36 || code == 35 || code == 38 ||
-       code == 40 || code == 33 || code == 34) &&
-      (gWlMods & 1))
-    text = "shift";
   if ((code == 'A' || code == 'a' || code == 'C' || code == 'c' || code == 'X' ||
        code == 'x' || code == 'V' || code == 'v') &&
       (gWlMods & 2))
     text = "ctrl";
-  feedKey(win, code, std::move(text));
+  else
+    text = wlNavModText(code);
+  wlFeedKeyTo(win, code, std::move(text), key, start_repeat);
+}
+
+void wlTickRepeat() {
+  if (!gWlRepeat.on || !gWlRepeat.win || gWlRepeat.rate <= 0)
+    return;
+  if (!gWlRepeat.win->alive || gWlRepeat.win != gWlKeyWin) {
+    wlStopRepeat();
+    return;
+  }
+  const int64_t now = wlNowMs();
+  if (now < gWlRepeat.next_ms)
+    return;
+  const int interval =
+      std::max(1, 1000 / std::max(1, static_cast<int>(gWlRepeat.rate)));
+  while (gWlRepeat.on && now >= gWlRepeat.next_ms) {
+    feedKey(*gWlRepeat.win, gWlRepeat.mapped, gWlRepeat.text);
+    runFrame(gWlRepeat.win->id);
+    gWlRepeat.next_ms += interval;
+    if (gWlRepeat.next_ms < now - interval)
+      gWlRepeat.next_ms = now + interval;
+  }
+}
+
+void wlFlushScroll(HostWin &win) {
+  const int dx = static_cast<int>(gWlScrollAccX);
+  const int dy = static_cast<int>(gWlScrollAccY);
+  gWlScrollAccX -= static_cast<double>(dx);
+  gWlScrollAccY -= static_cast<double>(dy);
+  if (dx == 0 && dy == 0)
+    return;
+  win.mouse_x = static_cast<int>(gWlPtrX);
+  win.mouse_y = static_cast<int>(gWlPtrY);
+  feedScroll(win, dx, dy);
   runFrame(win.id);
 }
 
@@ -2037,6 +2127,8 @@ void wlPointerLeave(void *, struct wl_pointer *, uint32_t,
   if (gWlPtrWin)
     gWlPtrWin->mouse_down = false;
   gWlPtrWin = nullptr;
+  gWlScrollAccX = 0;
+  gWlScrollAccY = 0;
 }
 
 void wlPointerMotion(void *, struct wl_pointer *, uint32_t, wl_fixed_t sx,
@@ -2074,19 +2166,15 @@ void wlPointerAxis(void *, struct wl_pointer *, uint32_t, uint32_t axis,
   if (!gWlPtrWin)
     return;
   const double v = wl_fixed_to_double(value);
-  // Wayland axis is typically positive = down/right; match X11 button4 = up.
-  int dx = 0;
-  int dy = 0;
+  // Continuous surface-space deltas; positive vertical = down → negative dy
+  // (X11 button4/up uses positive dy).
   if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
-    dy = v > 0 ? -48 : (v < 0 ? 48 : 0);
+    gWlScrollAccY += -v;
   else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL)
-    dx = v > 0 ? 48 : (v < 0 ? -48 : 0);
-  if (dx == 0 && dy == 0)
+    gWlScrollAccX += v;
+  else
     return;
-  gWlPtrWin->mouse_x = static_cast<int>(gWlPtrX);
-  gWlPtrWin->mouse_y = static_cast<int>(gWlPtrY);
-  feedScroll(*gWlPtrWin, dx, dy);
-  runFrame(gWlPtrWin->id);
+  wlFlushScroll(*gWlPtrWin);
 }
 
 void wlPointerFrame(void *, struct wl_pointer *) {}
@@ -2102,7 +2190,7 @@ const struct wl_pointer_listener gWlPointerListener = {
 void wlKeyboardKeymap(void *, struct wl_keyboard *, uint32_t format, int fd,
                       uint32_t size) {
 #ifdef ROSEGOLD_XKB
-  if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+  if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || size == 0) {
     close(fd);
     return;
   }
@@ -2111,6 +2199,10 @@ void wlKeyboardKeymap(void *, struct wl_keyboard *, uint32_t format, int fd,
   close(fd);
   if (mapStr == MAP_FAILED)
     return;
+  std::string mapCopy(mapStr, size);
+  munmap(mapStr, size);
+  if (mapCopy.empty() || mapCopy.back() != '\0')
+    mapCopy.push_back('\0');
   if (!gXkbCtx)
     gXkbCtx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
   if (gXkbState) {
@@ -2122,13 +2214,12 @@ void wlKeyboardKeymap(void *, struct wl_keyboard *, uint32_t format, int fd,
     gXkbMap = nullptr;
   }
   if (gXkbCtx) {
-    gXkbMap = xkb_keymap_new_from_string(gXkbCtx, mapStr,
+    gXkbMap = xkb_keymap_new_from_string(gXkbCtx, mapCopy.c_str(),
                                          XKB_KEYMAP_FORMAT_TEXT_V1,
                                          XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (gXkbMap)
       gXkbState = xkb_state_new(gXkbMap);
   }
-  munmap(mapStr, size);
 #else
   (void)format;
   (void)size;
@@ -2143,11 +2234,17 @@ void wlKeyboardEnter(void *, struct wl_keyboard *, uint32_t,
 
 void wlKeyboardLeave(void *, struct wl_keyboard *, uint32_t,
                      struct wl_surface *) {
+  wlStopRepeat();
   gWlKeyWin = nullptr;
 }
 
 void wlKeyboardKey(void *, struct wl_keyboard *, uint32_t, uint32_t,
                    uint32_t key, uint32_t state) {
+  if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+    if (gWlRepeat.on && gWlRepeat.key == key)
+      wlStopRepeat();
+    return;
+  }
   if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !gWlKeyWin)
     return;
   HostWin &win = *gWlKeyWin;
@@ -2203,20 +2300,10 @@ void wlKeyboardKey(void *, struct wl_keyboard *, uint32_t, uint32_t,
       if (!text.empty())
         mapped = static_cast<unsigned char>(text[0]);
     }
-    if (mapped == 8 || mapped == 13 || mapped == 9 || mapped == 27 ||
-        mapped == 37 || mapped == 39 || mapped == 36 || mapped == 35 ||
-        mapped == 38 || mapped == 40 || mapped == 33 || mapped == 34 ||
-        mapped == 46) {
-      text.clear();
-      if ((gWlMods & 1) != 0 &&
-          (mapped == 37 || mapped == 39 || mapped == 36 || mapped == 35 ||
-           mapped == 38 || mapped == 40 || mapped == 33 || mapped == 34))
-        text = "shift";
-    }
-    if (mapped != 0 || !text.empty()) {
-      feedKey(win, mapped, std::move(text));
-      runFrame(win.id);
-    }
+    if (wlIsSpecialCode(mapped))
+      text = wlNavModText(mapped);
+    if (mapped != 0 || !text.empty())
+      wlFeedKeyTo(win, mapped, std::move(text), key, true);
     return;
   }
 #endif
@@ -2225,11 +2312,10 @@ void wlKeyboardKey(void *, struct wl_keyboard *, uint32_t, uint32_t,
     return;
   if ((gWlMods & 2) != 0 &&
       (mapped == 'A' || mapped == 'C' || mapped == 'X' || mapped == 'V')) {
-    feedKey(win, mapped, "ctrl");
-    runFrame(win.id);
+    wlFeedKeyTo(win, mapped, "ctrl", key, true);
     return;
   }
-  wlFeedSpecial(win, mapped);
+  wlFeedSpecial(win, mapped, key, true);
 }
 
 void wlKeyboardModifiers(void *, struct wl_keyboard *, uint32_t, uint32_t deps,
@@ -2259,7 +2345,13 @@ void wlKeyboardModifiers(void *, struct wl_keyboard *, uint32_t, uint32_t deps,
     gWlMods |= 2;
 }
 
-void wlKeyboardRepeatInfo(void *, struct wl_keyboard *, int32_t, int32_t) {}
+void wlKeyboardRepeatInfo(void *, struct wl_keyboard *, int32_t rate,
+                          int32_t delay) {
+  gWlRepeat.rate = rate < 0 ? 0 : rate;
+  gWlRepeat.delay_ms = delay < 0 ? 0 : delay;
+  if (gWlRepeat.rate == 0)
+    wlStopRepeat();
+}
 
 const struct wl_keyboard_listener gWlKeyboardListener = {
     wlKeyboardKeymap, wlKeyboardEnter, wlKeyboardLeave,
@@ -2375,6 +2467,8 @@ int shmFd(size_t size) {
 }
 
 void wlDestroy(HostWin &win) {
+  if (gWlRepeat.win == &win)
+    wlStopRepeat();
   if (gWlPtrWin == &win)
     gWlPtrWin = nullptr;
   if (gWlKeyWin == &win)
@@ -2478,9 +2572,12 @@ void wlUnmap(HostWin &win) {
 }
 
 void wlShutdown() {
+  wlStopRepeat();
   gWlPtrWin = nullptr;
   gWlKeyWin = nullptr;
   gWlMods = 0;
+  gWlScrollAccX = 0;
+  gWlScrollAccY = 0;
   if (gPointer) {
     wl_pointer_destroy(gPointer);
     gPointer = nullptr;
@@ -2623,6 +2720,7 @@ void wlPoll() {
     wl_display_cancel_read(gWl);
   wl_display_dispatch_pending(gWl);
   wl_display_flush(gWl);
+  wlTickRepeat();
   wlReap();
 }
 
@@ -2632,6 +2730,7 @@ void wlRun() {
   while (anyAlive()) {
     if (wl_display_dispatch(gWl) == -1)
       break;
+    wlTickRepeat();
     wlReap();
   }
 }
