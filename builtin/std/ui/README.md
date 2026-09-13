@@ -61,7 +61,7 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | `Toggle` | `on` bool; `changed` |
 | `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
 | `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; clips via host |
-| `LazyColumn` | virtualized list: `LazyRows` source, fixed `row_h`, built-in scroll/clip |
+| `LazyColumn` | virtualized list: `LazyRows` source, fixed `row_h`, scroll/clip, click/arrow **selection** |
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
 | `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm")` (PPM P3/P6) |
@@ -130,6 +130,6 @@ Draw with `__ui.fill` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.i
 
 ## Not yet
 
-List selection, more image formats, mobile/web backends (names reserved on the same `__ui` surface).
+More image formats, mobile/web backends (names reserved on the same `__ui` surface).
 
-Rows in `LazyColumn` are rebuilt per paint/hit-test (no widget cache); sticky focus/hover inside rows is out of scope for v1.
+Rows in `LazyColumn` are rebuilt per paint/hit-test (no widget cache); sticky focus/hover inside rows is out of scope for v1. Selection (`selected`, `selection_changed`, arrows) is supported.

@@ -841,6 +841,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     runFrame(id);
     return 0;
   }
+  if (msg == WM_KEYDOWN && win) {
+    const int vk = static_cast<int>(wp);
+    if (vk == VK_UP || vk == VK_DOWN || vk == VK_PRIOR || vk == VK_NEXT ||
+        vk == VK_HOME || vk == VK_END || vk == VK_ESCAPE || vk == VK_TAB) {
+      feedKey(*win, vk, "");
+      runFrame(id);
+      return 0;
+    }
+  }
   if (msg == WM_CHAR && win) {
     const unsigned ch = static_cast<unsigned>(wp);
     if (ch == 8 || ch == 13) {

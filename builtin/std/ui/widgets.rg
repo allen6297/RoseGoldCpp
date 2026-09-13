@@ -921,6 +921,10 @@ class LazyColumn impl Widget {
     var viewport_h: Int = 120;
     var offset: Int = 0;
     var layout_w: Int = 0;
+    var selected: Int = -1;
+    var focused: Bool = false;
+    var select_fill: Color = Color.Rgb(200, 220, 255);
+    signal selection_changed();
 
     fn min_width(): Int {
         return 80;
@@ -983,6 +987,43 @@ class LazyColumn impl Widget {
         return last;
     }
 
+    fn ensure_visible(i: Int) {
+        var n = source.count();
+        if (i < 0 || i >= n) {
+            return;
+        }
+        var top = i * step();
+        var bot = top + step();
+        if (top < offset) {
+            offset = top;
+        }
+        if (bot > offset + viewport_h) {
+            offset = bot - viewport_h;
+        }
+        clamp_offset();
+    }
+
+    fn select(i: Int) {
+        var n = source.count();
+        var next = i;
+        if (n < 1) {
+            next = -1;
+        } elif (next < 0) {
+            next = -1;
+        } elif (next >= n) {
+            next = n - 1;
+        }
+        if (next != selected) {
+            selected = next;
+            if (selected >= 0) {
+                ensure_visible(selected);
+            }
+            selection_changed.emit();
+        } elif (selected >= 0) {
+            ensure_visible(selected);
+        }
+    }
+
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         layout_w = w;
         clamp_offset();
@@ -991,13 +1032,20 @@ class LazyColumn impl Widget {
         var last = last_index();
         var i = first;
         while (i <= last) {
-            var row = source.row(i);
             var ry = y + i * step() - offset;
+            if (i == selected) {
+                __ui.fill(win_id, x, ry, w, step(), select_fill.value());
+            }
+            var row = source.row(i);
             row.paint(win_id, x, ry, w);
             i = i + 1;
         }
         __ui.clip_pop(win_id);
-        __ui.stroke_rect(win_id, x, y, w, viewport_h, Color.Rgb(200, 200, 200).value());
+        var border = Color.Rgb(200, 200, 200);
+        if (focused) {
+            border = Color.Rgb(47, 111, 196);
+        }
+        __ui.stroke_rect(win_id, x, y, w, viewport_h, border.value());
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
@@ -1006,20 +1054,85 @@ class LazyColumn impl Widget {
         if (ly < 0 || ly >= viewport_h || lx < 0 || lx >= w) {
             return false;
         }
+        focused = true;
         var n = source.count();
         if (n < 1) {
-            return false;
+            return true;
         }
         var y = ly + offset;
         var i = y / step();
         if (i < 0 || i >= n) {
-            return false;
+            return true;
         }
+        select(i);
         var row = source.row(i);
-        return row.handle_click(lx, y - i * step(), w, step());
+        row.handle_click(lx, y - i * step(), w, step());
+        return true;
     }
 
     fn handle_key(code: Int, text: String): Bool {
+        if (!focused) {
+            return false;
+        }
+        var n = source.count();
+        if (n < 1) {
+            return false;
+        }
+        // VK_UP=38, VK_DOWN=40, VK_PRIOR=33, VK_NEXT=34, VK_HOME=36, VK_END=35
+        if (code == 38) {
+            if (selected <= 0) {
+                select(0);
+            } else {
+                select(selected - 1);
+            }
+            return true;
+        }
+        if (code == 40) {
+            if (selected < 0) {
+                select(0);
+            } elif (selected >= n - 1) {
+                select(n - 1);
+            } else {
+                select(selected + 1);
+            }
+            return true;
+        }
+        if (code == 36) {
+            select(0);
+            return true;
+        }
+        if (code == 35) {
+            select(n - 1);
+            return true;
+        }
+        if (code == 33) {
+            var page = viewport_h / step();
+            if (page < 1) {
+                page = 1;
+            }
+            if (selected < 0) {
+                select(0);
+            } elif (selected < page) {
+                select(0);
+            } else {
+                select(selected - page);
+            }
+            return true;
+        }
+        if (code == 34) {
+            var page = viewport_h / step();
+            if (page < 1) {
+                page = 1;
+            }
+            if (selected < 0) {
+                select(0);
+            } elif (selected + page >= n) {
+                select(n - 1);
+            } else {
+                select(selected + page);
+            }
+            return true;
+        }
         clamp_offset();
         var first = first_index();
         var last = last_index();
@@ -1044,6 +1157,7 @@ class LazyColumn impl Widget {
     }
 
     fn clear_focus() {
+        focused = false;
         clamp_offset();
         var first = first_index();
         var last = last_index();

@@ -619,11 +619,11 @@ fn main(): Int {
 
 ## Next steps
 
-**Not yet:** list selection, more image formats, mobile/web hosts.
+**Not yet:** more image formats, mobile/web hosts.
 
 **Recommended order**
 
-1. List selection on `LazyColumn` / `ScrollView` rows, then more image formats if needed.
+1. LazyColumn row widget cache (sticky focus/hover in rows), then more image formats if needed.
 
 **Only if you want them**
 

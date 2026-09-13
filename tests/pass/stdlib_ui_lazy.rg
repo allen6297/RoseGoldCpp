@@ -2,6 +2,7 @@ import ui;
 
 struct Hits {
     n: Int;
+    last: Int;
 }
 
 class ButtonRows impl LazyRows {
@@ -35,6 +36,7 @@ fn main(): Int {
     checks.eq(lazy.height(320), 96);
     checks.eq(lazy.content_h(), 2400);
     checks.eq(lazy.offset, 0);
+    checks.eq(lazy.selected, -1);
 
     var w = try ui.open_hidden("rg-lazy", 320, 240);
     w.add(lazy);
@@ -44,9 +46,32 @@ fn main(): Int {
     w.scroll_at(0, 2000, 40, 40);
     checks.that(lazy.offset < before);
     checks.eq(lazy.offset, 0);
+
+    var sel_hits = Hits { n: 0, last: -1 };
+    lazy.selection_changed.connect(fn () {
+        sel_hits.n = sel_hits.n + 1;
+        sel_hits.last = lazy.selected;
+    });
+    w.click_at(40, 12 + 12);
+    checks.that(lazy.focused);
+    checks.eq(lazy.selected, 0);
+    checks.eq(sel_hits.n, 1);
+    w.key_at(40, "");
+    checks.eq(lazy.selected, 1);
+    checks.eq(sel_hits.n, 2);
+    w.key_at(40, "");
+    checks.eq(lazy.selected, 2);
+    w.key_at(38, "");
+    checks.eq(lazy.selected, 1);
+    w.key_at(35, "");
+    checks.eq(lazy.selected, 99);
+    checks.that(lazy.offset > 0);
+    w.key_at(36, "");
+    checks.eq(lazy.selected, 0);
+    checks.eq(lazy.offset, 0);
     w.close();
 
-    var hits = Hits { n: 0 };
+    var hits = Hits { n: 0, last: -1 };
     var buttons = ButtonRows { hits: hits, n: 20 };
     var col = LazyColumn {
         source: buttons,
@@ -57,9 +82,11 @@ fn main(): Int {
     w2.add(col);
     w2.click_at(40, 28);
     checks.eq(hits.n, 1);
+    checks.eq(col.selected, 0);
     w2.scroll_at(0, -64, 40, 40);
     w2.click_at(40, 28);
     checks.eq(hits.n, 2);
+    checks.that(col.selected > 0);
     w2.close();
     return 0;
 }
