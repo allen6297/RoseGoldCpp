@@ -244,6 +244,15 @@ fn closure_capture() {
 }
 
 @test
+fn closure_call_local() {
+    var box = Flag { n: 0 };
+    var bump = fn () { box.n = box.n + 1; };
+    var run = fn () { bump(); };
+    run();
+    checks.eq(box.n, 1);
+}
+
+@test
 fn generic_id() {
     checks.eq(identity(3), 3);
     checks.eq_string(identity("a"), "a");

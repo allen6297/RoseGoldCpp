@@ -74,6 +74,11 @@ static void collectFreeExpr(const Expr &e, std::set<std::string> &bound,
       free.insert(e.text);
     return;
   }
+  // `refresh()` parses as Call with text, not Var — still a free name.
+  if (e.kind == Expr::Kind::Call && e.module.empty() && !e.text.empty()) {
+    if (!bound.count(e.text) && !skipCaptureName(e.text))
+      free.insert(e.text);
+  }
   for (const auto &kid : e.kids)
     collectFreeExpr(kid, bound, free);
 }
