@@ -106,6 +106,9 @@ trait Widget {
     fn handle_key(code: Int, text: String): Bool;
     fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn clear_focus();
+    fn append_focusables(out: Array[Widget]);
+    fn focus_enter();
+    fn has_focus(): Bool;
 }
 ```
 
@@ -125,13 +128,15 @@ Hover cursors: widgets call `cursor_hand` / `cursor_ibeam` (or `__ui.cursor(id, 
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_polish.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_extra.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_lazy.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_tab.rg
 ```
 
 ## Not yet
 
-- Tab focus order across controls
 - Dropdown / context menu
 - Scrollbar chrome on `ScrollView` / `LazyColumn`
 - Mobile/web backends (names reserved on the same `__ui` surface)
+
+Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.
 
 `LazyColumn` keeps a cache of visible row widgets so TextField/Button state survives paints; rows that scroll off are dropped. Hover uses `cursor_hand` / `cursor_ibeam` via `__ui.cursor`.

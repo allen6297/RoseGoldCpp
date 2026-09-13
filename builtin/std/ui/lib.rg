@@ -7,6 +7,9 @@ trait Widget {
     fn handle_key(code: Int, text: String): Bool;
     fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn clear_focus();
+    fn append_focusables(out: Array[Widget]);
+    fn focus_enter();
+    fn has_focus(): Bool;
 }
 
 trait LazyRows {
@@ -93,6 +96,18 @@ class Pad impl Widget {
     fn clear_focus() {
         child.clear_focus();
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        child.append_focusables(out);
+    }
+
+    fn focus_enter() {
+        child.focus_enter();
+    }
+
+    fn has_focus(): Bool {
+        return child.has_focus();
+    }
 }
 
 class Backdrop impl Widget {
@@ -130,6 +145,18 @@ class Backdrop impl Widget {
 
     fn clear_focus() {
         child.clear_focus();
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        child.append_focusables(out);
+    }
+
+    fn focus_enter() {
+        child.focus_enter();
+    }
+
+    fn has_focus(): Bool {
+        return child.has_focus();
     }
 }
 
@@ -368,6 +395,43 @@ class Window {
         return self;
     }
 
+    fn focus_step(back: Bool) {
+        if (len(children) == 0) {
+            return;
+        }
+        var root = root_widget();
+        var xs: Array[Widget] = [];
+        root.append_focusables(xs);
+        var n = len(xs);
+        if (n < 1) {
+            return;
+        }
+        var cur = -1;
+        var i = 0;
+        while (i < n) {
+            if (xs[i].has_focus()) {
+                cur = i;
+            }
+            i = i + 1;
+        }
+        var next = 0;
+        if (back) {
+            if (cur <= 0) {
+                next = n - 1;
+            } else {
+                next = cur - 1;
+            }
+        } else {
+            if (cur < 0 || cur >= n - 1) {
+                next = 0;
+            } else {
+                next = cur + 1;
+            }
+        }
+        root.clear_focus();
+        xs[next].focus_enter();
+    }
+
     fn tick() {
         if (id == 0) {
             return;
@@ -386,7 +450,13 @@ class Window {
             root.handle_click(mx, my, width, rh);
         }
         while (__ui.take_key(id)) {
-            root.handle_key(__ui.key_code(id), __ui.key_text(id));
+            var code = __ui.key_code(id);
+            var text = __ui.key_text(id);
+            if (code == 9) {
+                focus_step(text == "shift");
+            } else {
+                root.handle_key(code, text);
+            }
         }
         if (__ui.take_scroll(id)) {
             root.handle_scroll(__ui.scroll_dx(id), __ui.scroll_dy(id),

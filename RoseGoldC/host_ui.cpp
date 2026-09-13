@@ -915,8 +915,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (msg == WM_KEYDOWN && win) {
     const int vk = static_cast<int>(wp);
+    if (vk == VK_TAB) {
+      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+      feedKey(*win, vk, shift ? "shift" : "");
+      runFrame(id);
+      return 0;
+    }
     if (vk == VK_UP || vk == VK_DOWN || vk == VK_PRIOR || vk == VK_NEXT ||
-        vk == VK_HOME || vk == VK_END || vk == VK_ESCAPE || vk == VK_TAB) {
+        vk == VK_HOME || vk == VK_END || vk == VK_ESCAPE) {
       feedKey(*win, vk, "");
       runFrame(id);
       return 0;
@@ -924,6 +930,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (msg == WM_CHAR && win) {
     const unsigned ch = static_cast<unsigned>(wp);
+    if (ch == 9)
+      return 0;
     if (ch == 8 || ch == 13) {
       feedKey(*win, static_cast<int>(ch), "");
     } else if (ch >= 32 && ch != 127) {

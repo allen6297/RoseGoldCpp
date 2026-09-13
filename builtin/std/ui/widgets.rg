@@ -106,6 +106,28 @@ class VStack impl Widget {
             i = i + 1;
         }
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        var i = 0;
+        while (i < len(children)) {
+            children[i].append_focusables(out);
+            i = i + 1;
+        }
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        var i = 0;
+        while (i < len(children)) {
+            if (children[i].has_focus()) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
 }
 
 class HStack impl Widget {
@@ -331,6 +353,28 @@ class HStack impl Widget {
             i = i + 1;
         }
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        var i = 0;
+        while (i < len(children)) {
+            children[i].append_focusables(out);
+            i = i + 1;
+        }
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        var i = 0;
+        while (i < len(children)) {
+            if (children[i].has_focus()) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
 }
 
 class Spacer impl Widget {
@@ -365,6 +409,16 @@ class Spacer impl Widget {
     }
 
     fn clear_focus() {
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        return false;
     }
 }
 
@@ -441,6 +495,16 @@ class Label impl Widget {
 
     fn clear_focus() {
     }
+
+    fn append_focusables(out: Array[Widget]) {
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        return false;
+    }
 }
 
 class Button impl Widget {
@@ -451,6 +515,7 @@ class Button impl Widget {
     var color: Color = Color.White;
     var hot: Bool = false;
     var down: Bool = false;
+    var focused: Bool = false;
     signal clicked();
 
     fn set_text(s: String) {
@@ -507,6 +572,9 @@ class Button impl Widget {
             bg = hover;
         }
         __ui.fill(win_id, x, y, w, h, bg.value());
+        if (focused) {
+            __ui.stroke_rect(win_id, x, y, w, h, Color.Rgb(47, 111, 196).value());
+        }
         var tw = text_width(text);
         var tx = x + 8;
         if (w > tw) {
@@ -517,11 +585,16 @@ class Button impl Widget {
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        focused = true;
         clicked.emit();
         return true;
     }
 
     fn handle_key(code: Int, text: String): Bool {
+        if (focused && code == 13) {
+            clicked.emit();
+            return true;
+        }
         return false;
     }
 
@@ -530,6 +603,19 @@ class Button impl Widget {
     }
 
     fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
     }
 }
 
@@ -625,11 +711,24 @@ class TextField impl Widget {
     fn clear_focus() {
         focused = false;
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
+    }
 }
 
 class Toggle impl Widget {
     var on: Bool = false;
     var label: String = "";
+    var focused: Bool = false;
     signal changed();
 
     fn set_on(v: Bool) {
@@ -673,12 +772,18 @@ class Toggle impl Widget {
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        focused = true;
         on = !on;
         changed.emit();
         return true;
     }
 
     fn handle_key(code: Int, text: String): Bool {
+        if (focused && (code == 13 || code == 32)) {
+            on = !on;
+            changed.emit();
+            return true;
+        }
         return false;
     }
 
@@ -687,6 +792,19 @@ class Toggle impl Widget {
     }
 
     fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
     }
 }
 
@@ -765,6 +883,18 @@ class ScrollView impl Widget {
     fn clear_focus() {
         child.clear_focus();
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        child.append_focusables(out);
+    }
+
+    fn focus_enter() {
+        child.focus_enter();
+    }
+
+    fn has_focus(): Bool {
+        return child.has_focus();
+    }
 }
 
 class Canvas impl Widget {
@@ -807,6 +937,16 @@ class Canvas impl Widget {
 
     fn clear_focus() {
     }
+
+    fn append_focusables(out: Array[Widget]) {
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        return false;
+    }
 }
 
 class Slider impl Widget {
@@ -816,6 +956,7 @@ class Slider impl Widget {
     var track: Color = Color.Rgb(180, 180, 180);
     var fill: Color = Color.Rgb(47, 111, 196);
     var dragging: Bool = false;
+    var focused: Bool = false;
     signal changed();
 
     fn set_value(v: Int) {
@@ -893,15 +1034,30 @@ class Slider impl Widget {
         __ui.fill(win_id, x + 6 + thumb - 6, mid - 8, 12, 16, fill.value());
         __ui.stroke_rect(win_id, x + 6 + thumb - 6, mid - 8, 12, 16,
                          Color.Rgb(30, 80, 150).value());
+        if (focused) {
+            __ui.stroke_rect(win_id, x, y, w, h, Color.Rgb(47, 111, 196).value());
+        }
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        focused = true;
         dragging = true;
         set_value(value_from_x(lx, w));
         return true;
     }
 
     fn handle_key(code: Int, text: String): Bool {
+        if (!focused) {
+            return false;
+        }
+        if (code == 37) {
+            set_value(value - 1);
+            return true;
+        }
+        if (code == 39) {
+            set_value(value + 1);
+            return true;
+        }
         return false;
     }
 
@@ -910,6 +1066,19 @@ class Slider impl Widget {
     }
 
     fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
     }
 }
 
@@ -1220,6 +1389,18 @@ class LazyColumn impl Widget {
             i = i + 1;
         }
     }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
+    }
 }
 
 class ImageView impl Widget {
@@ -1269,6 +1450,16 @@ class ImageView impl Widget {
     }
 
     fn clear_focus() {
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        return false;
     }
 }
 

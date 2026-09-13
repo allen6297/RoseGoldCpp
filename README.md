@@ -598,9 +598,8 @@ fn main(): Int {
 
 **Desktop UI polish (recommended before mobile/web)**
 
-1. Tab / Shift+Tab focus order across controls (Button, TextField, Toggle, Slider, LazyColumn).
-2. Dropdown / context menu widgets.
-3. Scrollbar chrome on `ScrollView` and `LazyColumn` (thumb + click-to-page).
+1. Dropdown / context menu widgets.
+2. Scrollbar chrome on `ScrollView` and `LazyColumn` (thumb + click-to-page).
 
 **Later / when you have a concrete target**
 
