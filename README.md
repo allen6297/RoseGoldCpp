@@ -26,7 +26,7 @@ Linux needs `libx11` (`libx11-dev` on Debian/Ubuntu). If `libwayland-client` is 
 
 ## Editor extension
 
-Highlighting, snippets, **diagnostics**, hover, go to definition, find references, signature help, completion, outline, CodeLens, highlight, rename (workspace refs), code actions, Run File, and Run Tests for `.rg` files:
+Highlighting, snippets, **diagnostics**, hover, go to definition, find references, signature help, completion, outline, CodeLens, color chips, highlight, rename (workspace refs), code actions, Run File, and Run Tests for `.rg` files:
 
 ```text
 powershell -NoProfile -ExecutionPolicy Bypass -File .\vscode\install.ps1
@@ -57,12 +57,13 @@ Aliases: first letter, `-letter`, `--letter`. `quit` / `exit` leave the REPL.
 .\build\RoseGoldC.exe run examples/window.rg
 .\build\RoseGoldC.exe run examples/widgets.rg
 .\build\RoseGoldC.exe run examples/contacts.rg
+.\build\RoseGoldC.exe run examples/todo.rg
 .\build\RoseGoldC.exe run examples/argv.rg hello
 .\build\RoseGoldC.exe check examples/hello.rg
 .\build\RoseGoldC.exe test
 ```
 
-Language samples live under `examples/` (`class.rg`, `control.rg`, `array.rg`, `generics.rg`, …). UI demos: `window.rg` (hello), `widgets.rg` (controls + canvas), `contacts.rg` (small app). Images are in `examples/assets/`.
+Language samples live under `examples/` (`class.rg`, `control.rg`, `array.rg`, `generics.rg`, …). UI demos: `window.rg` (hello), `widgets.rg` (controls + canvas), `contacts.rg` / `todo.rg` (small apps). Images are in `examples/assets/`.
 
 `run` only calls `main`. Extra args after the file are `argv` (`argv(0)` is the file path). `check` lexes, parses, and typechecks without calling `main`. Parse, load, `@constexpr`, and type errors are all collected: `check` and the LSP list every one. `run` still stops at the first. `--json` prints `[{file, line, col, severity, message}, ...]`; `--stdin` reads the buffer and uses `<file>` for imports. `lsp` speaks the Language Server Protocol over stdin/stdout (JSON-RPC with `Content-Length` framing). The editor starts it once and keeps it running for diagnostics, hover, go to definition, find references, completion, outline, highlight, rename (workspace refs, not `builtin/`), CodeLens, and code actions. `test <file>` only calls `@test` functions. `test` with no file runs `examples/tests.rg` plus `tests/pass` (must succeed; files without `fn main` are libraries and are skipped) and `tests/fail` (must error; first `# expect: …` comment is a substring of the message; files without `# expect:` are libraries and are skipped).
 

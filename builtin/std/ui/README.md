@@ -27,6 +27,7 @@ fn main(): Int {
 .\build\RoseGoldC.exe run examples/window.rg
 .\build\RoseGoldC.exe run examples/widgets.rg
 .\build\RoseGoldC.exe run examples/contacts.rg
+.\build\RoseGoldC.exe run examples/todo.rg
 ```
 
 Hidden windows work without a display (tests): `ui.open_hidden(...)`.
