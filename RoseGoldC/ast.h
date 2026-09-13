@@ -92,6 +92,7 @@ struct Stmt {
   std::vector<MatchArm> arms;
   std::string typeName;
   std::string op = "=";
+  bool hasExpr = false;
   int line = 1;
   int col = 1;
 };
@@ -241,6 +242,23 @@ struct ImportDecl {
   int col = 1;
 };
 
+enum class ItemKind : char {
+  Import,
+  Fn,
+  Struct,
+  Class,
+  Trait,
+  Enum,
+  Impl,
+  Signal,
+  Mod
+};
+
+struct OrderedItem {
+  ItemKind kind{};
+  size_t index = 0;
+};
+
 struct ModDecl {
   std::string name;
   std::vector<ImportDecl> imports;
@@ -252,6 +270,7 @@ struct ModDecl {
   std::vector<ImplDecl> impls;
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;
+  std::vector<OrderedItem> items;
   bool isPub = true;
   int line = 1;
 };
@@ -266,4 +285,5 @@ struct Program {
   std::vector<ImplDecl> impls;
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;
+  std::vector<OrderedItem> items;
 };

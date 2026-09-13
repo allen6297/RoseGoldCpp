@@ -42,6 +42,7 @@ $sources = @(
     "RoseGoldC\eval.cpp",
     "RoseGoldC\harness.cpp",
     "RoseGoldC\lsp.cpp",
+    "RoseGoldC\format.cpp",
     "RoseGoldC\host_ui.cpp"
 )
 

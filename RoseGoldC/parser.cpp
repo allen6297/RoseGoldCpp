@@ -612,8 +612,10 @@ struct Parser {
       s.kind = Stmt::Kind::Return;
       s.line = t.line;
       s.col = t.col;
-      if (!check(Tok::Semi))
+      if (!check(Tok::Semi)) {
         s.expr = parseExpr();
+        s.hasExpr = true;
+      }
       expect(Tok::Semi, "expected ';'");
       return s;
     }
@@ -1379,6 +1381,13 @@ struct Parser {
 
   void parseItem(Program *prog, ModDecl *mod) {
     const bool inMod = mod != nullptr;
+    auto note = [&](ItemKind kind, size_t index) {
+      OrderedItem item{kind, index};
+      if (inMod)
+        mod->items.push_back(item);
+      else
+        prog->items.push_back(item);
+    };
     bool isPub = !inMod;
     bool isAbstract = false;
     bool isFinal = false;
@@ -1426,10 +1435,13 @@ struct Parser {
       rejectClassMods(isAbstract, isFinal, "import");
       rejectProtected(isProtected, "import");
       ImportDecl im = parseImport();
-      if (inMod)
+      if (inMod) {
         mod->imports.push_back(std::move(im));
-      else
+        note(ItemKind::Import, mod->imports.size() - 1);
+      } else {
         prog->imports.push_back(std::move(im));
+        note(ItemKind::Import, prog->imports.size() - 1);
+      }
       return;
     }
     if (check(Tok::Module)) {
@@ -1439,10 +1451,13 @@ struct Parser {
       rejectProtected(isProtected, "mod");
       ModDecl nested = parseMod();
       nested.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->mods.push_back(std::move(nested));
-      else
+        note(ItemKind::Mod, mod->mods.size() - 1);
+      } else {
         prog->mods.push_back(std::move(nested));
+        note(ItemKind::Mod, prog->mods.size() - 1);
+      }
       return;
     }
     if (check(Tok::Struct) || check(Tok::Data)) {
@@ -1460,10 +1475,13 @@ struct Parser {
       rejectProtected(isProtected, kind);
       structDecl s = parseStruct(isData);
       s.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->structs.push_back(std::move(s));
-      else
+        note(ItemKind::Struct, mod->structs.size() - 1);
+      } else {
         prog->structs.push_back(std::move(s));
+        note(ItemKind::Struct, prog->structs.size() - 1);
+      }
       return;
     }
     if (check(Tok::Class)) {
@@ -1483,10 +1501,13 @@ struct Parser {
       c.isAbstract = isAbstract;
       c.isFinal = isFinal;
       c.shape.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->classes.push_back(std::move(c));
-      else
+        note(ItemKind::Class, mod->classes.size() - 1);
+      } else {
         prog->classes.push_back(std::move(c));
+        note(ItemKind::Class, prog->classes.size() - 1);
+      }
       return;
     }
     if (check(Tok::Trait)) {
@@ -1502,10 +1523,13 @@ struct Parser {
       rejectProtected(isProtected, "trait");
       TraitDecl t = parseTrait();
       t.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->traits.push_back(std::move(t));
-      else
+        note(ItemKind::Trait, mod->traits.size() - 1);
+      } else {
         prog->traits.push_back(std::move(t));
+        note(ItemKind::Trait, prog->traits.size() - 1);
+      }
       return;
     }
     if (check(Tok::Enum)) {
@@ -1521,10 +1545,13 @@ struct Parser {
       rejectProtected(isProtected, "enum");
       EnumDecl e = parseEnum();
       e.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->enums.push_back(std::move(e));
-      else
+        note(ItemKind::Enum, mod->enums.size() - 1);
+      } else {
         prog->enums.push_back(std::move(e));
+        note(ItemKind::Enum, prog->enums.size() - 1);
+      }
       return;
     }
     if (check(Tok::Implements)) {
@@ -1533,10 +1560,13 @@ struct Parser {
       rejectClassMods(isAbstract, isFinal, "impl");
       rejectProtected(isProtected, "impl");
       ImplDecl impl = parseImpl();
-      if (inMod)
+      if (inMod) {
         mod->impls.push_back(std::move(impl));
-      else
+        note(ItemKind::Impl, mod->impls.size() - 1);
+      } else {
         prog->impls.push_back(std::move(impl));
+        note(ItemKind::Impl, prog->impls.size() - 1);
+      }
       return;
     }
     if (check(Tok::Signal)) {
@@ -1546,10 +1576,13 @@ struct Parser {
       rejectProtected(isProtected, "signal");
       SignalDecl sig = parseSignal();
       sig.isPub = isPub;
-      if (inMod)
+      if (inMod) {
         mod->signals.push_back(std::move(sig));
-      else
+        note(ItemKind::Signal, mod->signals.size() - 1);
+      } else {
         prog->signals.push_back(std::move(sig));
+        note(ItemKind::Signal, prog->signals.size() - 1);
+      }
       return;
     }
     rejectClassMods(isAbstract, isFinal, "function");
@@ -1557,10 +1590,13 @@ struct Parser {
     FnDecl fn = parseFn(attrs, isPub);
     if (attrs.isOptional)
       errorNote("@optional cannot apply to function");
-    if (inMod)
+    if (inMod) {
       mod->fns.push_back(std::move(fn));
-    else
+      note(ItemKind::Fn, mod->fns.size() - 1);
+    } else {
       prog->fns.push_back(std::move(fn));
+      note(ItemKind::Fn, prog->fns.size() - 1);
+    }
   }
 
   ModDecl parseMod() {

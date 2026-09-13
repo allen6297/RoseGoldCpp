@@ -14,6 +14,7 @@ srcs="
   $root/RoseGoldC/eval.cpp
   $root/RoseGoldC/harness.cpp
   $root/RoseGoldC/lsp.cpp
+  $root/RoseGoldC/format.cpp
   $root/RoseGoldC/host_ui.cpp
 "
 cxx=${CXX:-}

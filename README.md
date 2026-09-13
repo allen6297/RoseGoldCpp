@@ -40,6 +40,9 @@ Then **Developer: Reload Window**. Details: [vscode/README.md](vscode/README.md)
 .\build\RoseGoldC.exe                  # REPL
 .\build\RoseGoldC.exe run <file>       # call main if present
 .\build\RoseGoldC.exe check <file>     # parse and typecheck (no eval)
+.\build\RoseGoldC.exe fmt <file>       # print formatted source (rgfmt)
+.\build\RoseGoldC.exe fmt -w <file>    # format file in place
+.\build\RoseGoldC.exe fmt --check <file>  # exit 1 if formatting would change
 .\build\RoseGoldC.exe lsp              # language server (JSON-RPC on stdin/stdout)
 .\build\RoseGoldC.exe test             # language suite (@test + tests/pass + tests/fail)
 .\build\RoseGoldC.exe test <file>      # @test functions in one file
@@ -603,8 +606,8 @@ fn main(): Int {
 
 **Tooling / language**
 
-- A formatter (`rgfmt`) once the language surface feels stable enough.
 - Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).
+- Grow `fmt` / rgfmt (comments, exact float literals, style knobs).
 
 **Later / when you have a concrete target**
 

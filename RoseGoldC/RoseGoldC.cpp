@@ -1,7 +1,9 @@
 #include "eval.h"
+#include "format.h"
 
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -103,6 +105,8 @@ static DispatchResult dispatch(const Invocation &inv) {
     std::cout << "      run <file> [args...]\n";
     printAliases("check");
     std::cout << "      check [--json] [--stdin] <file>\n";
+    printAliases("fmt");
+    std::cout << "      fmt [--write|-w] [--check] <file>\n";
     printAliases("lsp");
     std::cout << "      lsp             language server (stdin/stdout JSON-RPC)\n";
     printAliases("test");
@@ -160,6 +164,60 @@ static DispatchResult dispatch(const Invocation &inv) {
         std::cerr << diagnosticToHuman(d) << "\n";
     }
     result.exitCode = diags.empty() ? 0 : 1;
+    return result;
+  }
+  if (command(inv.cmd, "fmt")) {
+    bool write = false;
+    bool checkOnly = false;
+    std::string path;
+    for (const auto &a : inv.args) {
+      if (a == "--write" || a == "-w")
+        write = true;
+      else if (a == "--check")
+        checkOnly = true;
+      else if (path.empty())
+        path = a;
+    }
+    if (path.empty()) {
+      std::cerr << "Usage: fmt [--write|-w] [--check] <file>\n";
+      result.exitCode = 2;
+      return result;
+    }
+    std::ifstream in(path);
+    if (!in) {
+      std::cerr << "cannot open " << path << "\n";
+      result.exitCode = 2;
+      return result;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string original = ss.str();
+    FormatResult fmt = formatSource(original, path);
+    if (!fmt.ok) {
+      std::cerr << path << ": " << fmt.message << "\n";
+      result.exitCode = fmt.exitCode ? fmt.exitCode : 1;
+      return result;
+    }
+    if (checkOnly) {
+      if (fmt.out != original) {
+        std::cerr << path << " needs formatting\n";
+        result.exitCode = 1;
+      }
+      return result;
+    }
+    if (write) {
+      if (fmt.out != original) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+          std::cerr << "cannot write " << path << "\n";
+          result.exitCode = 2;
+          return result;
+        }
+        out << fmt.out;
+      }
+      return result;
+    }
+    std::cout << fmt.out;
     return result;
   }
   if (command(inv.cmd, "lsp")) {

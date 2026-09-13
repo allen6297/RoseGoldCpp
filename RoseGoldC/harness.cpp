@@ -1,5 +1,6 @@
 #include "interp.h"
 #include "parser.h"
+#include "format.h"
 
 #include <algorithm>
 #include <cctype>
@@ -475,6 +476,16 @@ static void appendCheckSelfTest(RunResult &result) {
     auto d = checkFile("builtin/std/ui/widgets.rg");
     require(d.empty(), "ui_widgets_crate",
             d.empty() ? "" : diagnosticToHuman(d[0]));
+  }
+  {
+    const std::string src = "fn main():Int{\nreturn 0;\n}\n";
+    FormatResult f = formatSource(src, "fmt_check.rg");
+    require(f.ok, "fmt_parse", f.message);
+    require(f.out.find("fn main(): Int") != std::string::npos, "fmt_space",
+            f.out);
+    FormatResult again = formatSource(f.out, "fmt_check.rg");
+    require(again.ok && again.out == f.out, "fmt_idempotent",
+            again.ok ? "output changed on second format" : again.message);
   }
   require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
 }
