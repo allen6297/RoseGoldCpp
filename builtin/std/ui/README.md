@@ -31,6 +31,7 @@ fn main(): Int {
 .\build\RoseGoldC.exe run examples/polish.rg
 .\build\RoseGoldC.exe run examples/extra.rg
 .\build\RoseGoldC.exe run examples/lazy.rg
+.\build\RoseGoldC.exe run examples/contacts.rg
 ```
 
 Hidden windows work without a display (tests): `ui.open_hidden(...)`.
@@ -61,10 +62,10 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | `Toggle` | `on` bool; `changed` |
 | `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
 | `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; clips via host |
-| `LazyColumn` | virtualized list: `LazyRows` source, fixed `row_h`, scroll/clip, click/arrow **selection** |
+| `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, **visible-row cache** |
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
-| `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm")` (PPM P3/P6) |
+| `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm"\|"x.png")` |
 | `Spacer` | expanding gap in rows |
 
 ## Color and theme
@@ -130,6 +131,6 @@ Draw with `__ui.fill` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.i
 
 ## Not yet
 
-More image formats, mobile/web backends (names reserved on the same `__ui` surface).
+Mobile/web backends (names reserved on the same `__ui` surface).
 
-Rows in `LazyColumn` are rebuilt per paint/hit-test (no widget cache); sticky focus/hover inside rows is out of scope for v1. Selection (`selected`, `selection_changed`, arrows) is supported.
+`LazyColumn` keeps a cache of visible row widgets so TextField/Button state survives paints; rows that scroll off are dropped.

@@ -1,5 +1,10 @@
 #include "interp.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -347,12 +352,52 @@ bool loadPpmFile(const std::string &path, RgbImage &out) {
   return true;
 }
 
+bool loadPngFile(const std::string &path, RgbImage &out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    return false;
+  in.seekg(0, std::ios::end);
+  const std::streamoff sz = in.tellg();
+  if (sz <= 0 || sz > 32 * 1024 * 1024)
+    return false;
+  in.seekg(0, std::ios::beg);
+  std::vector<unsigned char> file(static_cast<size_t>(sz));
+  in.read(reinterpret_cast<char *>(file.data()), sz);
+  if (!in)
+    return false;
+  int w = 0;
+  int h = 0;
+  int comp = 0;
+  unsigned char *data =
+      stbi_load_from_memory(file.data(), static_cast<int>(file.size()), &w, &h,
+                            &comp, 3);
+  if (!data || w < 1 || h < 1 || w > 8192 || h > 8192) {
+    if (data)
+      stbi_image_free(data);
+    return false;
+  }
+  out.w = w;
+  out.h = h;
+  out.px.resize(static_cast<size_t>(w) * h);
+  for (size_t i = 0; i < out.px.size(); ++i) {
+    const unsigned r = data[i * 3];
+    const unsigned g = data[i * 3 + 1];
+    const unsigned b = data[i * 3 + 2];
+    const long long color =
+        (static_cast<long long>(r) << 16) | (static_cast<long long>(g) << 8) | b;
+    out.px[i] = packRgb(color);
+  }
+  stbi_image_free(data);
+  return true;
+}
+
 const RgbImage *cachedImage(const std::string &path) {
   auto it = gImages.find(path);
   if (it != gImages.end())
     return &it->second;
   RgbImage img;
-  if (!loadPpmFile(path, img))
+  const bool ok = loadPpmFile(path, img) || loadPngFile(path, img);
+  if (!ok)
     return nullptr;
   auto &slot = gImages[path];
   slot = std::move(img);

@@ -20,6 +20,21 @@ class ButtonRows impl LazyRows {
     }
 }
 
+class FieldRows impl LazyRows {
+    var hits: Hits;
+    var n: Int = 0;
+
+    fn count(): Int {
+        return n;
+    }
+
+    fn row(i: Int): Widget {
+        var f = TextField { placeholder: "edit" };
+        f.changed.connect(fn () { hits.n = hits.n + 1; });
+        return f;
+    }
+}
+
 fn main(): Int {
     var items: Array[String] = [];
     var i = 0;
@@ -88,5 +103,23 @@ fn main(): Int {
     checks.eq(hits.n, 2);
     checks.that(col.selected > 0);
     w2.close();
+
+    var edits = Hits { n: 0, last: -1 };
+    var fields = FieldRows { hits: edits, n: 8 };
+    var fcol = LazyColumn {
+        source: fields,
+        row_h: 32,
+        viewport_h: 128
+    };
+    var w3 = try ui.open_hidden("rg-lazy-field", 320, 240);
+    w3.add(fcol);
+    w3.click_at(40, 28);
+    w3.key_at(0, "A");
+    checks.eq(edits.n, 1);
+    w3.hover_at(40, 28);
+    w3.key_at(0, "B");
+    checks.eq(edits.n, 2);
+    checks.eq(len(fcol.cache), fcol.last_index() - fcol.first_index() + 1);
+    w3.close();
     return 0;
 }

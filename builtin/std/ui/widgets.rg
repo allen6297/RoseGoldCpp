@@ -924,6 +924,9 @@ class LazyColumn impl Widget {
     var selected: Int = -1;
     var focused: Bool = false;
     var select_fill: Color = Color.Rgb(200, 220, 255);
+    var cache: Array[Widget] = [];
+    var cache_first: Int = 0;
+    var cache_source_n: Int = -1;
     signal selection_changed();
 
     fn min_width(): Int {
@@ -987,6 +990,44 @@ class LazyColumn impl Widget {
         return last;
     }
 
+    fn invalidate_cache() {
+        cache = [];
+        cache_first = 0;
+        cache_source_n = -1;
+    }
+
+    fn sync_cache() {
+        clamp_offset();
+        var n = source.count();
+        var first = first_index();
+        var last = last_index();
+        if (last < first || n < 1) {
+            invalidate_cache();
+            return;
+        }
+        if (cache_source_n == n && cache_first == first && len(cache) == last - first + 1) {
+            return;
+        }
+        var next: Array[Widget] = [];
+        var i = first;
+        while (i <= last) {
+            if (cache_source_n == n && i >= cache_first && i < cache_first + len(cache)) {
+                next.push(cache[i - cache_first]);
+            } else {
+                next.push(source.row(i));
+            }
+            i = i + 1;
+        }
+        cache = next;
+        cache_first = first;
+        cache_source_n = n;
+    }
+
+    fn cached_row(i: Int): Widget {
+        sync_cache();
+        return cache[i - cache_first];
+    }
+
     fn ensure_visible(i: Int) {
         var n = source.count();
         if (i < 0 || i >= n) {
@@ -1026,7 +1067,7 @@ class LazyColumn impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         layout_w = w;
-        clamp_offset();
+        sync_cache();
         __ui.clip_push(win_id, x, y, w, viewport_h);
         var first = first_index();
         var last = last_index();
@@ -1036,8 +1077,7 @@ class LazyColumn impl Widget {
             if (i == selected) {
                 __ui.fill(win_id, x, ry, w, step(), select_fill.value());
             }
-            var row = source.row(i);
-            row.paint(win_id, x, ry, w);
+            cached_row(i).paint(win_id, x, ry, w);
             i = i + 1;
         }
         __ui.clip_pop(win_id);
@@ -1050,7 +1090,7 @@ class LazyColumn impl Widget {
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         layout_w = w;
-        clamp_offset();
+        sync_cache();
         if (ly < 0 || ly >= viewport_h || lx < 0 || lx >= w) {
             return false;
         }
@@ -1065,8 +1105,8 @@ class LazyColumn impl Widget {
             return true;
         }
         select(i);
-        var row = source.row(i);
-        row.handle_click(lx, y - i * step(), w, step());
+        sync_cache();
+        cached_row(i).handle_click(lx, y - i * step(), w, step());
         return true;
     }
 
@@ -1077,6 +1117,16 @@ class LazyColumn impl Widget {
         var n = source.count();
         if (n < 1) {
             return false;
+        }
+        sync_cache();
+        var first = first_index();
+        var last = last_index();
+        var i = first;
+        while (i <= last) {
+            if (cached_row(i).handle_key(code, text)) {
+                return true;
+            }
+            i = i + 1;
         }
         // VK_UP=38, VK_DOWN=40, VK_PRIOR=33, VK_NEXT=34, VK_HOME=36, VK_END=35
         if (code == 38) {
@@ -1133,16 +1183,6 @@ class LazyColumn impl Widget {
             }
             return true;
         }
-        clamp_offset();
-        var first = first_index();
-        var last = last_index();
-        var i = first;
-        while (i <= last) {
-            if (source.row(i).handle_key(code, text)) {
-                return true;
-            }
-            i = i + 1;
-        }
         return false;
     }
 
@@ -1158,12 +1198,12 @@ class LazyColumn impl Widget {
 
     fn clear_focus() {
         focused = false;
-        clamp_offset();
+        sync_cache();
         var first = first_index();
         var last = last_index();
         var i = first;
         while (i <= last) {
-            source.row(i).clear_focus();
+            cached_row(i).clear_focus();
             i = i + 1;
         }
     }

@@ -619,11 +619,11 @@ fn main(): Int {
 
 ## Next steps
 
-**Not yet:** more image formats, mobile/web hosts.
+**Not yet:** mobile/web hosts.
 
 **Recommended order**
 
-1. LazyColumn row widget cache (sticky focus/hover in rows), then more image formats if needed.
+1. Mobile or web `__ui` host when you have a concrete target app; otherwise keep iterating on desktop demos.
 
 **Only if you want them**
 
