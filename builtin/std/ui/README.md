@@ -152,12 +152,12 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_dialog.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_controls.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_ergonomics.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_todo.rg
 ```
 
 ## Not yet
 
 - `.on_click` / `.on_change` UFCS aliases (language has no fn-as-parameter types yet)
-- Second dogfood app (todo / settings / file browser)
 - Caret blink / text selection; Wayland input parity
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
