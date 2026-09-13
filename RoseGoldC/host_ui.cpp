@@ -58,9 +58,13 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <linux/input-event-codes.h>
 extern "C" {
 #include <wayland-client.h>
 }
+#ifdef ROSEGOLD_XKB
+#include <xkbcommon/xkbcommon.h>
+#endif
 #endif
 #undef Bool
 #endif
@@ -1937,6 +1941,354 @@ struct wl_registry *gReg = nullptr;
 struct wl_compositor *gComp = nullptr;
 struct wl_shm *gShm = nullptr;
 xdg_wm_base *gXdg = nullptr;
+struct wl_seat *gSeat = nullptr;
+struct wl_pointer *gPointer = nullptr;
+struct wl_keyboard *gKeyboard = nullptr;
+HostWin *gWlPtrWin = nullptr;
+HostWin *gWlKeyWin = nullptr;
+double gWlPtrX = 0;
+double gWlPtrY = 0;
+uint32_t gWlMods = 0; // bit0 shift, bit1 ctrl
+#ifdef ROSEGOLD_XKB
+struct xkb_context *gXkbCtx = nullptr;
+struct xkb_keymap *gXkbMap = nullptr;
+struct xkb_state *gXkbState = nullptr;
+#endif
+
+HostWin *findByWls(struct wl_surface *surf) {
+  if (!surf)
+    return nullptr;
+  for (auto &kv : gWins) {
+    if (kv.second.wls == static_cast<void *>(surf))
+      return &kv.second;
+  }
+  return nullptr;
+}
+
+void wlFeedSpecial(HostWin &win, int code) {
+  std::string text;
+  if ((code == 37 || code == 39 || code == 36 || code == 35 || code == 38 ||
+       code == 40 || code == 33 || code == 34) &&
+      (gWlMods & 1))
+    text = "shift";
+  if ((code == 'A' || code == 'a' || code == 'C' || code == 'c' || code == 'X' ||
+       code == 'x' || code == 'V' || code == 'v') &&
+      (gWlMods & 2))
+    text = "ctrl";
+  feedKey(win, code, std::move(text));
+  runFrame(win.id);
+}
+
+int wlMapEvdevKey(uint32_t key) {
+  switch (key) {
+  case KEY_BACKSPACE:
+    return 8;
+  case KEY_TAB:
+    return 9;
+  case KEY_ENTER:
+  case KEY_KPENTER:
+    return 13;
+  case KEY_ESC:
+    return 27;
+  case KEY_DELETE:
+    return 46;
+  case KEY_HOME:
+    return 36;
+  case KEY_END:
+    return 35;
+  case KEY_LEFT:
+    return 37;
+  case KEY_UP:
+    return 38;
+  case KEY_RIGHT:
+    return 39;
+  case KEY_DOWN:
+    return 40;
+  case KEY_PAGEUP:
+    return 33;
+  case KEY_PAGEDOWN:
+    return 34;
+  case KEY_A:
+    return 'A';
+  case KEY_C:
+    return 'C';
+  case KEY_X:
+    return 'X';
+  case KEY_V:
+    return 'V';
+  default:
+    return 0;
+  }
+}
+
+void wlPointerEnter(void *, struct wl_pointer *, uint32_t,
+                    struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
+  gWlPtrWin = findByWls(surface);
+  gWlPtrX = wl_fixed_to_double(sx);
+  gWlPtrY = wl_fixed_to_double(sy);
+  if (gWlPtrWin) {
+    gWlPtrWin->mouse_x = static_cast<int>(gWlPtrX);
+    gWlPtrWin->mouse_y = static_cast<int>(gWlPtrY);
+  }
+}
+
+void wlPointerLeave(void *, struct wl_pointer *, uint32_t,
+                    struct wl_surface *) {
+  if (gWlPtrWin)
+    gWlPtrWin->mouse_down = false;
+  gWlPtrWin = nullptr;
+}
+
+void wlPointerMotion(void *, struct wl_pointer *, uint32_t, wl_fixed_t sx,
+                     wl_fixed_t sy) {
+  gWlPtrX = wl_fixed_to_double(sx);
+  gWlPtrY = wl_fixed_to_double(sy);
+  if (!gWlPtrWin)
+    return;
+  gWlPtrWin->mouse_x = static_cast<int>(gWlPtrX);
+  gWlPtrWin->mouse_y = static_cast<int>(gWlPtrY);
+  runFrame(gWlPtrWin->id);
+}
+
+void wlPointerButton(void *, struct wl_pointer *, uint32_t, uint32_t,
+                     uint32_t button, uint32_t state) {
+  if (!gWlPtrWin)
+    return;
+  HostWin &win = *gWlPtrWin;
+  win.mouse_x = static_cast<int>(gWlPtrX);
+  win.mouse_y = static_cast<int>(gWlPtrY);
+  const bool pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
+  if (button == BTN_LEFT) {
+    win.mouse_down = pressed;
+    if (!pressed)
+      win.mouse_click = true;
+    runFrame(win.id);
+  } else if (button == BTN_RIGHT && !pressed) {
+    win.mouse_right_click = true;
+    runFrame(win.id);
+  }
+}
+
+void wlPointerAxis(void *, struct wl_pointer *, uint32_t, uint32_t axis,
+                   wl_fixed_t value) {
+  if (!gWlPtrWin)
+    return;
+  const double v = wl_fixed_to_double(value);
+  // Wayland axis is typically positive = down/right; match X11 button4 = up.
+  int dx = 0;
+  int dy = 0;
+  if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+    dy = v > 0 ? -48 : (v < 0 ? 48 : 0);
+  else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL)
+    dx = v > 0 ? 48 : (v < 0 ? -48 : 0);
+  if (dx == 0 && dy == 0)
+    return;
+  gWlPtrWin->mouse_x = static_cast<int>(gWlPtrX);
+  gWlPtrWin->mouse_y = static_cast<int>(gWlPtrY);
+  feedScroll(*gWlPtrWin, dx, dy);
+  runFrame(gWlPtrWin->id);
+}
+
+void wlPointerFrame(void *, struct wl_pointer *) {}
+void wlPointerAxisSource(void *, struct wl_pointer *, uint32_t) {}
+void wlPointerAxisStop(void *, struct wl_pointer *, uint32_t, uint32_t) {}
+void wlPointerAxisDiscrete(void *, struct wl_pointer *, uint32_t, int32_t) {}
+
+const struct wl_pointer_listener gWlPointerListener = {
+    wlPointerEnter,       wlPointerLeave,     wlPointerMotion,
+    wlPointerButton,      wlPointerAxis,      wlPointerFrame,
+    wlPointerAxisSource,  wlPointerAxisStop,  wlPointerAxisDiscrete};
+
+void wlKeyboardKeymap(void *, struct wl_keyboard *, uint32_t format, int fd,
+                      uint32_t size) {
+#ifdef ROSEGOLD_XKB
+  if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+    close(fd);
+    return;
+  }
+  char *mapStr = static_cast<char *>(
+      mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
+  close(fd);
+  if (mapStr == MAP_FAILED)
+    return;
+  if (!gXkbCtx)
+    gXkbCtx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+  if (gXkbState) {
+    xkb_state_unref(gXkbState);
+    gXkbState = nullptr;
+  }
+  if (gXkbMap) {
+    xkb_keymap_unref(gXkbMap);
+    gXkbMap = nullptr;
+  }
+  if (gXkbCtx) {
+    gXkbMap = xkb_keymap_new_from_string(gXkbCtx, mapStr,
+                                         XKB_KEYMAP_FORMAT_TEXT_V1,
+                                         XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (gXkbMap)
+      gXkbState = xkb_state_new(gXkbMap);
+  }
+  munmap(mapStr, size);
+#else
+  (void)format;
+  (void)size;
+  close(fd);
+#endif
+}
+
+void wlKeyboardEnter(void *, struct wl_keyboard *, uint32_t,
+                     struct wl_surface *surface, struct wl_array *) {
+  gWlKeyWin = findByWls(surface);
+}
+
+void wlKeyboardLeave(void *, struct wl_keyboard *, uint32_t,
+                     struct wl_surface *) {
+  gWlKeyWin = nullptr;
+}
+
+void wlKeyboardKey(void *, struct wl_keyboard *, uint32_t, uint32_t,
+                   uint32_t key, uint32_t state) {
+  if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !gWlKeyWin)
+    return;
+  HostWin &win = *gWlKeyWin;
+#ifdef ROSEGOLD_XKB
+  if (gXkbState) {
+    const xkb_keycode_t code = key + 8;
+    const xkb_keysym_t sym = xkb_state_key_get_one_sym(gXkbState, code);
+    char buf[64]{};
+    const int n = xkb_state_key_get_utf8(gXkbState, code, buf, sizeof(buf));
+    int mapped = 0;
+    std::string text;
+    if (sym == XKB_KEY_BackSpace)
+      mapped = 8;
+    else if (sym == XKB_KEY_Tab || sym == XKB_KEY_ISO_Left_Tab)
+      mapped = 9;
+    else if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter)
+      mapped = 13;
+    else if (sym == XKB_KEY_Escape)
+      mapped = 27;
+    else if (sym == XKB_KEY_Delete)
+      mapped = 46;
+    else if (sym == XKB_KEY_Home)
+      mapped = 36;
+    else if (sym == XKB_KEY_End)
+      mapped = 35;
+    else if (sym == XKB_KEY_Left)
+      mapped = 37;
+    else if (sym == XKB_KEY_Up)
+      mapped = 38;
+    else if (sym == XKB_KEY_Right)
+      mapped = 39;
+    else if (sym == XKB_KEY_Down)
+      mapped = 40;
+    else if (sym == XKB_KEY_Page_Up)
+      mapped = 33;
+    else if (sym == XKB_KEY_Page_Down)
+      mapped = 34;
+    else if ((gWlMods & 2) != 0 &&
+             (sym == XKB_KEY_a || sym == XKB_KEY_A || sym == XKB_KEY_c ||
+              sym == XKB_KEY_C || sym == XKB_KEY_x || sym == XKB_KEY_X ||
+              sym == XKB_KEY_v || sym == XKB_KEY_V)) {
+      if (sym == XKB_KEY_a || sym == XKB_KEY_A)
+        mapped = 'A';
+      else if (sym == XKB_KEY_c || sym == XKB_KEY_C)
+        mapped = 'C';
+      else if (sym == XKB_KEY_x || sym == XKB_KEY_X)
+        mapped = 'X';
+      else
+        mapped = 'V';
+      text = "ctrl";
+    } else if (n > 0) {
+      text.assign(buf, buf + n);
+      if (!text.empty())
+        mapped = static_cast<unsigned char>(text[0]);
+    }
+    if (mapped == 8 || mapped == 13 || mapped == 9 || mapped == 27 ||
+        mapped == 37 || mapped == 39 || mapped == 36 || mapped == 35 ||
+        mapped == 38 || mapped == 40 || mapped == 33 || mapped == 34 ||
+        mapped == 46) {
+      text.clear();
+      if ((gWlMods & 1) != 0 &&
+          (mapped == 37 || mapped == 39 || mapped == 36 || mapped == 35 ||
+           mapped == 38 || mapped == 40 || mapped == 33 || mapped == 34))
+        text = "shift";
+    }
+    if (mapped != 0 || !text.empty()) {
+      feedKey(win, mapped, std::move(text));
+      runFrame(win.id);
+    }
+    return;
+  }
+#endif
+  const int mapped = wlMapEvdevKey(key);
+  if (mapped == 0)
+    return;
+  if ((gWlMods & 2) != 0 &&
+      (mapped == 'A' || mapped == 'C' || mapped == 'X' || mapped == 'V')) {
+    feedKey(win, mapped, "ctrl");
+    runFrame(win.id);
+    return;
+  }
+  wlFeedSpecial(win, mapped);
+}
+
+void wlKeyboardModifiers(void *, struct wl_keyboard *, uint32_t, uint32_t deps,
+                         uint32_t latched, uint32_t locked, uint32_t group) {
+  (void)latched;
+  (void)locked;
+  (void)group;
+#ifdef ROSEGOLD_XKB
+  if (gXkbState) {
+    xkb_state_update_mask(gXkbState, deps, latched, locked, 0, 0, group);
+    gWlMods = 0;
+    if (xkb_state_mod_name_is_active(gXkbState, XKB_MOD_NAME_SHIFT,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0)
+      gWlMods |= 1;
+    if (xkb_state_mod_name_is_active(gXkbState, XKB_MOD_NAME_CTRL,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0)
+      gWlMods |= 2;
+    return;
+  }
+#endif
+  // Without xkb, approximate from depressed mask bits commonly used by
+  // compositors (shift=1, ctrl=4) — best-effort for nav + clipboard chords.
+  gWlMods = 0;
+  if (deps & 1)
+    gWlMods |= 1;
+  if (deps & 4)
+    gWlMods |= 2;
+}
+
+void wlKeyboardRepeatInfo(void *, struct wl_keyboard *, int32_t, int32_t) {}
+
+const struct wl_keyboard_listener gWlKeyboardListener = {
+    wlKeyboardKeymap, wlKeyboardEnter, wlKeyboardLeave,
+    wlKeyboardKey,    wlKeyboardModifiers, wlKeyboardRepeatInfo};
+
+void wlSeatCapabilities(void *, struct wl_seat *seat, uint32_t caps) {
+  if ((caps & WL_SEAT_CAPABILITY_POINTER) && !gPointer) {
+    gPointer = wl_seat_get_pointer(seat);
+    if (gPointer)
+      wl_pointer_add_listener(gPointer, &gWlPointerListener, nullptr);
+  } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && gPointer) {
+    wl_pointer_destroy(gPointer);
+    gPointer = nullptr;
+    gWlPtrWin = nullptr;
+  }
+  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !gKeyboard) {
+    gKeyboard = wl_seat_get_keyboard(seat);
+    if (gKeyboard)
+      wl_keyboard_add_listener(gKeyboard, &gWlKeyboardListener, nullptr);
+  } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && gKeyboard) {
+    wl_keyboard_destroy(gKeyboard);
+    gKeyboard = nullptr;
+    gWlKeyWin = nullptr;
+  }
+}
+
+void wlSeatName(void *, struct wl_seat *, const char *) {}
+
+const struct wl_seat_listener gWlSeatListener = {wlSeatCapabilities, wlSeatName};
 
 void xdgPing(void *, xdg_wm_base *wm, uint32_t serial) { xdgPong(wm, serial); }
 const xdg_wm_base_listener gXdgWmListener = {xdgPing};
@@ -1987,6 +2339,14 @@ void registryGlobal(void *, struct wl_registry *reg, uint32_t name,
     const uint32_t v = ver >= 1 ? 1 : ver;
     gXdg = static_cast<xdg_wm_base *>(
         wl_registry_bind(reg, name, &xdg_wm_base_interface, v));
+  } else if (std::strcmp(iface, wl_seat_interface.name) == 0) {
+    if (!gSeat) {
+      const uint32_t v = ver >= 5 ? 5 : ver;
+      gSeat = static_cast<struct wl_seat *>(
+          wl_registry_bind(reg, name, &wl_seat_interface, v));
+      if (gSeat)
+        wl_seat_add_listener(gSeat, &gWlSeatListener, nullptr);
+    }
   }
 }
 void registryRemove(void *, struct wl_registry *, uint32_t) {}
@@ -2015,6 +2375,10 @@ int shmFd(size_t size) {
 }
 
 void wlDestroy(HostWin &win) {
+  if (gWlPtrWin == &win)
+    gWlPtrWin = nullptr;
+  if (gWlKeyWin == &win)
+    gWlKeyWin = nullptr;
   if (win.buf) {
     wl_buffer_destroy(static_cast<struct wl_buffer *>(win.buf));
     win.buf = nullptr;
@@ -2114,6 +2478,35 @@ void wlUnmap(HostWin &win) {
 }
 
 void wlShutdown() {
+  gWlPtrWin = nullptr;
+  gWlKeyWin = nullptr;
+  gWlMods = 0;
+  if (gPointer) {
+    wl_pointer_destroy(gPointer);
+    gPointer = nullptr;
+  }
+  if (gKeyboard) {
+    wl_keyboard_destroy(gKeyboard);
+    gKeyboard = nullptr;
+  }
+  if (gSeat) {
+    wl_seat_destroy(gSeat);
+    gSeat = nullptr;
+  }
+#ifdef ROSEGOLD_XKB
+  if (gXkbState) {
+    xkb_state_unref(gXkbState);
+    gXkbState = nullptr;
+  }
+  if (gXkbMap) {
+    xkb_keymap_unref(gXkbMap);
+    gXkbMap = nullptr;
+  }
+  if (gXkbCtx) {
+    xkb_context_unref(gXkbCtx);
+    gXkbCtx = nullptr;
+  }
+#endif
   if (gXdg) {
     xdgDestroyProxy(gXdg);
     gXdg = nullptr;

@@ -15,6 +15,7 @@ srcs="
   $root/RoseGoldC/harness.cpp
   $root/RoseGoldC/lsp.cpp
   $root/RoseGoldC/format.cpp
+  $root/RoseGoldC/dap.cpp
   $root/RoseGoldC/host_ui.cpp
 "
 cxx=${CXX:-}
@@ -37,6 +38,10 @@ case "$os" in
     if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists wayland-client; then
       wayland_flags="-DROSEGOLD_WAYLAND $(pkg-config --cflags wayland-client)"
       libs="$libs $(pkg-config --libs wayland-client)"
+      if pkg-config --exists xkbcommon; then
+        wayland_flags="$wayland_flags -DROSEGOLD_XKB $(pkg-config --cflags xkbcommon)"
+        libs="$libs $(pkg-config --libs xkbcommon)"
+      fi
     fi
     ;;
 esac

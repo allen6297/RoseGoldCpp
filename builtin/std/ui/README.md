@@ -158,7 +158,6 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 
 ## Not yet
 
-- Wayland input parity
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
 Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.
