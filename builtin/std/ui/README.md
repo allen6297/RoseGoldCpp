@@ -58,8 +58,10 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | `Toggle` | `on` bool; `changed` |
 | `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
 | `Dropdown` | `items`, `selected`, expands when `open`; click / Enter / arrows / Esc; `changed` |
+| `PopupMenu` | Overlay menu via `w.show_menu(menu, x, y)` or `w.show_menu_at_pointer(menu)`; click / arrows / Enter / Esc; `chosen` |
+| `Dialog` | Modal overlay via `w.show_dialog(dlg)`; title/message, optional field, buttons; Esc cancels; `chosen` / `cancelled` |
 | `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; vertical scrollbar chrome |
-| `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, scrollbar, **visible-row cache** |
+| `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, scrollbar, **visible-row cache**; right-click → `context_requested` |
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
 | `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm"\|"x.png")` |
@@ -104,6 +106,7 @@ trait Widget {
     fn flex(): Int;
     fn paint(win_id: Int, x: Int, y: Int, w: Int);
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool;
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn handle_key(code: Int, text: String): Bool;
     fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn clear_focus();
@@ -118,7 +121,7 @@ For `LazyColumn`, implement `LazyRows` (`count` / `row(i)`) or use `LabelRows`.
 
 Draw with `__ui.fill` / `__ui.fill_round` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.stroke_round` / `__ui.image` / `__ui.image_rgb` / `__ui.clip_push` / `__ui.clip_pop`. Helpers: `fill_round` / `stroke_round` / `paint_chevron` / `corner_r()`.
 
-Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after paint (hand/I-beam). Widgets may still call `cursor_hand` / `cursor_ibeam` while painting for immediate feedback.
+Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after paint (hand/I-beam). Widgets may still call `cursor_hand` / `cursor_ibeam` while painting for immediate feedback. Right-click is routed through `handle_right_click`; `LazyColumn` emits `context_requested` (pair with `w.show_menu_at_pointer`).
 
 ## Tests
 
@@ -132,12 +135,14 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_lazy.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_tab.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_dropdown.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_menu.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_context.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_contacts.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_dialog.rg
 ```
 
 ## Not yet
 
-- Dropdown / context menu
-- Scrollbar chrome on `ScrollView` / `LazyColumn`
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
 Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.

@@ -88,6 +88,7 @@ struct HostWin {
   int mouse_y = 0;
   bool mouse_down = false;
   bool mouse_click = false;
+  bool mouse_right_click = false;
   int cursor_kind = 0; // 0 arrow, 1 hand, 2 ibeam
   bool key_pending = false;
   int key_code = 0;
@@ -987,6 +988,13 @@ void feedClick(HostWin &win, int x, int y) {
   win.mouse_click = true;
 }
 
+void feedRightClick(HostWin &win, int x, int y) {
+  win.mouse_x = x;
+  win.mouse_y = y;
+  win.mouse_down = false;
+  win.mouse_right_click = true;
+}
+
 void feedMouse(HostWin &win, int x, int y) {
   win.mouse_x = x;
   win.mouse_y = y;
@@ -1061,6 +1069,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     win->mouse_y = static_cast<int>(static_cast<short>(HIWORD(lp)));
     win->mouse_down = false;
     win->mouse_click = true;
+    return 0;
+  }
+  if (msg == WM_RBUTTONUP && win) {
+    win->mouse_x = static_cast<int>(static_cast<short>(LOWORD(lp)));
+    win->mouse_y = static_cast<int>(static_cast<short>(HIWORD(lp)));
+    win->mouse_right_click = true;
+    runFrame(id);
     return 0;
   }
   if (msg == WM_MOUSEWHEEL && win) {
@@ -1418,6 +1433,15 @@ void rgMouseUp(id self, SEL, id event) {
   }
 }
 
+void rgRightMouseUp(id self, SEL, id event) {
+  HostWin *win = hostFromView(self);
+  cocoaSetMouse(win, self, event);
+  if (win) {
+    win->mouse_right_click = true;
+    runFrame(win->id);
+  }
+}
+
 void rgMouseMoved(id self, SEL, id event) {
   HostWin *win = hostFromView(self);
   cocoaSetMouse(win, self, event);
@@ -1486,6 +1510,8 @@ void ensureRgViewClass() {
                   "v@:@");
   class_addMethod(gRgViewClass, sel_registerName("mouseUp:"), (IMP)rgMouseUp,
                   "v@:@");
+  class_addMethod(gRgViewClass, sel_registerName("rightMouseUp:"),
+                  (IMP)rgRightMouseUp, "v@:@");
   class_addMethod(gRgViewClass, sel_registerName("mouseDragged:"),
                   (IMP)rgMouseMoved, "v@:@");
   class_addMethod(gRgViewClass, sel_registerName("mouseMoved:"),
@@ -2215,6 +2241,12 @@ void xHandle(const XEvent &e) {
       win->mouse_y = e.xbutton.y;
       win->mouse_down = false;
       win->mouse_click = true;
+    }
+    if (win && e.xbutton.button == 3) {
+      win->mouse_x = e.xbutton.x;
+      win->mouse_y = e.xbutton.y;
+      win->mouse_right_click = true;
+      runFrame(win->id);
     }
     return;
   }
@@ -2957,6 +2989,16 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     win->mouse_click = false;
     return Value::makeBool(click);
   }
+  if (name == "take_right_click") {
+    if (args.size() != 1)
+      I.runtime("__ui.take_right_click takes 1 argument", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (!win)
+      return Value::makeBool(false);
+    const bool click = win->mouse_right_click;
+    win->mouse_right_click = false;
+    return Value::makeBool(click);
+  }
   if (name == "feed_click") {
     if (args.size() != 3)
       I.runtime("__ui.feed_click takes 3 arguments", line, col);
@@ -2964,6 +3006,15 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     if (win)
       feedClick(*win, static_cast<int>(needInt(1)),
                 static_cast<int>(needInt(2)));
+    return Value::makeVoid();
+  }
+  if (name == "feed_right_click") {
+    if (args.size() != 3)
+      I.runtime("__ui.feed_right_click takes 3 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      feedRightClick(*win, static_cast<int>(needInt(1)),
+                     static_cast<int>(needInt(2)));
     return Value::makeVoid();
   }
   if (name == "feed_mouse") {

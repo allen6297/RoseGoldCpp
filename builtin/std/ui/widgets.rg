@@ -69,6 +69,23 @@ class VStack impl Widget {
         }
         return false;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        var cy = 0;
+        var i = 0;
+        while (i < len(children)) {
+            if (i > 0) {
+                cy = cy + spacing;
+            }
+            var child = children[i];
+            var ch = child.height(w);
+            if (lx >= 0 && lx < w && ly >= cy && ly < cy + ch) {
+                return child.handle_right_click(lx, ly - cy, w, ch);
+            }
+            cy = cy + ch;
+            i = i + 1;
+        }
+        return false;
+    }
 
     fn handle_key(code: Int, text: String): Bool {
         var i = 0;
@@ -308,11 +325,18 @@ class HStack impl Widget {
             return;
         }
         var widths = child_widths(w);
+        var stack_h = height(w);
         var cx = x + origin_x(w, widths);
         var i = 0;
         while (i < n) {
-            children[i].paint(win_id, cx, y, widths[i]);
-            cx = cx + widths[i] + spacing;
+            var cw = widths[i];
+            var ch = children[i].height(cw);
+            var oy = (stack_h - ch) / 2;
+            if (oy < 0) {
+                oy = 0;
+            }
+            children[i].paint(win_id, cx, y + oy, cw);
+            cx = cx + cw + spacing;
             i = i + 1;
         }
     }
@@ -327,8 +351,36 @@ class HStack impl Widget {
         var i = 0;
         while (i < n) {
             var cw = widths[i];
-            if (lx >= cx && lx < cx + cw && ly >= 0 && ly < h) {
-                return children[i].handle_click(lx - cx, ly, cw, h);
+            var ch = children[i].height(cw);
+            var oy = (h - ch) / 2;
+            if (oy < 0) {
+                oy = 0;
+            }
+            if (hit_test(lx - cx, ly - oy, cw, ch)) {
+                return children[i].handle_click(lx - cx, ly - oy, cw, ch);
+            }
+            cx = cx + cw + spacing;
+            i = i + 1;
+        }
+        return false;
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        var n = len(children);
+        if (n == 0) {
+            return false;
+        }
+        var widths = child_widths(w);
+        var cx = origin_x(w, widths);
+        var i = 0;
+        while (i < n) {
+            var cw = widths[i];
+            var ch = children[i].height(cw);
+            var oy = (h - ch) / 2;
+            if (oy < 0) {
+                oy = 0;
+            }
+            if (hit_test(lx - cx, ly - oy, cw, ch)) {
+                return children[i].handle_right_click(lx - cx, ly - oy, cw, ch);
             }
             cx = cx + cw + spacing;
             i = i + 1;
@@ -357,8 +409,13 @@ class HStack impl Widget {
         var i = 0;
         while (i < n) {
             var cw = widths[i];
-            if (lx >= cx && lx < cx + cw && ly >= 0 && ly < h) {
-                return children[i].handle_scroll(dx, dy, lx - cx, ly, cw, h);
+            var ch = children[i].height(cw);
+            var oy = (h - ch) / 2;
+            if (oy < 0) {
+                oy = 0;
+            }
+            if (hit_test(lx - cx, ly - oy, cw, ch)) {
+                return children[i].handle_scroll(dx, dy, lx - cx, ly - oy, cw, ch);
             }
             cx = cx + cw + spacing;
             i = i + 1;
@@ -406,8 +463,12 @@ class HStack impl Widget {
         while (i < n) {
             var cw = widths[i];
             var ch = children[i].height(cw);
-            if (hit_test(lx - cx, ly, cw, h)) {
-                var c = children[i].hover_cursor(lx - cx, ly, cw, ch);
+            var oy = (h - ch) / 2;
+            if (oy < 0) {
+                oy = 0;
+            }
+            if (hit_test(lx - cx, ly - oy, cw, ch)) {
+                var c = children[i].hover_cursor(lx - cx, ly - oy, cw, ch);
                 if (c != 0) {
                     return c;
                 }
@@ -441,6 +502,10 @@ class Spacer impl Widget {
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return false;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         return false;
@@ -530,6 +595,10 @@ class Label impl Widget {
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return false;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         return false;
@@ -639,6 +708,10 @@ class Button impl Widget {
         clicked.emit();
         return true;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         if (focused && code == 13) {
@@ -739,6 +812,10 @@ class TextField impl Widget {
         focused = true;
         return true;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text_in: String): Bool {
         if (!focused) {
@@ -841,6 +918,10 @@ class Toggle impl Widget {
         changed.emit();
         return true;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         if (focused && (code == 13 || code == 32)) {
@@ -980,6 +1061,20 @@ class ScrollView impl Widget {
         }
         return child.handle_click(lx, ly + offset, cw, child.height(cw));
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        layout_w = w;
+        if (ly < 0 || ly >= viewport_h || lx < 0 || lx >= w) {
+            return false;
+        }
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            return true;
+        }
+        var cw = content_width(w);
+        if (lx >= cw) {
+            return false;
+        }
+        return child.handle_right_click(lx, ly + offset, cw, child.height(cw));
+    }
 
     fn handle_key(code: Int, text: String): Bool {
         return child.handle_key(code, text);
@@ -1055,6 +1150,10 @@ class Canvas impl Widget {
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return false;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         return false;
@@ -1178,6 +1277,10 @@ class Slider impl Widget {
         set_value(value_from_x(lx, w));
         return true;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         if (!focused) {
@@ -1248,6 +1351,7 @@ class LazyColumn impl Widget {
     var cache_first: Int = 0;
     var cache_source_n: Int = -1;
     signal selection_changed();
+    signal context_requested();
 
     fn min_width(): Int {
         return 80;
@@ -1463,6 +1567,33 @@ class LazyColumn impl Widget {
         select(i);
         sync_cache();
         cached_row(i).handle_click(lx, y - i * step(), cw, step());
+        return true;
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        layout_w = w;
+        sync_cache();
+        if (ly < 0 || ly >= viewport_h || lx < 0 || lx >= w) {
+            return false;
+        }
+        focused = true;
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            return true;
+        }
+        var cw = content_width(w);
+        if (lx >= cw) {
+            return true;
+        }
+        var n = source.count();
+        if (n < 1) {
+            return true;
+        }
+        var y = ly + offset;
+        var i = y / step();
+        if (i < 0 || i >= n) {
+            return true;
+        }
+        select(i);
+        context_requested.emit();
         return true;
     }
 
@@ -1727,6 +1858,10 @@ class Dropdown impl Widget {
         }
         return true;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         if (!focused) {
@@ -1846,6 +1981,10 @@ class ImageView impl Widget {
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return false;
     }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
 
     fn handle_key(code: Int, text: String): Bool {
         return false;

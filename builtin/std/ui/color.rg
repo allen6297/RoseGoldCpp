@@ -8,10 +8,15 @@ enum Color {
     Cyan,
     White,
     Rgb(r: Int, g: Int, b: Int),
+    Argb(a: Int, r: Int, g: Int, b: Int)
 }
 
 fn rgb(r: Int, g: Int, b: Int): Color {
     return Color.Rgb(r, g, b);
+}
+
+fn argb(a: Int, r: Int, g: Int, b: Int): Color {
+    return Color.Argb(a, r, g, b);
 }
 
 @ufcs
@@ -26,6 +31,7 @@ fn value(c: Color): Int {
         Cyan { return 255 * 256 + 255; }
         White { return 255 * 65536 + 255 * 256 + 255; }
         Rgb(r, g, b) { return r * 65536 + g * 256 + b; }
+        Argb(a, r, g, b) { return a * 65536 + r * 256 + g * 256 + b; }
     }
     return 0;
 }

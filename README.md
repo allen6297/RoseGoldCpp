@@ -596,10 +596,6 @@ fn main(): Int {
 
 ## Next steps
 
-**Desktop UI polish (recommended before mobile/web)**
-
-- Context menus / popup menus (overlay layer; `Dropdown` covers inline selects).
-
 **Later / when you have a concrete target**
 
 - Mobile or web `__ui` host (names already reserved on the same surface as win32/X11/Wayland/Cocoa).

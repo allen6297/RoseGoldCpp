@@ -21,6 +21,14 @@ fn main(): Int {
     volume.changed.connect(fn () { status.set_text("volume"); });
     city.changed.connect(fn () { status.set_text(city.current_label()); });
 
+    var menu = PopupMenu {
+        items: ["New", "Open", "Save", "Quit"]
+    };
+    var more = theme.button("Menu");
+    more.clicked.connect(fn () {
+        w.show_menu_at_pointer(menu);
+    });
+
     var scroll_col = VStack { spacing: 4 };
     var i = 1;
     while (i <= 20) {
@@ -42,6 +50,9 @@ fn main(): Int {
     list.selection_changed.connect(fn () {
         status.set_text("lazy selected");
     });
+    list.context_requested.connect(fn () {
+        w.show_menu_at_pointer(menu);
+    });
 
     var rgb_px: Array[Int] = [];
     var row = 0;
@@ -56,17 +67,50 @@ fn main(): Int {
     var swatch = ui.make_image(16, 16, rgb_px);
     var file = ui.load_image("examples/assets/dot.png");
 
-    var quit = theme.button("Close");
-    quit.clicked.connect(fn () { w.close(); });
-    var submit = theme.button("Submit");
-    submit.clicked.connect(fn () {
-        if (remember.on) {
-            status.set_text(name.text + " (saved)");
-        } else {
-            status.set_text(name.text);
+    var close_dlg = Dialog {
+        title: "Close",
+        message: "Leave the widgets demo?",
+        buttons: ["Cancel", "Close"]
+    };
+    close_dlg.chosen.connect(fn () {
+        if (close_dlg.selected == 1) {
+            w.close();
         }
     });
+    var quit = theme.button("Close");
+    quit.clicked.connect(fn () {
+        w.show_dialog(close_dlg);
+    });
+
+    var prompt = Dialog {
+        title: "Submit",
+        message: "Confirm the name to save:",
+        field_placeholder: "Name",
+        buttons: ["Cancel", "OK"]
+    };
+    prompt.chosen.connect(fn () {
+        if (prompt.selected == 1) {
+            name.set_text(prompt.field_text);
+            if (remember.on) {
+                status.set_text(prompt.field_text + " (saved)");
+            } else {
+                status.set_text(prompt.field_text);
+            }
+        }
+    });
+    var submit = theme.button("Submit");
+    submit.clicked.connect(fn () {
+        prompt.field_text = name.text;
+        w.show_dialog(prompt);
+    });
     name.submitted.connect(fn () { submit.clicked.emit(); });
+    menu.chosen.connect(fn () {
+        if (menu.selected == 3) {
+            w.show_dialog(close_dlg);
+        } else {
+            status.set_text(menu.items[menu.selected]);
+        }
+    });
 
     w.add(VStack {
         spacing: 10,
@@ -81,7 +125,7 @@ fn main(): Int {
             HStack {
                 spacing: 8,
                 align: "center",
-                children: [swatch, file, Spacer {}, submit, quit]
+                children: [swatch, file, Spacer {}, more, submit, quit]
             },
             status
         ]

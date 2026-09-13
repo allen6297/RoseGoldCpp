@@ -574,8 +574,8 @@ struct TypeChecker {
             e.text == "key_text")
           return "String";
         if (e.text == "alive" || e.text == "poll" || e.text == "mouse_down" ||
-            e.text == "take_click" || e.text == "take_key" ||
-            e.text == "take_scroll")
+            e.text == "take_click" || e.text == "take_right_click" ||
+            e.text == "take_key" || e.text == "take_scroll")
           return "Bool";
         if (e.text == "width" || e.text == "height" || e.text == "count" ||
             e.text == "mouse_x" || e.text == "mouse_y" || e.text == "key_code" ||
@@ -1333,8 +1333,8 @@ struct TypeChecker {
         arity(1);
         return;
       }
-      if (name == "set_size" || name == "feed_click" || name == "feed_key" ||
-          name == "feed_scroll" || name == "feed_mouse") {
+      if (name == "set_size" || name == "feed_click" || name == "feed_right_click" ||
+          name == "feed_key" || name == "feed_scroll" || name == "feed_mouse") {
         arity(3);
         return;
       }
@@ -1347,7 +1347,8 @@ struct TypeChecker {
           name == "poll" || name == "alive" || name == "title" ||
           name == "width" || name == "height" || name == "present" ||
           name == "mouse_x" || name == "mouse_y" || name == "mouse_down" ||
-          name == "take_click" || name == "take_key" || name == "key_code" ||
+          name == "take_click" || name == "take_right_click" ||
+          name == "take_key" || name == "key_code" ||
           name == "key_text" || name == "take_scroll" || name == "scroll_dx" ||
           name == "scroll_dy" || name == "clip_pop") {
         arity(1);

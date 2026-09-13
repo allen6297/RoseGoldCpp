@@ -42,6 +42,46 @@ fn main(): Int {
     w.hover_at(20, 200);
     checks.that(!go.hot);
 
+    // Mixed-height row: short image + button — hover must hit the centered button.
+    var icon = ui.make_image(16, 16, [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]);
+    var side = theme.button("Hi");
+    var mixed = HStack {
+        spacing: 8,
+        align: "leading",
+        children: [icon, side]
+    };
+    var w2 = try ui.open_hidden("rg-hover-row", 320, 120);
+    w2.add(mixed);
+    var inner = 320 - 24;
+    var row_h = mixed.height(inner);
+    var btn_w = side.min_width();
+    var btn_h = side.height(btn_w);
+    var oy = (row_h - btn_h) / 2;
+    var bx = 12 + icon.min_width() + 8 + btn_w / 2;
+    var by = 12 + oy + btn_h / 2;
+    w2.hover_at(bx, by);
+    checks.that(side.hot);
+    w2.hover_at(12 + 4, 12 + 2);
+    checks.that(!side.hot);
+    w2.close();
+
     w.close();
     return 0;
 }

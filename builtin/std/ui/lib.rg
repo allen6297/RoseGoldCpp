@@ -4,6 +4,7 @@ trait Widget {
     fn flex(): Int;
     fn paint(win_id: Int, x: Int, y: Int, w: Int);
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool;
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn handle_key(code: Int, text: String): Bool;
     fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool;
     fn clear_focus();
@@ -70,6 +71,24 @@ class Pad impl Widget {
             inner_h = 0;
         }
         return child.handle_click(lx - amount, ly - amount, inner_w, inner_h);
+    }
+
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (lx < amount || ly < amount) {
+            return false;
+        }
+        if (lx >= w - amount || ly >= h - amount) {
+            return false;
+        }
+        var inner_w = w - amount * 2;
+        var inner_h = h - amount * 2;
+        if (inner_w < 0) {
+            inner_w = 0;
+        }
+        if (inner_h < 0) {
+            inner_h = 0;
+        }
+        return child.handle_right_click(lx - amount, ly - amount, inner_w, inner_h);
     }
 
     fn handle_key(code: Int, text: String): Bool {
@@ -146,6 +165,10 @@ class Backdrop impl Widget {
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return child.handle_click(lx, ly, w, h);
+    }
+
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return child.handle_right_click(lx, ly, w, h);
     }
 
     fn handle_key(code: Int, text: String): Bool {
@@ -408,6 +431,524 @@ fn wrapped_height(text: String, max_w: Int): Int {
     return h;
 }
 
+class PopupMenu {
+    var items: Array[String] = [];
+    var at_x: Int = 0;
+    var at_y: Int = 0;
+    var open: Bool = false;
+    var selected: Int = -1;
+    var fill: Color = Color.White;
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var border: Color = Color.Rgb(160, 160, 160);
+    var select_fill: Color = Color.Rgb(200, 220, 255);
+    signal chosen();
+
+    fn item_h(): Int {
+        return control_height(28, 8);
+    }
+
+    fn menu_w(): Int {
+        var mw = 120;
+        var i = 0;
+        while (i < len(items)) {
+            var tw = text_width(items[i]) + 24;
+            if (tw > mw) {
+                mw = tw;
+            }
+            i = i + 1;
+        }
+        return mw;
+    }
+
+    fn menu_h(): Int {
+        var n = len(items);
+        if (n < 1) {
+            return item_h();
+        }
+        return n * item_h();
+    }
+
+    fn open_at(x: Int, y: Int) {
+        at_x = x;
+        at_y = y;
+        open = true;
+        if (len(items) > 0) {
+            selected = 0;
+        } else {
+            selected = -1;
+        }
+    }
+
+    fn dismiss() {
+        open = false;
+    }
+
+    fn contains(mx: Int, my: Int): Bool {
+        if (!open) {
+            return false;
+        }
+        return hit_test(mx - at_x, my - at_y, menu_w(), menu_h());
+    }
+
+    fn paint(win_id: Int) {
+        if (!open || len(items) < 1) {
+            return;
+        }
+        var w = menu_w();
+        var h = menu_h();
+        var ih = item_h();
+        var r = corner_r();
+        fill_round(win_id, at_x, at_y, w, h, r, fill.value());
+        stroke_round(win_id, at_x, at_y, w, h, r, Color.Rgb(47, 111, 196).value());
+        var i = 0;
+        while (i < len(items)) {
+            var ry = at_y + i * ih;
+            if (i == selected) {
+                fill_round(win_id, at_x + 4, ry + 2, w - 8, ih - 4, 4, select_fill.value());
+            }
+            __ui.text(win_id, at_x + 10, ry + (ih - font_height()) / 2, items[i], ink.value());
+            i = i + 1;
+        }
+    }
+
+    fn handle_click(mx: Int, my: Int): Bool {
+        if (!open) {
+            return false;
+        }
+        if (!contains(mx, my)) {
+            return false;
+        }
+        var ih = item_h();
+        var i = (my - at_y) / ih;
+        if (i < 0 || i >= len(items)) {
+            return true;
+        }
+        selected = i;
+        open = false;
+        chosen.emit();
+        return true;
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        if (!open) {
+            return false;
+        }
+        if (code == 27) {
+            open = false;
+            return true;
+        }
+        if (code == 13 || code == 32) {
+            if (selected >= 0 && selected < len(items)) {
+                open = false;
+                chosen.emit();
+            }
+            return true;
+        }
+        var n = len(items);
+        if (n < 1) {
+            return true;
+        }
+        if (code == 38) {
+            if (selected <= 0) {
+                selected = 0;
+            } else {
+                selected = selected - 1;
+            }
+            return true;
+        }
+        if (code == 40) {
+            if (selected < 0) {
+                selected = 0;
+            } elif (selected >= n - 1) {
+                selected = n - 1;
+            } else {
+                selected = selected + 1;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn hover_cursor(mx: Int, my: Int): Int {
+        if (contains(mx, my)) {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+class Dialog {
+    var title: String = "";
+    var message: String = "";
+    var buttons: Array[String] = ["OK"];
+    var field_placeholder: String = "";
+    var field_text: String = "";
+    var field_focused: Bool = false;
+    var open: Bool = false;
+    var selected: Int = -1;
+    var btn_focus: Int = 0;
+    var panel_x: Int = 0;
+    var panel_y: Int = 0;
+    var panel_w: Int = 320;
+    var panel_h: Int = 160;
+    var scrim: Color = Color.Rgb(32, 32, 40);
+    var fill: Color = Color.White;
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var muted: Color = Color.Rgb(90, 90, 100);
+    var hover_btn: Int = -1;
+    signal chosen();
+    signal cancelled();
+
+    fn pad(): Int {
+        return 16;
+    }
+
+    fn btn_h(): Int {
+        return control_height(32, 12);
+    }
+
+    fn field_h(): Int {
+        return control_height(28, 10);
+    }
+
+    fn has_field(): Bool {
+        return len(field_placeholder) > 0;
+    }
+
+    fn content_w(): Int {
+        var w = panel_w - pad() * 2;
+        if (w < 1) {
+            return 1;
+        }
+        return w;
+    }
+
+    fn btn_w(i: Int): Int {
+        var tw = text_width(buttons[i]) + 24;
+        if (tw < 72) {
+            return 72;
+        }
+        return tw;
+    }
+
+    fn layout(win_w: Int, win_h: Int) {
+        panel_w = 360;
+        if (panel_w > win_w - 40) {
+            panel_w = win_w - 40;
+        }
+        if (panel_w < 220) {
+            panel_w = 220;
+        }
+        var cw = content_w();
+        var h = pad();
+        if (len(title) > 0) {
+            h = h + font_height() + 10;
+        }
+        if (len(message) > 0) {
+            h = h + wrapped_height(message, cw) + 8;
+        }
+        if (has_field()) {
+            h = h + field_h() + 12;
+        }
+        h = h + btn_h() + pad();
+        panel_h = h;
+        panel_x = (win_w - panel_w) / 2;
+        panel_y = (win_h - panel_h) / 2;
+        if (panel_x < 12) {
+            panel_x = 12;
+        }
+        if (panel_y < 12) {
+            panel_y = 12;
+        }
+    }
+
+    fn open_centered(win_w: Int, win_h: Int) {
+        layout(win_w, win_h);
+        open = true;
+        selected = -1;
+        if (len(buttons) > 0) {
+            btn_focus = len(buttons) - 1;
+        } else {
+            btn_focus = 0;
+        }
+        field_focused = has_field();
+    }
+
+    fn dismiss() {
+        open = false;
+        field_focused = false;
+    }
+
+    fn choose(i: Int) {
+        if (i < 0 || i >= len(buttons)) {
+            return;
+        }
+        selected = i;
+        open = false;
+        field_focused = false;
+        chosen.emit();
+    }
+
+    fn cancel() {
+        selected = -1;
+        open = false;
+        field_focused = false;
+        cancelled.emit();
+    }
+
+    fn panel_contains(mx: Int, my: Int): Bool {
+        return hit_test(mx - panel_x, my - panel_y, panel_w, panel_h);
+    }
+
+    fn field_rect_y(): Int {
+        var y = panel_y + pad();
+        if (len(title) > 0) {
+            y = y + font_height() + 10;
+        }
+        if (len(message) > 0) {
+            y = y + wrapped_height(message, content_w()) + 8;
+        }
+        return y;
+    }
+
+    fn buttons_y(): Int {
+        return panel_y + panel_h - pad() - btn_h();
+    }
+
+    fn button_x(i: Int): Int {
+        var x = panel_x + panel_w - pad();
+        var j = len(buttons) - 1;
+        while (j >= i) {
+            x = x - btn_w(j);
+            if (j > i) {
+                x = x - 8;
+            }
+            j = j - 1;
+        }
+        return x;
+    }
+
+    fn button_at(mx: Int, my: Int): Int {
+        var bi = 0;
+        while (bi < len(buttons)) {
+            if (hit_test(mx - button_x(bi), my - buttons_y(), btn_w(bi), btn_h())) {
+                return bi;
+            }
+            bi = bi + 1;
+        }
+        return -1;
+    }
+
+    fn paint(win_id: Int, win_w: Int, win_h: Int) {
+        if (!open) {
+            return;
+        }
+        layout(win_w, win_h);
+        __ui.fill(win_id, 0, 0, win_w, win_h, scrim.value());
+        var r = corner_r();
+        fill_round(win_id, panel_x, panel_y, panel_w, panel_h, r, fill.value());
+        stroke_round(win_id, panel_x, panel_y, panel_w, panel_h, r,
+                     Color.Rgb(47, 111, 196).value());
+        var cw = content_w();
+        var x = panel_x + pad();
+        var y = panel_y + pad();
+        if (len(title) > 0) {
+            __ui.text(win_id, x, y, title, ink.value());
+            y = y + font_height() + 10;
+        }
+        if (len(message) > 0) {
+            var lines = wrap_lines(message, cw);
+            var step = line_step();
+            var i = 0;
+            while (i < len(lines)) {
+                __ui.text(win_id, x, y + i * step, lines[i], muted.value());
+                i = i + 1;
+            }
+            y = y + wrapped_height(message, cw) + 8;
+        }
+        if (has_field()) {
+            var fh = field_h();
+            fill_round(win_id, x, y, cw, fh, r, Color.White.value());
+            var bcol = Color.Rgb(160, 160, 160);
+            if (field_focused) {
+                bcol = Color.Rgb(47, 111, 196);
+            }
+            stroke_round(win_id, x, y, cw, fh, r, bcol.value());
+            var shown = field_text;
+            var col = ink;
+            if (len(shown) == 0) {
+                shown = field_placeholder;
+                col = Color.Rgb(140, 140, 150);
+            }
+            var ty = y + (fh - font_height()) / 2;
+            __ui.text(win_id, x + 8, ty, shown, col.value());
+            if (field_focused && len(field_text) > 0) {
+                var cx = x + 8 + text_width(field_text) + 1;
+                __ui.fill(win_id, cx, y + (fh - font_height()) / 2, 1, font_height(),
+                          ink.value());
+            }
+            y = y + fh + 12;
+        }
+        var mx = __ui.mouse_x(win_id);
+        var my = __ui.mouse_y(win_id);
+        hover_btn = button_at(mx, my);
+        var down = __ui.mouse_down(win_id);
+        var bi = 0;
+        while (bi < len(buttons)) {
+            var bx = button_x(bi);
+            var by = buttons_y();
+            var bw = btn_w(bi);
+            var bh = btn_h();
+            var primary = bi == len(buttons) - 1;
+            var hot = bi == hover_btn;
+            var bg = Color.Rgb(230, 230, 236);
+            var fg = ink;
+            if (primary) {
+                bg = Color.Rgb(47, 111, 196);
+                fg = Color.White;
+                if (hot && down) {
+                    bg = Color.Rgb(30, 80, 150);
+                } elif (hot) {
+                    bg = Color.Rgb(66, 133, 220);
+                }
+            } else {
+                if (hot && down) {
+                    bg = Color.Rgb(200, 200, 210);
+                } elif (hot) {
+                    bg = Color.Rgb(242, 242, 248);
+                }
+            }
+            fill_round(win_id, bx, by, bw, bh, r, bg.value());
+            if (bi == btn_focus && !field_focused) {
+                stroke_round(win_id, bx, by, bw, bh, r, Color.Rgb(20, 60, 120).value());
+            }
+            var tw = text_width(buttons[bi]);
+            var tx = bx + (bw - tw) / 2;
+            var ty = by + (bh - font_height()) / 2;
+            __ui.text(win_id, tx, ty, buttons[bi], fg.value());
+            bi = bi + 1;
+        }
+    }
+
+    fn handle_click(mx: Int, my: Int, win_w: Int, win_h: Int): Bool {
+        if (!open) {
+            return false;
+        }
+        layout(win_w, win_h);
+        if (!panel_contains(mx, my)) {
+            return true;
+        }
+        if (has_field()) {
+            var fy = field_rect_y();
+            var fh = field_h();
+            if (hit_test(mx - (panel_x + pad()), my - fy, content_w(), fh)) {
+                field_focused = true;
+                return true;
+            }
+        }
+        var bi = button_at(mx, my);
+        if (bi >= 0) {
+            field_focused = false;
+            btn_focus = bi;
+            choose(bi);
+            return true;
+        }
+        field_focused = false;
+        return true;
+    }
+
+    fn handle_key(code: Int, text_in: String): Bool {
+        if (!open) {
+            return false;
+        }
+        if (code == 27) {
+            cancel();
+            return true;
+        }
+        if (field_focused && has_field()) {
+            if (code == 9) {
+                field_focused = false;
+                if (len(buttons) > 0) {
+                    btn_focus = len(buttons) - 1;
+                }
+                return true;
+            }
+            if (code == 8) {
+                field_text = drop_last(field_text);
+                return true;
+            }
+            if (code == 13) {
+                if (len(buttons) > 0) {
+                    choose(len(buttons) - 1);
+                }
+                return true;
+            }
+            if (len(text_in) > 0) {
+                field_text = field_text + text_in;
+                return true;
+            }
+            return true;
+        }
+        if (code == 9) {
+            if (has_field() && (text_in == "shift" || btn_focus <= 0)) {
+                field_focused = true;
+                return true;
+            }
+            if (len(buttons) < 1) {
+                return true;
+            }
+            if (text_in == "shift") {
+                if (btn_focus <= 0) {
+                    btn_focus = len(buttons) - 1;
+                } else {
+                    btn_focus = btn_focus - 1;
+                }
+            } else {
+                if (btn_focus >= len(buttons) - 1) {
+                    btn_focus = 0;
+                } else {
+                    btn_focus = btn_focus + 1;
+                }
+            }
+            return true;
+        }
+        if (code == 37) {
+            if (btn_focus > 0) {
+                btn_focus = btn_focus - 1;
+            }
+            return true;
+        }
+        if (code == 39) {
+            if (btn_focus < len(buttons) - 1) {
+                btn_focus = btn_focus + 1;
+            }
+            return true;
+        }
+        if (code == 13 || code == 32) {
+            choose(btn_focus);
+            return true;
+        }
+        return true;
+    }
+
+    fn hover_cursor(mx: Int, my: Int, win_w: Int, win_h: Int): Int {
+        if (!open) {
+            return 0;
+        }
+        layout(win_w, win_h);
+        if (has_field()) {
+            var fy = field_rect_y();
+            if (hit_test(mx - (panel_x + pad()), my - fy, content_w(), field_h())) {
+                return 2;
+            }
+        }
+        if (button_at(mx, my) >= 0) {
+            return 1;
+        }
+        return 0;
+    }
+}
+
 class Window {
     var id: Int = 0;
     var title: String = "RoseGold";
@@ -417,6 +958,10 @@ class Window {
     var theme: Theme = Theme {};
     @optional
     var children: Array[Widget];
+    var menus: Array[PopupMenu] = [];
+    var dialogs: Array[Dialog] = [];
+    var last_click_x: Int = 0;
+    var last_click_y: Int = 0;
 
     fn bind_frame() {
         __ui.set_frame(id, fn () { self.tick(); });
@@ -424,6 +969,68 @@ class Window {
 
     fn root_widget(): Widget {
         return VStack { spacing: 8, children: children }.padding(12);
+    }
+
+    fn dismiss_menus() {
+        var i = 0;
+        while (i < len(menus)) {
+            menus[i].dismiss();
+            i = i + 1;
+        }
+        menus = [];
+    }
+
+    fn dismiss_dialogs() {
+        var i = 0;
+        while (i < len(dialogs)) {
+            dialogs[i].dismiss();
+            i = i + 1;
+        }
+        dialogs = [];
+    }
+
+    fn show_menu(m: PopupMenu, x: Int, y: Int) {
+        if (has_dialog()) {
+            return;
+        }
+        dismiss_menus();
+        var px = x;
+        var py = y;
+        var mw = m.menu_w();
+        var mh = m.menu_h();
+        if (px + mw > width) {
+            px = width - mw;
+        }
+        if (py + mh > height) {
+            py = height - mh;
+        }
+        if (px < 0) {
+            px = 0;
+        }
+        if (py < 0) {
+            py = 0;
+        }
+        m.open_at(px, py);
+        menus.push(m);
+    }
+
+    fn show_menu_at_pointer(m: PopupMenu) {
+        show_menu(m, last_click_x, last_click_y);
+    }
+
+    fn has_menu(): Bool {
+        return len(menus) > 0;
+    }
+
+    fn show_dialog(d: Dialog) {
+        dismiss_menus();
+        dismiss_dialogs();
+        d.open_centered(width, height);
+        dialogs.push(d);
+    }
+
+    fn has_dialog(): Bool {
+        return len(dialogs) > 0;
     }
 
     fn show() throws {
@@ -542,33 +1149,173 @@ class Window {
         }
         width = __ui.width(id);
         height = __ui.height(id);
+        if (len(children) == 0 && len(menus) == 0 && len(dialogs) == 0) {
+            return;
+        }
+        var mx = __ui.mouse_x(id);
+        var my = __ui.mouse_y(id);
         if (len(children) == 0) {
+            if (__ui.take_click(id)) {
+                last_click_x = mx;
+                last_click_y = my;
+                if (len(dialogs) > 0) {
+                    var dlg = dialogs[len(dialogs) - 1];
+                    dlg.handle_click(mx, my, width, height);
+                    if (!dlg.open) {
+                        dismiss_dialogs();
+                    }
+                } elif (len(menus) > 0) {
+                    var top = menus[len(menus) - 1];
+                    if (top.handle_click(mx, my)) {
+                        if (!top.open) {
+                            dismiss_menus();
+                        }
+                    } else {
+                        dismiss_menus();
+                    }
+                }
+            }
+            if (__ui.take_right_click(id)) {
+                last_click_x = mx;
+                last_click_y = my;
+                if (len(dialogs) == 0) {
+                    dismiss_menus();
+                }
+            }
+            while (__ui.take_key(id)) {
+                var code = __ui.key_code(id);
+                var text = __ui.key_text(id);
+                if (len(dialogs) > 0) {
+                    var dlg = dialogs[len(dialogs) - 1];
+                    dlg.handle_key(code, text);
+                    if (!dlg.open) {
+                        dismiss_dialogs();
+                    }
+                } elif (len(menus) > 0) {
+                    var top = menus[len(menus) - 1];
+                    if (code == 27) {
+                        dismiss_menus();
+                    } elif (top.handle_key(code, text)) {
+                        if (!top.open) {
+                            dismiss_menus();
+                        }
+                    }
+                }
+            }
+            if (__ui.take_scroll(id)) {
+                if (len(dialogs) == 0 && len(menus) > 0) {
+                    dismiss_menus();
+                }
+            }
+            __ui.clear(id, theme.window_bg.value());
+            var mi = 0;
+            while (mi < len(menus)) {
+                menus[mi].paint(id);
+                mi = mi + 1;
+            }
+            var di = 0;
+            while (di < len(dialogs)) {
+                dialogs[di].paint(id, width, height);
+                di = di + 1;
+            }
+            var cur = 0;
+            if (len(dialogs) > 0) {
+                cur = dialogs[len(dialogs) - 1].hover_cursor(mx, my, width, height);
+            } elif (len(menus) > 0) {
+                cur = menus[len(menus) - 1].hover_cursor(mx, my);
+            }
+            __ui.cursor(id, cur);
+            __ui.present(id);
             return;
         }
         var root = root_widget();
         var rh = root.height(width);
         if (__ui.take_click(id)) {
-            var mx = __ui.mouse_x(id);
-            var my = __ui.mouse_y(id);
-            root.clear_focus();
-            root.handle_click(mx, my, width, rh);
+            last_click_x = mx;
+            last_click_y = my;
+            if (len(dialogs) > 0) {
+                var dlg = dialogs[len(dialogs) - 1];
+                dlg.handle_click(mx, my, width, height);
+                if (!dlg.open) {
+                    dismiss_dialogs();
+                }
+            } elif (len(menus) > 0) {
+                var top = menus[len(menus) - 1];
+                if (top.handle_click(mx, my)) {
+                    if (!top.open) {
+                        dismiss_menus();
+                    }
+                } else {
+                    dismiss_menus();
+                }
+            } else {
+                root.clear_focus();
+                root.handle_click(mx, my, width, rh);
+            }
+        }
+        if (__ui.take_right_click(id)) {
+            last_click_x = mx;
+            last_click_y = my;
+            if (len(dialogs) == 0) {
+                dismiss_menus();
+                root.handle_right_click(mx, my, width, rh);
+            }
         }
         while (__ui.take_key(id)) {
             var code = __ui.key_code(id);
             var text = __ui.key_text(id);
-            if (code == 9) {
+            if (len(dialogs) > 0) {
+                var dlg = dialogs[len(dialogs) - 1];
+                dlg.handle_key(code, text);
+                if (!dlg.open) {
+                    dismiss_dialogs();
+                }
+            } elif (len(menus) > 0) {
+                var top = menus[len(menus) - 1];
+                if (code == 27) {
+                    dismiss_menus();
+                } elif (top.handle_key(code, text)) {
+                    if (!top.open) {
+                        dismiss_menus();
+                    }
+                }
+            } elif (code == 9) {
                 focus_step(text == "shift");
             } else {
                 root.handle_key(code, text);
             }
         }
         if (__ui.take_scroll(id)) {
-            root.handle_scroll(__ui.scroll_dx(id), __ui.scroll_dy(id),
-                               __ui.mouse_x(id), __ui.mouse_y(id), width, rh);
+            if (len(dialogs) > 0) {
+            } elif (len(menus) > 0) {
+                dismiss_menus();
+            } else {
+                root.handle_scroll(__ui.scroll_dx(id), __ui.scroll_dy(id),
+                                   mx, my, width, rh);
+            }
         }
         __ui.clear(id, theme.window_bg.value());
         root.paint(id, 0, 0, width);
-        __ui.cursor(id, root.hover_cursor(__ui.mouse_x(id), __ui.mouse_y(id), width, rh));
+        var mi = 0;
+        while (mi < len(menus)) {
+            menus[mi].paint(id);
+            mi = mi + 1;
+        }
+        var di = 0;
+        while (di < len(dialogs)) {
+            dialogs[di].paint(id, width, height);
+            di = di + 1;
+        }
+        var cur = 0;
+        if (len(dialogs) > 0) {
+            cur = dialogs[len(dialogs) - 1].hover_cursor(mx, my, width, height);
+        } elif (len(menus) > 0) {
+            cur = menus[len(menus) - 1].hover_cursor(mx, my);
+        }
+        if (cur == 0 && len(dialogs) == 0) {
+            cur = root.hover_cursor(mx, my, width, rh);
+        }
+        __ui.cursor(id, cur);
         __ui.present(id);
     }
 
@@ -603,6 +1350,14 @@ class Window {
             return;
         }
         __ui.feed_click(id, x, y);
+        tick();
+    }
+
+    fn right_click_at(x: Int, y: Int) {
+        if (id == 0) {
+            return;
+        }
+        __ui.feed_right_click(id, x, y);
         tick();
     }
 
