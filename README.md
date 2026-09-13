@@ -596,9 +596,16 @@ fn main(): Int {
 
 ## Next steps
 
+**Desktop UI (recommended before mobile/web)**
+
+1. Dogfood a second small app (todo list, settings panel, or tiny file browser) — surfaces missing widgets faster than inventing them in isolation.
+2. Optional polish: richer text (caret blink, selection), Wayland input parity, more image formats beyond PPM/PNG.
+
+**Tooling / language**
+
+- A formatter (`rgfmt`) once the language surface feels stable enough.
+- Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).
+
 **Later / when you have a concrete target**
 
 - Mobile or web `__ui` host (names already reserved on the same surface as win32/X11/Wayland/Cocoa).
-- More image formats beyond PPM/PNG if needed.
-- A formatter (`rgfmt`) after the language stops moving.
-- Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).

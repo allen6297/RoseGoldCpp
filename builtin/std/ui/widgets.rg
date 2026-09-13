@@ -635,10 +635,20 @@ class Button impl Widget {
     var hot: Bool = false;
     var down: Bool = false;
     var focused: Bool = false;
+    var enabled: Bool = true;
     signal clicked();
 
     fn set_text(s: String) {
         text = s;
+    }
+
+    fn set_enabled(v: Bool) {
+        enabled = v;
+        if (!enabled) {
+            focused = false;
+            hot = false;
+            down = false;
+        }
     }
 
     fn background(c: Color): Button {
@@ -679,19 +689,23 @@ class Button impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
-        hot = pointer_over(win_id, x, y, w, h);
+        hot = enabled && pointer_over(win_id, x, y, w, h);
         if (hot) {
             cursor_hand(win_id);
         }
         down = hot && __ui.mouse_down(win_id);
         var bg = fill;
-        if (down) {
+        var fg = color;
+        if (!enabled) {
+            bg = Color.Rgb(190, 190, 198);
+            fg = Color.Rgb(120, 120, 128);
+        } elif (down) {
             bg = pressed;
         } elif (hot) {
             bg = hover;
         }
         fill_round(win_id, x, y, w, h, corner_r(), bg.value());
-        if (focused) {
+        if (focused && enabled) {
             stroke_round(win_id, x, y, w, h, corner_r(), Color.Rgb(47, 111, 196).value());
         }
         var tw = text_width(text);
@@ -700,10 +714,13 @@ class Button impl Widget {
             tx = x + (w - tw) / 2;
         }
         var ty = y + (h - font_height()) / 2;
-        __ui.text(win_id, tx, ty, text, color.value());
+        __ui.text(win_id, tx, ty, text, fg.value());
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (!enabled) {
+            return true;
+        }
         focused = true;
         clicked.emit();
         return true;
@@ -714,6 +731,9 @@ class Button impl Widget {
 
 
     fn handle_key(code: Int, text: String): Bool {
+        if (!enabled) {
+            return false;
+        }
         if (focused && code == 13) {
             clicked.emit();
             return true;
@@ -730,18 +750,22 @@ class Button impl Widget {
     }
 
     fn append_focusables(out: Array[Widget]) {
-        out.push(self);
+        if (enabled) {
+            out.push(self);
+        }
     }
 
     fn focus_enter() {
-        focused = true;
+        if (enabled) {
+            focused = true;
+        }
     }
 
     fn has_focus(): Bool {
         return focused;
     }
     fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
-        if (hit_test(lx, ly, w, h)) {
+        if (enabled && hit_test(lx, ly, w, h)) {
             return 1;
         }
         return 0;
@@ -753,6 +777,7 @@ class TextField impl Widget {
     var text: String = "";
     var placeholder: String = "";
     var focused: Bool = false;
+    var enabled: Bool = true;
     var fill: Color = Color.White;
     var ink: Color = Color.Rgb(32, 32, 32);
     var border: Color = Color.Rgb(160, 160, 160);
@@ -762,6 +787,13 @@ class TextField impl Widget {
     fn set_text(s: String) {
         text = s;
         changed.emit();
+    }
+
+    fn set_enabled(v: Bool) {
+        enabled = v;
+        if (!enabled) {
+            focused = false;
+        }
     }
 
     fn min_width(): Int {
@@ -778,24 +810,32 @@ class TextField impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
-        if (pointer_over(win_id, x, y, w, h)) {
+        if (enabled && pointer_over(win_id, x, y, w, h)) {
             cursor_ibeam(win_id);
         }
-        fill_round(win_id, x, y, w, h, corner_r(), fill.value());
+        var bg = fill;
         var bcol = border;
-        if (focused) {
+        var col = ink;
+        if (!enabled) {
+            bg = Color.Rgb(236, 236, 240);
+            bcol = Color.Rgb(200, 200, 206);
+            col = Color.Rgb(140, 140, 148);
+        } elif (focused) {
             bcol = Color.Rgb(47, 111, 196);
         }
+        fill_round(win_id, x, y, w, h, corner_r(), bg.value());
         stroke_round(win_id, x, y, w, h, corner_r(), bcol.value());
         var shown = text;
-        var col = ink;
         if (len(shown) == 0 && !focused) {
             shown = placeholder;
             col = Color.Rgb(140, 140, 140);
+            if (!enabled) {
+                col = Color.Rgb(170, 170, 178);
+            }
         }
         var ty = y + (h - font_height()) / 2;
         __ui.text(win_id, x + 6, ty, shown, col.value());
-        if (focused) {
+        if (focused && enabled) {
             var cx = x + 6 + text_width(text);
             var ch = font_height();
             if (ch < 12) {
@@ -809,6 +849,9 @@ class TextField impl Widget {
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (!enabled) {
+            return true;
+        }
         focused = true;
         return true;
     }
@@ -818,7 +861,7 @@ class TextField impl Widget {
 
 
     fn handle_key(code: Int, text_in: String): Bool {
-        if (!focused) {
+        if (!focused || !enabled) {
             return false;
         }
         if (code == 8) {
@@ -847,18 +890,22 @@ class TextField impl Widget {
     }
 
     fn append_focusables(out: Array[Widget]) {
-        out.push(self);
+        if (enabled) {
+            out.push(self);
+        }
     }
 
     fn focus_enter() {
-        focused = true;
+        if (enabled) {
+            focused = true;
+        }
     }
 
     fn has_focus(): Bool {
         return focused;
     }
     fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
-        if (hit_test(lx, ly, w, h)) {
+        if (enabled && hit_test(lx, ly, w, h)) {
             return 2;
         }
         return 0;
@@ -870,11 +917,19 @@ class Toggle impl Widget {
     var on: Bool = false;
     var label: String = "";
     var focused: Bool = false;
+    var enabled: Bool = true;
     signal changed();
 
     fn set_on(v: Bool) {
         on = v;
         changed.emit();
+    }
+
+    fn set_enabled(v: Bool) {
+        enabled = v;
+        if (!enabled) {
+            focused = false;
+        }
     }
 
     fn min_width(): Int {
@@ -891,12 +946,15 @@ class Toggle impl Widget {
 
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         var h = height(w);
-        if (pointer_over(win_id, x, y, w, h)) {
+        if (enabled && pointer_over(win_id, x, y, w, h)) {
             cursor_hand(win_id);
         }
         var track = Color.Rgb(180, 180, 180);
         if (on) {
             track = Color.Rgb(47, 111, 196);
+        }
+        if (!enabled) {
+            track = Color.Rgb(200, 200, 208);
         }
         var mid = y + (h - 22) / 2;
         fill_round(win_id, x, mid, 42, 22, 11, track.value());
@@ -908,11 +966,18 @@ class Toggle impl Widget {
         stroke_round(win_id, knob_x, mid + 2, 18, 18, 9, Color.Rgb(140, 140, 148).value());
         if (len(label) > 0) {
             var ty = y + (h - font_height()) / 2;
-            __ui.text(win_id, x + 50, ty, label, Color.Rgb(32, 32, 32).value());
+            var ink = Color.Rgb(32, 32, 32);
+            if (!enabled) {
+                ink = Color.Rgb(140, 140, 148);
+            }
+            __ui.text(win_id, x + 50, ty, label, ink.value());
         }
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (!enabled) {
+            return true;
+        }
         focused = true;
         on = !on;
         changed.emit();
@@ -924,6 +989,9 @@ class Toggle impl Widget {
 
 
     fn handle_key(code: Int, text: String): Bool {
+        if (!enabled) {
+            return false;
+        }
         if (focused && (code == 13 || code == 32)) {
             on = !on;
             changed.emit();
@@ -941,23 +1009,466 @@ class Toggle impl Widget {
     }
 
     fn append_focusables(out: Array[Widget]) {
-        out.push(self);
+        if (enabled) {
+            out.push(self);
+        }
     }
 
     fn focus_enter() {
-        focused = true;
+        if (enabled) {
+            focused = true;
+        }
     }
 
     fn has_focus(): Bool {
         return focused;
     }
     fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
-        if (hit_test(lx, ly, w, h)) {
+        if (enabled && hit_test(lx, ly, w, h)) {
             return 1;
         }
         return 0;
     }
 
+}
+
+class Checkbox impl Widget {
+    var label: String = "";
+    var checked: Bool = false;
+    var focused: Bool = false;
+    var enabled: Bool = true;
+    signal changed();
+
+    fn set_checked(v: Bool) {
+        checked = v;
+        changed.emit();
+    }
+
+    fn set_enabled(v: Bool) {
+        enabled = v;
+        if (!enabled) {
+            focused = false;
+        }
+    }
+
+    fn min_width(): Int {
+        return 28 + text_width(label);
+    }
+
+    fn height(w: Int): Int {
+        return control_height(24, 8);
+    }
+
+    fn flex(): Int {
+        return 0;
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        var h = height(w);
+        if (enabled && pointer_over(win_id, x, y, w, h)) {
+            cursor_hand(win_id);
+        }
+        var box = 18;
+        var by = y + (h - box) / 2;
+        var fill = Color.White;
+        var border = Color.Rgb(140, 140, 148);
+        if (checked) {
+            fill = Color.Rgb(47, 111, 196);
+            border = fill;
+        }
+        if (!enabled) {
+            fill = Color.Rgb(230, 230, 236);
+            border = Color.Rgb(190, 190, 198);
+        }
+        fill_round(win_id, x, by, box, box, 4, fill.value());
+        stroke_round(win_id, x, by, box, box, 4, border.value());
+        if (checked) {
+            var mark = Color.White;
+            if (!enabled) {
+                mark = Color.Rgb(160, 160, 168);
+            }
+            __ui.line(win_id, x + 4, by + 9, x + 8, by + 13, mark.value());
+            __ui.line(win_id, x + 8, by + 13, x + 14, by + 5, mark.value());
+        }
+        if (focused && enabled) {
+            stroke_round(win_id, x - 2, by - 2, box + 4, box + 4, 5,
+                         Color.Rgb(47, 111, 196).value());
+        }
+        if (len(label) > 0) {
+            var ink = Color.Rgb(32, 32, 32);
+            if (!enabled) {
+                ink = Color.Rgb(140, 140, 148);
+            }
+            __ui.text(win_id, x + box + 8, y + (h - font_height()) / 2, label, ink.value());
+        }
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (!enabled) {
+            return true;
+        }
+        focused = true;
+        checked = !checked;
+        changed.emit();
+        return true;
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        if (!enabled) {
+            return false;
+        }
+        if (focused && (code == 13 || code == 32)) {
+            checked = !checked;
+            changed.emit();
+            return true;
+        }
+        return false;
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        if (enabled) {
+            out.push(self);
+        }
+    }
+
+    fn focus_enter() {
+        if (enabled) {
+            focused = true;
+        }
+    }
+
+    fn has_focus(): Bool {
+        return focused;
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (enabled && hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+class RadioGroup impl Widget {
+    var items: Array[String] = [];
+    var selected: Int = 0;
+    var focused: Bool = false;
+    var enabled: Bool = true;
+    signal changed();
+
+    fn set_selected(i: Int) {
+        if (i < 0 || i >= len(items)) {
+            return;
+        }
+        if (i != selected) {
+            selected = i;
+            changed.emit();
+        }
+    }
+
+    fn set_enabled(v: Bool) {
+        enabled = v;
+        if (!enabled) {
+            focused = false;
+        }
+    }
+
+    fn row_h(): Int {
+        return control_height(24, 6);
+    }
+
+    fn min_width(): Int {
+        var mw = 40;
+        var i = 0;
+        while (i < len(items)) {
+            var tw = 28 + text_width(items[i]);
+            if (tw > mw) {
+                mw = tw;
+            }
+            i = i + 1;
+        }
+        return mw;
+    }
+
+    fn height(w: Int): Int {
+        var n = len(items);
+        if (n < 1) {
+            return row_h();
+        }
+        return n * row_h();
+    }
+
+    fn flex(): Int {
+        return 0;
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        var h = height(w);
+        if (enabled && pointer_over(win_id, x, y, w, h)) {
+            cursor_hand(win_id);
+        }
+        var rh = row_h();
+        var i = 0;
+        while (i < len(items)) {
+            var ry = y + i * rh;
+            var cy = ry + rh / 2;
+            var on = i == selected;
+            var ring = Color.Rgb(140, 140, 148);
+            var fill = Color.White;
+            if (on) {
+                ring = Color.Rgb(47, 111, 196);
+            }
+            if (!enabled) {
+                ring = Color.Rgb(190, 190, 198);
+                fill = Color.Rgb(236, 236, 240);
+            }
+            fill_round(win_id, x, cy - 8, 16, 16, 8, fill.value());
+            stroke_round(win_id, x, cy - 8, 16, 16, 8, ring.value());
+            if (on) {
+                var dot = Color.Rgb(47, 111, 196);
+                if (!enabled) {
+                    dot = Color.Rgb(160, 160, 168);
+                }
+                fill_round(win_id, x + 4, cy - 4, 8, 8, 4, dot.value());
+            }
+            if (focused && enabled && i == selected) {
+                stroke_round(win_id, x - 2, cy - 10, 20, 20, 10,
+                             Color.Rgb(47, 111, 196).value());
+            }
+            var ink = Color.Rgb(32, 32, 32);
+            if (!enabled) {
+                ink = Color.Rgb(140, 140, 148);
+            }
+            __ui.text(win_id, x + 24, ry + (rh - font_height()) / 2, items[i], ink.value());
+            i = i + 1;
+        }
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (!enabled) {
+            return true;
+        }
+        focused = true;
+        var rh = row_h();
+        var i = ly / rh;
+        if (i < 0 || i >= len(items)) {
+            return true;
+        }
+        set_selected(i);
+        return true;
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        if (!enabled || !focused) {
+            return false;
+        }
+        var n = len(items);
+        if (n < 1) {
+            return true;
+        }
+        if (code == 38) {
+            if (selected > 0) {
+                set_selected(selected - 1);
+            }
+            return true;
+        }
+        if (code == 40) {
+            if (selected < n - 1) {
+                set_selected(selected + 1);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        if (enabled) {
+            out.push(self);
+        }
+    }
+
+    fn focus_enter() {
+        if (enabled) {
+            focused = true;
+        }
+    }
+
+    fn has_focus(): Bool {
+        return focused;
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (enabled && hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+class ProgressBar impl Widget {
+    var value: Int = 0;
+    var max_v: Int = 100;
+    var track: Color = Color.Rgb(220, 220, 226);
+    var fill: Color = Color.Rgb(47, 111, 196);
+
+    fn set_value(v: Int) {
+        value = v;
+        if (value < 0) {
+            value = 0;
+        }
+        if (max_v > 0 && value > max_v) {
+            value = max_v;
+        }
+    }
+
+    fn min_width(): Int {
+        return 80;
+    }
+
+    fn height(w: Int): Int {
+        return control_height(16, 6);
+    }
+
+    fn flex(): Int {
+        return 0;
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        var h = height(w);
+        var bar_h = 10;
+        if (bar_h > h) {
+            bar_h = h;
+        }
+        var by = y + (h - bar_h) / 2;
+        fill_round(win_id, x, by, w, bar_h, 5, track.value());
+        var max = max_v;
+        if (max < 1) {
+            max = 1;
+        }
+        var fw = (w * value) / max;
+        if (fw > w) {
+            fw = w;
+        }
+        if (fw > 0) {
+            fill_round(win_id, x, by, fw, bar_h, 5, fill.value());
+        }
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        return false;
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn clear_focus() {
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+    }
+
+    fn focus_enter() {
+    }
+
+    fn has_focus(): Bool {
+        return false;
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return 0;
+    }
+}
+
+class TipWrap impl Widget {
+    var child: Widget;
+    var text: String = "";
+    var window: Window;
+
+    fn min_width(): Int {
+        return child.min_width();
+    }
+
+    fn height(w: Int): Int {
+        return child.height(w);
+    }
+
+    fn flex(): Int {
+        return child.flex();
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        var h = height(w);
+        child.paint(win_id, x, y, w);
+        if (len(text) > 0 && pointer_over(win_id, x, y, w, h)) {
+            window.offer_tip(text, x + w / 2, y + h + 6);
+        }
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return child.handle_click(lx, ly, w, h);
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return child.handle_right_click(lx, ly, w, h);
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        return child.handle_key(code, text);
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return child.handle_scroll(dx, dy, lx, ly, w, h);
+    }
+
+    fn clear_focus() {
+        child.clear_focus();
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        child.append_focusables(out);
+    }
+
+    fn focus_enter() {
+        child.focus_enter();
+    }
+
+    fn has_focus(): Bool {
+        return child.has_focus();
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return child.hover_cursor(lx, ly, w, h);
+    }
+}
+
+@ufcs
+fn tip(win: Window, child: Widget, text: String): TipWrap {
+    return TipWrap { window: win, child: child, text: text };
 }
 
 class ScrollView impl Widget {

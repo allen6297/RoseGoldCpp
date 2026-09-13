@@ -53,11 +53,15 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | Widget | Notes |
 |---|---|
 | `Label` | `text`, soft-wrap + `\n`; `.foreground(Color)`, `.set_text` |
-| `Button` | `clicked` signal; hover / pressed colors from mouse |
-| `TextField` | click to focus; keys insert / backspace (`8`) / submit (`13`); `changed` / `submitted` |
-| `Toggle` | `on` bool; `changed` |
+| `Button` | `clicked`; hover / pressed; `enabled` / `set_enabled` |
+| `TextField` | focus + keys; `changed` / `submitted`; `enabled` |
+| `Toggle` | `on` bool; `changed`; `enabled` |
+| `Checkbox` | `checked` + label; `changed`; `enabled` |
+| `RadioGroup` | `items` / `selected`; click or arrows; `changed`; `enabled` |
+| `ProgressBar` | `value` / `max_v`; `set_value` |
 | `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
 | `Dropdown` | `items`, `selected`, expands when `open`; click / Enter / arrows / Esc; `changed` |
+| `TipWrap` | `w.tip(child, "text")` — hover bubble via Window overlay |
 | `PopupMenu` | Overlay menu via `w.show_menu(menu, x, y)` or `w.show_menu_at_pointer(menu)`; click / arrows / Enter / Esc; `chosen` |
 | `Dialog` | Modal overlay via `w.show_dialog(dlg)`; title/message, optional field, buttons; Esc cancels; `chosen` / `cancelled` |
 | `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; vertical scrollbar chrome |
@@ -139,10 +143,13 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_context.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_contacts.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_dialog.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_controls.rg
 ```
 
 ## Not yet
 
+- Second dogfood app (todo / settings / file browser) to find API gaps
+- Caret blink / text selection; Wayland input parity
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
 Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.

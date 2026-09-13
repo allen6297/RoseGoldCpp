@@ -7,27 +7,39 @@ fn main(): Int {
         button_hover: Color.Rgb(70, 140, 230),
         button_pressed: Color.Rgb(30, 80, 150)
     };
-    var w = try ui.open("Widgets", 440, 520);
+    var w = try ui.open("Widgets", 440, 620);
     w.theme = theme;
 
     var name = theme.field("Name");
     var remember = Toggle { label: "Remember me" };
+    var agree = Checkbox { label: "Email updates" };
+    var theme_pick = RadioGroup {
+        items: ["Light", "Dark", "System"],
+        selected: 0
+    };
     var volume = Slider { value: 40, min_v: 0, max_v: 100 };
+    var load = ProgressBar { value: 55, max_v: 100 };
     var city = Dropdown {
         placeholder: "City",
         items: ["Austin", "Boston", "Chicago", "Denver"]
     };
     var status = theme.label("Theme, form, scroll, slider, lazy");
-    volume.changed.connect(fn () { status.set_text("volume"); });
+    volume.changed.connect(fn () {
+        load.set_value(volume.value);
+        status.set_text("volume");
+    });
     city.changed.connect(fn () { status.set_text(city.current_label()); });
+    agree.changed.connect(fn () { status.set_text("checkbox"); });
+    theme_pick.changed.connect(fn () { status.set_text(theme_pick.items[theme_pick.selected]); });
 
     var menu = PopupMenu {
         items: ["New", "Open", "Save", "Quit"]
     };
-    var more = theme.button("Menu");
-    more.clicked.connect(fn () {
+    var more_btn = theme.button("Menu");
+    more_btn.clicked.connect(fn () {
         w.show_menu_at_pointer(menu);
     });
+    var more = w.tip(more_btn, "Open menu");
 
     var scroll_col = VStack { spacing: 4 };
     var i = 1;
@@ -118,7 +130,10 @@ fn main(): Int {
             theme.label("Long labels wrap when the row is narrow enough to need it."),
             name,
             remember,
+            agree,
+            theme_pick,
             volume,
+            load,
             city,
             ScrollView { child: scroll_col, viewport_h: 72 },
             list,

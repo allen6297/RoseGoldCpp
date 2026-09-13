@@ -962,6 +962,49 @@ class Window {
     var dialogs: Array[Dialog] = [];
     var last_click_x: Int = 0;
     var last_click_y: Int = 0;
+    var tip_text: String = "";
+    var tip_x: Int = 0;
+    var tip_y: Int = 0;
+    var tip_on: Bool = false;
+
+    fn clear_tip() {
+        tip_on = false;
+        tip_text = "";
+    }
+
+    fn offer_tip(text: String, x: Int, y: Int) {
+        tip_on = true;
+        tip_text = text;
+        tip_x = x;
+        tip_y = y;
+    }
+
+    fn paint_tip(win_id: Int) {
+        if (!tip_on || len(tip_text) == 0) {
+            return;
+        }
+        var pad = 6;
+        var tw = text_width(tip_text);
+        var th = font_height();
+        var bw = tw + pad * 2;
+        var bh = th + pad * 2;
+        var bx = tip_x - bw / 2;
+        var by = tip_y;
+        if (bx < 4) {
+            bx = 4;
+        }
+        if (bx + bw > width - 4) {
+            bx = width - 4 - bw;
+        }
+        if (by + bh > height - 4) {
+            by = tip_y - bh - 8;
+        }
+        if (by < 4) {
+            by = 4;
+        }
+        fill_round(win_id, bx, by, bw, bh, 6, Color.Rgb(40, 40, 48).value());
+        __ui.text(win_id, bx + pad, by + pad, tip_text, Color.White.value());
+    }
 
     fn bind_frame() {
         __ui.set_frame(id, fn () { self.tick(); });
@@ -1149,6 +1192,7 @@ class Window {
         }
         width = __ui.width(id);
         height = __ui.height(id);
+        clear_tip();
         if (len(children) == 0 && len(menus) == 0 && len(dialogs) == 0) {
             return;
         }
@@ -1218,6 +1262,7 @@ class Window {
                 dialogs[di].paint(id, width, height);
                 di = di + 1;
             }
+            paint_tip(id);
             var cur = 0;
             if (len(dialogs) > 0) {
                 cur = dialogs[len(dialogs) - 1].hover_cursor(mx, my, width, height);
@@ -1306,6 +1351,7 @@ class Window {
             dialogs[di].paint(id, width, height);
             di = di + 1;
         }
+        paint_tip(id);
         var cur = 0;
         if (len(dialogs) > 0) {
             cur = dialogs[len(dialogs) - 1].hover_cursor(mx, my, width, height);
