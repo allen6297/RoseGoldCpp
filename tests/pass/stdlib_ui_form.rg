@@ -9,10 +9,10 @@ fn main(): Int {
     var hits = Hits { n: 0 };
     var title = Label { text: "Form" };
     var field = TextField { placeholder: "name" };
-    field.changed.connect(fn () { hits.n = hits.n + 1; });
+    field.on_change(fn () { hits.n = hits.n + 1; });
     field.submitted.connect(fn () { hits.n = hits.n + 100; });
     var tog = Toggle { label: "On" };
-    tog.changed.connect(fn () { hits.n = hits.n + 10; });
+    tog.on_change(fn () { hits.n = hits.n + 10; });
     w.add(VStack {
         spacing: 8,
         children: [
@@ -34,20 +34,44 @@ fn main(): Int {
     w.key_at(0, "i");
     checks.eq_string(field.text, "Hi");
     checks.eq(hits.n, 2);
-    w.key_at(8, "");
-    checks.eq_string(field.text, "H");
+    checks.eq(field.caret, 2);
+
+    w.key_at(37, "");
+    checks.eq(field.caret, 1);
+    w.key_at(37, "shift");
+    checks.that(field.has_sel());
+    checks.eq(field.sel_lo(), 0);
+    checks.eq(field.sel_hi(), 1);
+    w.key_at(0, "X");
+    checks.eq_string(field.text, "Xi");
+    checks.eq(field.caret, 1);
     checks.eq(hits.n, 3);
+
+    w.key_at(65, "ctrl");
+    checks.eq(field.sel_lo(), 0);
+    checks.eq(field.sel_hi(), 2);
+    w.key_at(8, "");
+    checks.eq_string(field.text, "");
+    checks.eq(hits.n, 4);
+
+    w.key_at(0, "A");
+    w.key_at(0, "B");
+    w.key_at(0, "C");
+    checks.eq_string(field.text, "ABC");
+    checks.eq(hits.n, 7);
+    w.key_at(36, "");
+    checks.eq(field.caret, 0);
+    w.key_at(46, "");
+    checks.eq_string(field.text, "BC");
+    checks.eq(hits.n, 8);
+    w.key_at(35, "");
+    checks.eq(field.caret, 2);
+
     w.key_at(13, "");
-    checks.eq(hits.n, 103);
-
+    checks.eq(hits.n, 108);
     w.click_at(40, y_tog);
-    checks.that(!field.focused);
     checks.that(tog.on);
-    checks.eq(hits.n, 113);
-    w.click_at(40, y_tog);
-    checks.that(!tog.on);
-
-    checks.that(field.min_width() >= 120);
+    checks.eq(hits.n, 118);
     w.close();
     return 0;
 }

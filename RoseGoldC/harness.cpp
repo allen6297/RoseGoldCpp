@@ -487,6 +487,41 @@ static void appendCheckSelfTest(RunResult &result) {
     require(again.ok && again.out == f.out, "fmt_idempotent",
             again.ok ? "output changed on second format" : again.message);
   }
+  {
+    const std::string src =
+        "fn main(): Float {\n  return 1.0 + 2.50;\n}\n";
+    FormatResult f = formatSource(src, "fmt_float.rg");
+    require(f.ok, "fmt_float_parse", f.message);
+    require(f.out.find("1.0") != std::string::npos &&
+                f.out.find("2.50") != std::string::npos,
+            "fmt_float_lexeme", f.out);
+    FormatResult again = formatSource(f.out, "fmt_float.rg");
+    require(again.ok && again.out == f.out, "fmt_float_idempotent",
+            again.ok ? "output changed on second format" : again.message);
+  }
+  {
+    const std::string src =
+        "fn a(): Int {\n  return 1;\n}\n\n// keep me\nfn b(): Int {\n  "
+        "return 2;\n}\n";
+    FormatResult f = formatSource(src, "fmt_comment.rg");
+    require(f.ok, "fmt_comment_parse", f.message);
+    require(f.out.find("// keep me") != std::string::npos, "fmt_line_comment",
+            f.out);
+    FormatResult again = formatSource(f.out, "fmt_comment.rg");
+    require(again.ok && again.out == f.out, "fmt_comment_idempotent",
+            again.ok ? "output changed on second format" : again.message);
+  }
+  {
+    const std::string src =
+        "/# block note #/\nfn main(): Int {\n  return 0;\n}\n";
+    FormatResult f = formatSource(src, "fmt_block.rg");
+    require(f.ok, "fmt_block_parse", f.message);
+    require(f.out.find("/# block note #/") != std::string::npos,
+            "fmt_block_comment", f.out);
+    FormatResult again = formatSource(f.out, "fmt_block.rg");
+    require(again.ok && again.out == f.out, "fmt_block_idempotent",
+            again.ok ? "output changed on second format" : again.message);
+  }
   require(jsonRpcSelfTest(), "jsonrpc", "parser/encode failed");
 }
 

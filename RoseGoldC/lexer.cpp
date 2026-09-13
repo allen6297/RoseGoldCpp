@@ -68,28 +68,7 @@ struct Lexer {
         advance();
         continue;
       }
-      if (c == '/' && peek(1) == '/') {
-        while (peek() != '\0' && peek() != '\n')
-          advance();
-        continue;
-      }
-      if (c == '/' && peek(1) == '#') {
-        const int startLine = line;
-        const int startCol = col;
-        advance();
-        advance();
-        while (true) {
-          if (peek() == '\0')
-            error("unterminated block comment", startLine, startCol);
-          if (peek() == '#' && peek(1) == '/') {
-            advance();
-            advance();
-            break;
-          }
-          advance();
-        }
-        continue;
-      }
+      // Keep '#' line comments as skipped trivia (not emitted).
       if (c == '#') {
         while (peek() != '\0' && peek() != '\n')
           advance();
@@ -97,6 +76,42 @@ struct Lexer {
       }
       break;
     }
+  }
+
+  Token lineComment(int startLine, int startCol) {
+    std::string text;
+    text.push_back(advance()); // /
+    text.push_back(advance()); // /
+    while (peek() != '\0' && peek() != '\n')
+      text.push_back(advance());
+    Token t;
+    t.kind = Tok::LineComment;
+    t.text = std::move(text);
+    t.line = startLine;
+    t.col = startCol;
+    return t;
+  }
+
+  Token blockComment(int startLine, int startCol) {
+    std::string text;
+    text.push_back(advance()); // /
+    text.push_back(advance()); // #
+    while (true) {
+      if (peek() == '\0')
+        error("unterminated block comment", startLine, startCol);
+      if (peek() == '#' && peek(1) == '/') {
+        text.push_back(advance());
+        text.push_back(advance());
+        break;
+      }
+      text.push_back(advance());
+    }
+    Token t;
+    t.kind = Tok::BlockComment;
+    t.text = std::move(text);
+    t.line = startLine;
+    t.col = startCol;
+    return t;
   }
 
   Token identOrKw(int startLine, int startCol) {
@@ -235,6 +250,11 @@ struct Lexer {
     char c = peek();
     if (c == '\0')
       return {Tok::Eof, "", 0, startLine, startCol};
+
+    if (c == '/' && peek(1) == '/')
+      return lineComment(startLine, startCol);
+    if (c == '/' && peek(1) == '#')
+      return blockComment(startLine, startCol);
 
     if (std::isalpha(static_cast<unsigned char>(c)) || c == '_')
       return identOrKw(startLine, startCol);

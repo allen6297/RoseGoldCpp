@@ -108,12 +108,22 @@ struct TypeChecker {
   void checkTypeName(const std::string &ty, int line, int col) {
     if (ty.empty())
       return;
+    if (isFnType(ty)) {
+      std::vector<std::string> params;
+      std::string ret;
+      if (!parseFnType(ty, params, ret))
+        return;
+      for (const auto &p : params)
+        checkTypeName(p, line, col);
+      checkTypeName(ret, line, col);
+      return;
+    }
     const auto args = typeArgList(ty);
     for (const auto &a : args)
       checkTypeName(a, line, col);
     const std::string head = typeHead(ty);
     if (head.empty() || head == "_" || genericParams.count(head) ||
-        builtinHead(head))
+        builtinHead(head) || head == "Fn")
       return;
     if (I().findStruct(head) || I().findTrait(head) || I().findEnum(head) ||
         I().allTypes.count(head) || I().structs.count(head) ||
@@ -157,6 +167,88 @@ struct TypeChecker {
     return ty == "String" || ty == "Str";
   }
 
+  static bool isFnType(const std::string &ty) {
+    return ty.size() >= 3 && ty.compare(0, 3, "fn(") == 0;
+  }
+
+  static bool isCallable(const std::string &ty) {
+    return ty == "Fn" || isFnType(ty);
+  }
+
+  static bool parseFnType(const std::string &ty,
+                          std::vector<std::string> &params,
+                          std::string &ret) {
+    params.clear();
+    ret.clear();
+    if (!isFnType(ty))
+      return false;
+    size_t i = 3;
+    int depth = 1;
+    std::string cur;
+    auto flush = [&]() {
+      const auto a = cur.find_first_not_of(' ');
+      const auto b = cur.find_last_not_of(' ');
+      if (a != std::string::npos)
+        params.push_back(cur.substr(a, b - a + 1));
+      cur.clear();
+    };
+    while (i < ty.size()) {
+      const char c = ty[i];
+      if (c == '(' || c == '[') {
+        ++depth;
+        cur += c;
+      } else if (c == ')' || c == ']') {
+        --depth;
+        if (depth == 0 && c == ')') {
+          flush();
+          ++i;
+          if (i < ty.size() && ty[i] == ':') {
+            ++i;
+            ret = ty.substr(i);
+            const auto a = ret.find_first_not_of(' ');
+            const auto b = ret.find_last_not_of(' ');
+            if (a == std::string::npos)
+              ret = "Void";
+            else
+              ret = ret.substr(a, b - a + 1);
+          } else {
+            ret = "Void";
+          }
+          return true;
+        }
+        cur += c;
+      } else if (c == ',' && depth == 1) {
+        flush();
+      } else {
+        cur += c;
+      }
+      ++i;
+    }
+    return false;
+  }
+
+  static std::string encodeFnType(const std::vector<std::string> &params,
+                                  const std::string &ret) {
+    std::string t = "fn(";
+    for (size_t i = 0; i < params.size(); ++i) {
+      if (i)
+        t += ", ";
+      t += params[i];
+    }
+    t += "):";
+    t += ret.empty() ? "Void" : ret;
+    return t;
+  }
+
+  static std::string encodeFnDecl(const FnDecl &fn) {
+    for (const auto &p : fn.paramTypes) {
+      if (p.empty())
+        return "Fn";
+    }
+    return encodeFnType(fn.paramTypes,
+                        fn.returnType.empty() ? "Void" : fn.returnType);
+  }
+
   bool isTraitType(const std::string &ty) const {
     return I().findTrait(ty) != nullptr;
   }
@@ -168,6 +260,21 @@ struct TypeChecker {
       return true;
     if ((a == "Int" && b == "Float") || (a == "Float" && b == "Int"))
       return true;
+    if ((a == "Fn" && isFnType(b)) || (b == "Fn" && isFnType(a)))
+      return true;
+    if (isFnType(a) && isFnType(b)) {
+      std::vector<std::string> pa, pb;
+      std::string ra, rb;
+      if (!parseFnType(a, pa, ra) || !parseFnType(b, pb, rb))
+        return false;
+      if (pa.size() != pb.size())
+        return false;
+      for (size_t i = 0; i < pa.size(); ++i) {
+        if (!compatible(pa[i], pb[i]))
+          return false;
+      }
+      return compatible(ra, rb);
+    }
     if (isArrayTy(a) && isArrayTy(b)) {
       if (a == "Array" || b == "Array")
         return true;
@@ -361,8 +468,10 @@ struct TypeChecker {
       std::string ty = lookup(e.text);
       if (known(ty))
         return ty;
-      if (I().findLocalFn(e.text) || I().fns.count(e.text))
-        return "Fn";
+      if (FnDecl *fn = I().findLocalFn(e.text))
+        return encodeFnDecl(*fn);
+      if (I().fns.count(e.text))
+        return encodeFnDecl(*I().fns[e.text]);
       if (const EnumDecl *en = I().findEnum(e.text))
         return en->name;
       return "";
@@ -397,6 +506,8 @@ struct TypeChecker {
     case Expr::Kind::Call:
       return inferCallExpr(e);
     case Expr::Kind::Lambda:
+      if (e.lambda)
+        return encodeFnDecl(*e.lambda);
       return "Fn";
     case Expr::Kind::MethodCall:
       return inferMethod(e);
@@ -476,7 +587,23 @@ struct TypeChecker {
             inferEnv(fn.typeParams, e.typeArgs, fn.paramTypes, args);
         return substType(fn.returnType, env);
       }
+      std::string ty = infer(e.kids[0]);
+      if (isFnType(ty)) {
+        std::vector<std::string> params;
+        std::string ret;
+        if (parseFnType(ty, params, ret))
+          return ret;
+      }
       return "";
+    }
+    {
+      std::string ty = lookup(e.text);
+      if (isFnType(ty)) {
+        std::vector<std::string> params;
+        std::string ret;
+        if (parseFnType(ty, params, ret))
+          return ret;
+      }
     }
     if (e.text == "len")
       return "Int";
@@ -658,7 +785,7 @@ struct TypeChecker {
         return substType(found.second->returnType, env);
       }
     }
-    if (FnDecl *fn = I().findUfcs(e.text)) {
+    if (FnDecl *fn = I().findUfcs(e.text, recvTy)) {
       if (fn->typeParams.empty())
         return fn->returnType;
       std::vector<std::string> patterns = fn->paramTypes;
@@ -1063,6 +1190,23 @@ struct TypeChecker {
     }
   }
 
+  void checkFnTypeCall(const std::string &ty, const std::vector<Expr> &args,
+                       int line, int col, const std::string &label) {
+    std::vector<std::string> params;
+    std::string ret;
+    if (!parseFnType(ty, params, ret))
+      return;
+    checkArity(label, params.size(), args.size(), line, col);
+    for (size_t i = 0; i < args.size() && i < params.size(); ++i) {
+      std::string got = infer(args[i]);
+      if (known(params[i]) && known(got) && !compatible(params[i], got))
+        fail(line, col,
+             "cannot pass " + got + " to '" + label + "', expected " +
+                 params[i]);
+      checkArrayElems(params[i], args[i], line, col);
+    }
+  }
+
   void checkCall(const Expr &e) {
     const std::string &name = e.text;
     if (e.text.empty()) {
@@ -1087,16 +1231,25 @@ struct TypeChecker {
           return;
         }
         std::string ty = infer(e.kids[0]);
-        if (known(ty) && ty != "Fn")
+        if (isFnType(ty)) {
+          std::vector<Expr> args(e.kids.begin() + 1, e.kids.end());
+          checkFnTypeCall(ty, args, e.line, e.col, "<fn>");
+          return;
+        }
+        if (known(ty) && !isCallable(ty))
           fail(e.line, e.col, "can only call a function");
       }
       return;
     }
-    if (lookup(name) == "Fn")
-      return;
     {
       std::string ty = lookup(name);
-      if (known(ty) && ty != "Fn") {
+      if (isFnType(ty)) {
+        checkFnTypeCall(ty, e.kids, e.line, e.col, name);
+        return;
+      }
+      if (ty == "Fn")
+        return;
+      if (known(ty) && !isCallable(ty)) {
         fail(e.line, e.col, "can only call a function");
         return;
       }
@@ -1365,7 +1518,8 @@ struct TypeChecker {
   }
 
   bool checkUfcs(const Expr &e, size_t n) {
-    FnDecl *fn = I().findUfcs(e.text);
+    std::string recvTy = e.kids.empty() ? "" : infer(e.kids[0]);
+    FnDecl *fn = I().findUfcs(e.text, recvTy);
     if (!fn)
       return false;
     std::vector<Expr> args(e.kids.begin() + (e.kids.empty() ? 0 : 1),
@@ -1498,7 +1652,7 @@ struct TypeChecker {
         checkArity("signal '" + signal + "' " + e.text, 1, n, e.line, e.col);
         if (n == 1) {
           std::string ty = infer(e.kids[1]);
-          if (known(ty) && ty != "Fn")
+          if (known(ty) && !isCallable(ty))
             fail(e.line, e.col,
                  "signal '" + signal + "' " + e.text +
                      " expects a function");
@@ -1866,12 +2020,14 @@ struct TypeChecker {
       std::string got = infer(stmt.expr);
       if (!stmt.typeName.empty()) {
         checkTypeName(stmt.typeName, stmt.line, stmt.col);
-        if (const structDecl *st = I().findStruct(stmt.typeName))
-          checkTypeArgCount(st->typeParams, typeArgList(stmt.typeName),
-                            stmt.line, stmt.col, typeHead(stmt.typeName));
-        else if (const TraitDecl *tr = I().findTrait(stmt.typeName))
-          checkTypeArgCount(tr->typeParams, typeArgList(stmt.typeName),
-                            stmt.line, stmt.col, typeHead(stmt.typeName));
+        if (!isFnType(stmt.typeName)) {
+          if (const structDecl *st = I().findStruct(stmt.typeName))
+            checkTypeArgCount(st->typeParams, typeArgList(stmt.typeName),
+                              stmt.line, stmt.col, typeHead(stmt.typeName));
+          else if (const TraitDecl *tr = I().findTrait(stmt.typeName))
+            checkTypeArgCount(tr->typeParams, typeArgList(stmt.typeName),
+                              stmt.line, stmt.col, typeHead(stmt.typeName));
+        }
       }
       if (known(stmt.typeName) && known(got) &&
           !compatible(stmt.typeName, got))
@@ -2096,12 +2252,14 @@ struct TypeChecker {
         ty = selfType;
       if (!ty.empty()) {
         checkTypeName(ty, fn.line, 1);
-        if (const structDecl *st = I().findStruct(ty))
-          checkTypeArgCount(st->typeParams, typeArgList(ty), fn.line, 1,
-                            typeHead(ty));
-        else if (const TraitDecl *tr = I().findTrait(ty))
-          checkTypeArgCount(tr->typeParams, typeArgList(ty), fn.line, 1,
-                            typeHead(ty));
+        if (!isFnType(ty)) {
+          if (const structDecl *st = I().findStruct(ty))
+            checkTypeArgCount(st->typeParams, typeArgList(ty), fn.line, 1,
+                              typeHead(ty));
+          else if (const TraitDecl *tr = I().findTrait(ty))
+            checkTypeArgCount(tr->typeParams, typeArgList(ty), fn.line, 1,
+                              typeHead(ty));
+        }
       }
       bind(fn.params[i], ty);
     }

@@ -99,9 +99,13 @@ struct Printer {
       write(std::to_string(e.number));
       break;
     case Expr::Kind::Float: {
-      std::ostringstream ss;
-      ss << e.real;
-      write(ss.str());
+      if (!e.text.empty()) {
+        write(e.text);
+      } else {
+        std::ostringstream ss;
+        ss << e.real;
+        write(ss.str());
+      }
       break;
     }
     case Expr::Kind::String:
@@ -401,9 +405,13 @@ struct Printer {
           write(std::to_string(arm.number));
           break;
         case MatchArm::Pat::Float: {
-          std::ostringstream ss;
-          ss << arm.real;
-          write(ss.str());
+          if (!arm.text.empty()) {
+            write(arm.text);
+          } else {
+            std::ostringstream ss;
+            ss << arm.real;
+            write(ss.str());
+          }
           break;
         }
         case MatchArm::Pat::String:
@@ -808,6 +816,14 @@ struct Printer {
 
   void modDeclPrint(const ModDecl &m);
 
+  void emitComments(const std::vector<std::string> &comments) {
+    for (const auto &c : comments) {
+      pad();
+      write(c);
+      write("\n");
+    }
+  }
+
   void emitItems(const std::vector<OrderedItem> &order,
                  const std::vector<ImportDecl> &imports,
                  const std::vector<FnDecl> &fns,
@@ -817,7 +833,8 @@ struct Printer {
                  const std::vector<EnumDecl> &enums,
                  const std::vector<ImplDecl> &impls,
                  const std::vector<SignalDecl> &signals,
-                 const std::vector<ModDecl> &mods) {
+                 const std::vector<ModDecl> &mods,
+                 const std::vector<std::string> &trailingComments = {}) {
     ItemKind prev = ItemKind::Import;
     bool first = true;
     for (const auto &it : order) {
@@ -826,6 +843,7 @@ struct Printer {
         line();
       first = false;
       prev = it.kind;
+      emitComments(it.leadingComments);
       switch (it.kind) {
       case ItemKind::Import:
         if (it.index < imports.size())
@@ -865,11 +883,16 @@ struct Printer {
         break;
       }
     }
+    if (!trailingComments.empty()) {
+      if (!first)
+        line();
+      emitComments(trailingComments);
+    }
   }
 
   void program(const Program &p) {
     emitItems(p.items, p.imports, p.fns, p.structs, p.classes, p.traits, p.enums,
-              p.impls, p.signals, p.mods);
+              p.impls, p.signals, p.mods, p.trailingComments);
   }
 };
 
@@ -882,7 +905,7 @@ void Printer::modDeclPrint(const ModDecl &m) {
   write(" {\n");
   ++indent;
   emitItems(m.items, m.imports, m.fns, m.structs, m.classes, m.traits, m.enums,
-            m.impls, m.signals, m.mods);
+            m.impls, m.signals, m.mods, m.trailingComments);
   --indent;
   writeln("}");
 }

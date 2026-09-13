@@ -270,6 +270,8 @@ struct MapData {
 struct LoadedMod {
   std::map<std::string, FnDecl *> fns;
   std::map<std::string, FnDecl *> exports;
+  // @ufcs overloads sharing a name (resolved by first-parameter type).
+  std::map<std::string, std::vector<FnDecl *>> ufcsFns;
   std::map<std::string, structDecl *> structs;
   std::map<std::string, structDecl *> exportStructs;
   std::map<std::string, EnumDecl *> enums;
@@ -510,7 +512,7 @@ struct Interpreter {
   bool isDataType(const std::string &name) const;
   const EnumDecl *findEnum(const std::string &name) const;
   FnDecl *findLocalFn(const std::string &name);
-  FnDecl *findUfcs(const std::string &name);
+  FnDecl *findUfcs(const std::string &name, const std::string &recvTy = "");
   Value callUfcs(const FnDecl &fn, const Value &obj,
                  const std::vector<Value> &args, int line, int col);
   Value callModule(const std::string &modName, const std::string &name,

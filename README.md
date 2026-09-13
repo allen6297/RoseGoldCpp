@@ -43,6 +43,7 @@ Then **Developer: Reload Window**. Details: [vscode/README.md](vscode/README.md)
 .\build\RoseGoldC.exe fmt <file>       # print formatted source (rgfmt)
 .\build\RoseGoldC.exe fmt -w <file>    # format file in place
 .\build\RoseGoldC.exe fmt --check <file>  # exit 1 if formatting would change
+# fmt keeps float spelling (1.0, 2.50) and top-level // / /#…#/ comments
 .\build\RoseGoldC.exe lsp              # language server (JSON-RPC on stdin/stdout)
 .\build\RoseGoldC.exe test             # language suite (@test + tests/pass + tests/fail)
 .\build\RoseGoldC.exe test <file>      # @test functions in one file
@@ -69,7 +70,7 @@ Language samples live under `examples/` (`class.rg`, `control.rg`, `array.rg`, `
 
 ## Language (now)
 
-`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`, `std.ui`).
+`fn`, `@test`, `@deprecated`, `@constexpr`, `@ufcs`, `@optional`, typecheck, `import` / `from` / `as`, `pub` / `private` / `protected`, `mod`, `struct`, `data`, `class`, `extends`, `abstract`, `final`, `trait` (bounds and trait objects), `impl` / `impl Trait for Type` / `impl[T] Trait[T] for Type[T]`, `super`, `enum`, `match` / `switch`, `signal` (`connect` / `emit` / `emit_deferred` / `disconnect`, including on struct/class), closures (`fn (x: Int) { … }`, `fn [T](x: T) { … }`), function types (`fn (Int): Int` on params/locals; lambdas infer that encoding), generics (`fn id[T]`, `struct Box[T]`, `trait Holder[T]`, `class Child[T] extends Box[T]`, `T: Trait` bounds, `obj.wrap[U](x)`), `var`, `const`, `return`, `pass`, `break`, `continue`, `if` / `elif` / `else`, `while`, `for` / `in`, `try` / `do` / `throws` / `throw` / `catch`, `print`, `assert`, `len`, arrays (`[]`, `Array[Int]`, index, `push` / `pop`), maps (`{}`, index, `has` / `keys` / `remove`), `argv` / `argv_len` (`process.argv` / `process.argc`), `checks.eq` / `neq` / `eq_string` / `that`, `std` (`std.math`, `std.str`, `std.io`, `std.vec`, `std.time`, `std.path`, `std.json`, `std.ui`).
 
 Ints, Floats, strings, bools, `+ - * / % == != < > <= >= && ||`, unary `-` / `!`, `+= -= *= /=`, user functions. Int/Int `+ - * / %` stay Int (`3 / 2` is `1`). If either side is Float, the result is Float (`3 / 2.0` is `1.5`). `1 == 1.0` is true. `&&` / `||` short-circuit and return Bool (`false && (1 / 0 == 1)` does not divide). Any truthy value works: `1 && "x"` is true. `n += 1` is `n = n + 1` (same for fields and indexes). String `+=` concatenates.
 
@@ -269,7 +270,7 @@ fn main(): Int {
 }
 ```
 
-**Closures** are `fn (params) [: Type] { … }` in expression position, and may take type parameters: `fn [T](x: T): T { return x; }`. They capture enclosing locals: structs, arrays, and maps are shared objects; ints, floats, bools, and strings are snapshotted. Closures are `Fn` values (`connect` accepts them). They are not `@constexpr`.
+**Closures** are `fn (params) [: Type] { … }` in expression position, and may take type parameters: `fn [T](x: T): T { return x; }`. They capture enclosing locals: structs, arrays, and maps are shared objects; ints, floats, bools, and strings are snapshotted. Typed closures infer as `fn(Param…):Ret` (default `Void`); bare `Fn` remains compatible with any function type for signal `connect`. Function parameters may use the same encoding: `fn apply(f: fn (Int): Int, x: Int): Int { return f(x); }`. They are not `@constexpr`.
 
 ```text
 fn main(): Int {
@@ -602,13 +603,13 @@ fn main(): Int {
 
 **Desktop UI**
 
-1. Optional polish: richer text (caret blink, selection), Wayland input parity, more image formats beyond PPM/PNG.
-2. When the language grows fn-as-parameter types: `.on_click` / `.on_change` UFCS aliases for signal connect.
+1. Wayland input parity; more image formats beyond PPM/PNG.
+2. Optional: richer TextField (multi-line, clipboard).
 
 **Tooling / language**
 
 - Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).
-- Grow `fmt` / rgfmt (comments, exact float literals, style knobs).
+- Grow `fmt` / rgfmt style knobs (inline comments, blank-line policy).
 
 **Later / when you have a concrete target**
 

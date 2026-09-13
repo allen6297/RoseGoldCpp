@@ -54,8 +54,8 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 |---|---|
 | `Label` | `text`, soft-wrap + `\n`; `.foreground(Color)`, `.set_text` |
 | `Labeled` | title above a child; `theme.form_row("Name", field)` |
-| `Button` | `clicked`; hover / pressed; `enabled` / `set_enabled` |
-| `TextField` | focus + keys; `changed` / `submitted`; `enabled` |
+| `TextField` | caret + selection (click/drag, arrows, Shift, Ctrl+A); blink; `changed` / `submitted`; `enabled`; `.on_change` |
+| `Button` | `clicked`; hover / pressed; `enabled` / `set_enabled`; `.on_click` |
 | `Toggle` | `on` bool; `changed`; `enabled`; `theme.toggle` |
 | `Checkbox` | `checked` + label; `changed`; `enabled`; `theme.checkbox` |
 | `RadioGroup` | `items` / `selected`; click or arrows; `changed`; `enabled`; `theme.radio_group` |
@@ -158,8 +158,7 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 
 ## Not yet
 
-- `.on_click` / `.on_change` UFCS aliases (language has no fn-as-parameter types yet)
-- Caret blink / text selection; Wayland input parity
+- Wayland input parity
 - Mobile/web backends (names reserved on the same `__ui` surface)
 
 Tab / Shift+Tab moves focus across Button, TextField, Toggle, Slider, and LazyColumn. Enter activates the focused button; Space/Enter toggles; arrow keys nudge a focused slider.

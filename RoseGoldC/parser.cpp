@@ -21,10 +21,37 @@ struct Parser {
                   std::vector<Diagnostic> *e)
       : tokens(std::move(t)), file(std::move(f)), errors(e) {}
 
-  const Token &peek() const { return tokens[i]; }
+  static bool isComment(Tok k) {
+    return k == Tok::LineComment || k == Tok::BlockComment;
+  }
+
+  void discardComments() {
+    while (i < tokens.size() && isComment(tokens[i].kind))
+      ++i;
+  }
+
+  size_t nextSignificant(size_t from) const {
+    while (from < tokens.size() && isComment(tokens[from].kind))
+      ++from;
+    return from;
+  }
+
+  std::vector<std::string> takeLeadingComments() {
+    std::vector<std::string> out;
+    while (i < tokens.size() && isComment(tokens[i].kind)) {
+      out.push_back(tokens[i].text);
+      ++i;
+    }
+    return out;
+  }
+
+  const Token &peek() {
+    discardComments();
+    return tokens[i];
+  }
   const Token &prev() const { return tokens[i - 1]; }
 
-  bool check(Tok k) const { return peek().kind == k; }
+  bool check(Tok k) { return peek().kind == k; }
 
   bool match(Tok k) {
     if (!check(k))
@@ -33,7 +60,10 @@ struct Parser {
     return true;
   }
 
-  const Token &advance() { return tokens[i++]; }
+  const Token &advance() {
+    discardComments();
+    return tokens[i++];
+  }
 
   void record(const std::string &msg) {
     Diagnostic d;
@@ -67,7 +97,7 @@ struct Parser {
       advance();
   }
 
-  bool atItemStart() const {
+  bool atItemStart() {
     return check(Tok::Function) || check(Tok::Struct) || check(Tok::Data) ||
            check(Tok::Class) ||
            check(Tok::Trait) || check(Tok::Enum) || check(Tok::Implements) ||
@@ -99,6 +129,29 @@ struct Parser {
   }
 
   std::string parseType() {
+    if (check(Tok::Function)) {
+      expect(Tok::Function, "expected 'fn'");
+      expect(Tok::LParen, "expected '('");
+      std::vector<std::string> params;
+      if (!check(Tok::RParen)) {
+        params.push_back(parseType());
+        while (match(Tok::Comma))
+          params.push_back(parseType());
+      }
+      expect(Tok::RParen, "expected ')'");
+      std::string ret = "Void";
+      if (match(Tok::Colon))
+        ret = parseType();
+      std::string t = "fn(";
+      for (size_t i = 0; i < params.size(); ++i) {
+        if (i)
+          t += ", ";
+        t += params[i];
+      }
+      t += "):";
+      t += ret;
+      return t;
+    }
     const Token &name = expect(Tok::Identifier, "expected type name");
     std::string t = name.text;
     auto wrap = [&](const std::vector<std::string> &args) {
@@ -210,6 +263,7 @@ struct Parser {
     if (match(Tok::Float)) {
       Expr e = make(Expr::Kind::Float, t.line, t.col);
       e.real = t.real;
+      e.text = t.text;
       return e;
     }
     if (match(Tok::String)) {
@@ -258,24 +312,31 @@ struct Parser {
       expect(Tok::RBrace, "expected '}' after map");
       return e;
     }
-    if (check(Tok::Function) && i + 1 < tokens.size()) {
-      const Tok n = tokens[i + 1].kind;
-      if (n == Tok::LParen || n == Tok::LBracket || n == Tok::LArrow)
-        return parseLambda();
+    if (check(Tok::Function)) {
+      const size_t n = nextSignificant(i + 1);
+      if (n < tokens.size()) {
+        const Tok k = tokens[n].kind;
+        if (k == Tok::LParen || k == Tok::LBracket || k == Tok::LArrow)
+          return parseLambda();
+      }
     }
     errorHere("expected expression");
   }
 
-  bool looksLikeGenericApply() const {
-    if (!check(Tok::LBracket) || i + 1 >= tokens.size())
+  bool looksLikeGenericApply() {
+    if (!check(Tok::LBracket))
       return false;
-    if (tokens[i + 1].kind != Tok::Identifier)
+    size_t j = nextSignificant(i + 1);
+    if (j >= tokens.size() || tokens[j].kind != Tok::Identifier)
       return false;
-    size_t j = i + 1;
     int depth = 1;
     ++j;
     while (j < tokens.size() && depth > 0) {
       const Tok k = tokens[j].kind;
+      if (isComment(k)) {
+        ++j;
+        continue;
+      }
       if (k == Tok::LBracket)
         ++depth;
       else if (k == Tok::RBracket)
@@ -287,7 +348,9 @@ struct Parser {
     }
     if (depth != 0 || j >= tokens.size())
       return false;
-    return tokens[j].kind == Tok::LBrace || tokens[j].kind == Tok::LParen;
+    j = nextSignificant(j);
+    return j < tokens.size() &&
+           (tokens[j].kind == Tok::LBrace || tokens[j].kind == Tok::LParen);
   }
 
   std::vector<std::string> parseBracketTypeArgs() {
@@ -304,15 +367,18 @@ struct Parser {
     return args;
   }
 
-  bool isStructLitStart() const {
-    if (!check(Tok::LBrace) || i + 1 >= tokens.size())
+  bool isStructLitStart() {
+    if (!check(Tok::LBrace))
       return false;
-    if (tokens[i + 1].kind == Tok::RBrace)
+    size_t a = nextSignificant(i + 1);
+    if (a >= tokens.size())
+      return false;
+    if (tokens[a].kind == Tok::RBrace)
       return true;
-    if (i + 2 >= tokens.size())
+    size_t b = nextSignificant(a + 1);
+    if (b >= tokens.size())
       return false;
-    return tokens[i + 1].kind == Tok::Identifier &&
-           tokens[i + 2].kind == Tok::Colon;
+    return tokens[a].kind == Tok::Identifier && tokens[b].kind == Tok::Colon;
   }
 
   Expr parseStructLit(Expr typeName) {
@@ -669,18 +735,21 @@ struct Parser {
       advance();
       return true;
     };
-    if (check(Tok::Identifier) && isAssignTok(tokens[i + 1].kind)) {
-      const Token &name = advance();
-      const Tok opTok = advance().kind;
-      Stmt s;
-      s.kind = Stmt::Kind::Assign;
-      s.name = name.text;
-      s.op = assignText(opTok);
-      s.expr = parseExpr();
-      s.line = name.line;
-      s.col = name.col;
-      expect(Tok::Semi, "expected ';'");
-      return s;
+    if (check(Tok::Identifier)) {
+      const size_t n = nextSignificant(i + 1);
+      if (n < tokens.size() && isAssignTok(tokens[n].kind)) {
+        const Token &name = advance();
+        const Tok opTok = advance().kind;
+        Stmt s;
+        s.kind = Stmt::Kind::Assign;
+        s.name = name.text;
+        s.op = assignText(opTok);
+        s.expr = parseExpr();
+        s.line = name.line;
+        s.col = name.col;
+        expect(Tok::Semi, "expected ';'");
+        return s;
+      }
     }
     Stmt s;
     s.kind = Stmt::Kind::Expr;
@@ -713,7 +782,9 @@ struct Parser {
       arm.number = advance().number;
     } else if (check(Tok::Float)) {
       arm.pat = MatchArm::Pat::Float;
-      arm.real = advance().real;
+      const Token &ft = advance();
+      arm.real = ft.real;
+      arm.text = ft.text;
     } else if (check(Tok::String)) {
       arm.pat = MatchArm::Pat::String;
       arm.text = advance().text;
@@ -732,11 +803,18 @@ struct Parser {
         if (match(Tok::LParen)) {
           if (!check(Tok::RParen)) {
             while (true) {
-              if (check(Tok::Identifier) && tokens[i + 1].kind == Tok::Colon) {
-                arm.fieldNames.push_back(advance().text);
-                expect(Tok::Colon, "expected ':' after field name");
-                arm.binds.push_back(
-                    expect(Tok::Identifier, "expected binding name").text);
+              if (check(Tok::Identifier)) {
+                const size_t n = nextSignificant(i + 1);
+                if (n < tokens.size() && tokens[n].kind == Tok::Colon) {
+                  arm.fieldNames.push_back(advance().text);
+                  expect(Tok::Colon, "expected ':' after field name");
+                  arm.binds.push_back(
+                      expect(Tok::Identifier, "expected binding name").text);
+                } else {
+                  arm.fieldNames.push_back("");
+                  arm.binds.push_back(
+                      expect(Tok::Identifier, "expected binding name").text);
+                }
               } else {
                 arm.fieldNames.push_back("");
                 arm.binds.push_back(
@@ -797,10 +875,16 @@ struct Parser {
       if (match(Tok::LParen)) {
         if (!check(Tok::RParen)) {
           while (true) {
-            if (check(Tok::Identifier) && tokens[i + 1].kind == Tok::Colon) {
-              v.fieldNames.push_back(advance().text);
-              expect(Tok::Colon, "expected ':' after field name");
-              parseType();
+            if (check(Tok::Identifier)) {
+              const size_t n = nextSignificant(i + 1);
+              if (n < tokens.size() && tokens[n].kind == Tok::Colon) {
+                v.fieldNames.push_back(advance().text);
+                expect(Tok::Colon, "expected ':' after field name");
+                parseType();
+              } else {
+                v.fieldNames.push_back("");
+                parseType();
+              }
             } else {
               v.fieldNames.push_back("");
               parseType();
@@ -1381,12 +1465,15 @@ struct Parser {
 
   void parseItem(Program *prog, ModDecl *mod) {
     const bool inMod = mod != nullptr;
+    std::vector<std::string> leading = takeLeadingComments();
     auto note = [&](ItemKind kind, size_t index) {
       OrderedItem item{kind, index};
+      item.leadingComments = std::move(leading);
+      leading.clear();
       if (inMod)
-        mod->items.push_back(item);
+        mod->items.push_back(std::move(item));
       else
-        prog->items.push_back(item);
+        prog->items.push_back(std::move(item));
     };
     bool isPub = !inMod;
     bool isAbstract = false;
@@ -1606,26 +1693,35 @@ struct Parser {
     m.name = name.text;
     m.line = modTok.line;
     expect(Tok::LBrace, "expected '{' after module name");
-    while (!check(Tok::RBrace) && !check(Tok::Eof)) {
+    while (true) {
+      const size_t j = nextSignificant(i);
+      if (j >= tokens.size() || tokens[j].kind == Tok::Eof ||
+          tokens[j].kind == Tok::RBrace)
+        break;
       try {
         parseItem(nullptr, &m);
       } catch (const ParseError &) {
         synchronizeItem();
       }
     }
+    m.trailingComments = takeLeadingComments();
     expect(Tok::RBrace, "expected '}' after module body");
     return m;
   }
 
   Program parse() {
     Program program;
-    while (!check(Tok::Eof)) {
+    while (true) {
+      const size_t j = nextSignificant(i);
+      if (j >= tokens.size() || tokens[j].kind == Tok::Eof)
+        break;
       try {
         parseItem(&program, nullptr);
       } catch (const ParseError &) {
         synchronizeItem();
       }
     }
+    program.trailingComments = takeLeadingComments();
     return program;
   }
 };

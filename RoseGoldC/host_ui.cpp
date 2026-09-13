@@ -1094,15 +1094,31 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (msg == WM_KEYDOWN && win) {
     const int vk = static_cast<int>(wp);
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    auto modText = [&]() {
+      if (shift && ctrl)
+        return std::string("ctrl+shift");
+      if (shift)
+        return std::string("shift");
+      if (ctrl)
+        return std::string("ctrl");
+      return std::string();
+    };
     if (vk == VK_TAB) {
-      const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       feedKey(*win, vk, shift ? "shift" : "");
       runFrame(id);
       return 0;
     }
-    if (vk == VK_UP || vk == VK_DOWN || vk == VK_PRIOR || vk == VK_NEXT ||
-        vk == VK_HOME || vk == VK_END || vk == VK_ESCAPE) {
-      feedKey(*win, vk, "");
+    if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_HOME || vk == VK_END ||
+        vk == VK_DELETE || vk == VK_UP || vk == VK_DOWN || vk == VK_PRIOR ||
+        vk == VK_NEXT || vk == VK_ESCAPE) {
+      feedKey(*win, vk, modText());
+      runFrame(id);
+      return 0;
+    }
+    if (ctrl && (vk == 'A' || vk == 'a')) {
+      feedKey(*win, vk, "ctrl");
       runFrame(id);
       return 0;
     }
@@ -1141,6 +1157,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       applyClientSize(*win, rc.right, rc.bottom);
       runFrame(id);
     }
+    return 0;
+  }
+  if (msg == WM_TIMER && wp == 2) {
+    if (win)
+      runFrame(id);
     return 0;
   }
   if (msg == WM_DPICHANGED && win) {
@@ -1187,6 +1208,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (msg == WM_DESTROY) {
     KillTimer(hwnd, 1);
+    KillTimer(hwnd, 2);
     if (win) {
       win->alive = false;
       win->hwnd = nullptr;
@@ -1249,6 +1271,7 @@ bool nativeOpen(HostWin &win, const std::string &title, int w, int h,
   win.hwnd = hwnd;
   win.mapped = false;
   ensureSysFont(queryDpi(hwnd));
+  SetTimer(hwnd, 2, 500, nullptr);
   return true;
 }
 
@@ -2261,14 +2284,29 @@ void xHandle(const XEvent &e) {
       std::string text;
       if (sym == XK_BackSpace)
         code = 8;
+      else if (sym == XK_Delete)
+        code = 46;
+      else if (sym == XK_Left)
+        code = 37;
+      else if (sym == XK_Right)
+        code = 39;
+      else if (sym == XK_Home)
+        code = 36;
+      else if (sym == XK_End)
+        code = 35;
       else if (sym == XK_Return || sym == XK_KP_Enter)
         code = 13;
       else if (n > 0) {
         text.assign(buf, buf + n);
         code = static_cast<unsigned char>(text[0]);
       }
-      if (code == 8 || code == 13)
+      if (code == 8 || code == 13 || code == 37 || code == 39 || code == 36 ||
+          code == 35 || code == 46) {
         text.clear();
+        if ((e.xkey.state & ShiftMask) &&
+            (code == 37 || code == 39 || code == 36 || code == 35))
+          text = "shift";
+      }
       if (code != 0 || !text.empty()) {
         feedKey(*win, code, text);
         runFrame(win->id);

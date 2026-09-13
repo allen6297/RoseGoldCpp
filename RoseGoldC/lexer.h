@@ -19,6 +19,8 @@ enum class Tok {
   Integer,
   Float,
   String,
+  LineComment,
+  BlockComment,
   //BLOCKS
   Module,
   Class,

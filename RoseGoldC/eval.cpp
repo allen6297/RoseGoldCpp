@@ -259,10 +259,46 @@ FnDecl *Interpreter::findLocalFn(const std::string &name) {
   return nullptr;
 }
 
-FnDecl *Interpreter::findUfcs(const std::string &name) {
-  FnDecl *fn = findLocalFn(name);
-  if (fn && fn->isUfcs)
-    return fn;
+FnDecl *Interpreter::findUfcs(const std::string &name,
+                              const std::string &recvTy) {
+  std::vector<FnDecl *> candidates;
+  auto addCand = [&](FnDecl *fn) {
+    if (!fn || !fn->isUfcs)
+      return;
+    for (FnDecl *c : candidates) {
+      if (c == fn)
+        return;
+    }
+    candidates.push_back(fn);
+  };
+  auto addFromMod = [&](LoadedMod &m) {
+    auto uit = m.ufcsFns.find(name);
+    if (uit != m.ufcsFns.end()) {
+      for (FnDecl *fn : uit->second)
+        addCand(fn);
+      return;
+    }
+    auto eit = m.exports.find(name);
+    if (eit != m.exports.end())
+      addCand(eit->second);
+    auto fit = m.fns.find(name);
+    if (fit != m.fns.end())
+      addCand(fit->second);
+  };
+
+  if (!currentModule.empty()) {
+    auto lit = loaded.find(currentModule);
+    if (lit != loaded.end()) {
+      addFromMod(lit->second);
+      auto fit = lit->second.fromFns.find(name);
+      if (fit != lit->second.fromFns.end())
+        addCand(fit->second);
+    }
+  } else {
+    FnDecl *fn = findLocalFn(name);
+    addCand(fn);
+  }
+
   std::vector<std::string> queue;
   std::set<std::string> seen;
   auto enqueue = [&](const std::map<std::string, std::string> &binds) {
@@ -283,16 +319,35 @@ FnDecl *Interpreter::findUfcs(const std::string &name) {
     auto lit = loaded.find(modName);
     if (lit == loaded.end())
       continue;
-    auto eit = lit->second.exports.find(name);
-    if (eit != lit->second.exports.end() && eit->second &&
-        eit->second->isUfcs)
-      return eit->second;
+    addFromMod(lit->second);
     for (const auto &kv : lit->second.exportMods)
       queue.push_back(kv.second);
     for (const auto &kv : lit->second.modules)
       queue.push_back(kv.second);
   }
-  return nullptr;
+
+  if (candidates.empty())
+    return nullptr;
+  if (recvTy.empty() || candidates.size() == 1)
+    return candidates[0];
+
+  const std::string want = typeHead(recvTy);
+  FnDecl *exact = nullptr;
+  FnDecl *fallback = nullptr;
+  for (FnDecl *fn : candidates) {
+    if (fn->paramTypes.empty() || fn->paramTypes[0].empty()) {
+      if (!fallback)
+        fallback = fn;
+      continue;
+    }
+    if (typeHead(fn->paramTypes[0]) == want) {
+      exact = fn;
+      break;
+    }
+  }
+  if (exact)
+    return exact;
+  return fallback ? fallback : candidates[0];
 }
 
 Value Interpreter::callUfcs(const FnDecl &fn, const Value &obj,
@@ -562,7 +617,7 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
       obj.items->pop_back();
       return v;
     }
-    if (FnDecl *fn = findUfcs(name))
+    if (FnDecl *fn = findUfcs(name, "Array"))
       return callUfcs(*fn, obj, args, line, col);
     runtime("Array has no method '" + name + "'", line, col);
   }
@@ -613,7 +668,7 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
       obj.dict->fields[key] = args[1];
       return Value::makeVoid();
     }
-    if (FnDecl *fn = findUfcs(name))
+    if (FnDecl *fn = findUfcs(name, "Map"))
       return callUfcs(*fn, obj, args, line, col);
     runtime("Map has no method '" + name + "'", line, col);
   }
@@ -623,7 +678,7 @@ Value Interpreter::callValueMethod(const Value &obj, const std::string &name,
         runtime("String.len takes 0 arguments", line, col);
       return Value::makeInt(static_cast<long long>(obj.s.size()));
     }
-    if (FnDecl *fn = findUfcs(name))
+    if (FnDecl *fn = findUfcs(name, "String"))
       return callUfcs(*fn, obj, args, line, col);
     runtime("String has no method '" + name + "'", line, col);
   }
@@ -1984,7 +2039,7 @@ Value Interpreter::invokeTypeMethod(const Value &obj, const std::string &startTy
                        const std::vector<Value> &args, int line, int col) {
   auto found = lookupMethod(startType, name);
   if (!found.second) {
-    if (FnDecl *fn = findUfcs(name))
+    if (FnDecl *fn = findUfcs(name, startType))
       return callUfcs(*fn, obj, args, line, col);
     runtime("struct " + startType + " has no method '" + name + "'", line,
             col);

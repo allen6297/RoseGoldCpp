@@ -488,6 +488,13 @@ void Interpreter::ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod
   for (auto &fn : fns) {
     fn.module = modName;
     if (m.fns.count(fn.name)) {
+      FnDecl *prev = m.fns[fn.name];
+      if (fn.isUfcs && prev && prev->isUfcs) {
+        if (m.ufcsFns[fn.name].empty())
+          m.ufcsFns[fn.name].push_back(prev);
+        m.ufcsFns[fn.name].push_back(&fn);
+        continue;
+      }
       loadFail(atFile,
                 "duplicate export '" + fn.name + "' in module '" +
                     modName + "'",
@@ -495,6 +502,8 @@ void Interpreter::ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod
       continue;
     }
     m.fns[fn.name] = &fn;
+    if (fn.isUfcs)
+      m.ufcsFns[fn.name].push_back(&fn);
     if (!fromMod || fn.isPub)
       m.exports[fn.name] = &fn;
   }

@@ -257,6 +257,7 @@ enum class ItemKind : char {
 struct OrderedItem {
   ItemKind kind{};
   size_t index = 0;
+  std::vector<std::string> leadingComments;
 };
 
 struct ModDecl {
@@ -271,6 +272,7 @@ struct ModDecl {
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;
   std::vector<OrderedItem> items;
+  std::vector<std::string> trailingComments;
   bool isPub = true;
   int line = 1;
 };
@@ -286,4 +288,5 @@ struct Program {
   std::vector<SignalDecl> signals;
   std::vector<ModDecl> mods;
   std::vector<OrderedItem> items;
+  std::vector<std::string> trailingComments;
 };

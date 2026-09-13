@@ -877,14 +877,99 @@ class TextField impl Widget {
     var placeholder: String = "";
     var focused: Bool = false;
     var enabled: Bool = true;
+    var caret: Int = 0;
+    var sel: Int = -1;
     var fill: Color = Color.White;
     var ink: Color = Color.Rgb(32, 32, 32);
     var border: Color = Color.Rgb(160, 160, 160);
+    var select_fill: Color = Color.Rgb(200, 220, 255);
     signal changed();
     signal submitted();
 
+    fn clamp_caret() {
+        if (caret < 0) {
+            caret = 0;
+        }
+        if (caret > len(text)) {
+            caret = len(text);
+        }
+        if (sel > len(text)) {
+            sel = len(text);
+        }
+    }
+
+    fn has_sel(): Bool {
+        return sel >= 0 && sel != caret;
+    }
+
+    fn sel_lo(): Int {
+        if (!has_sel()) {
+            return caret;
+        }
+        if (sel < caret) {
+            return sel;
+        }
+        return caret;
+    }
+
+    fn sel_hi(): Int {
+        if (!has_sel()) {
+            return caret;
+        }
+        if (sel > caret) {
+            return sel;
+        }
+        return caret;
+    }
+
+    fn clear_sel() {
+        sel = -1;
+    }
+
+    fn erase_sel(): Bool {
+        if (!has_sel()) {
+            return false;
+        }
+        var lo = sel_lo();
+        var hi = sel_hi();
+        text = str_slice(text, 0, lo) + str_slice(text, hi, len(text));
+        caret = lo;
+        clear_sel();
+        return true;
+    }
+
+    fn delete_sel() {
+        if (erase_sel()) {
+            changed.emit();
+        }
+    }
+
+    fn index_at_x(lx: Int): Int {
+        var x = lx - 6;
+        if (x <= 0) {
+            return 0;
+        }
+        var n = len(text);
+        var i = 0;
+        while (i < n) {
+            var mid = i + 1;
+            var w = text_width(str_slice(text, 0, mid));
+            if (w > x) {
+                var prev = text_width(str_slice(text, 0, i));
+                if (x - prev < w - x) {
+                    return i;
+                }
+                return mid;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
     fn set_text(s: String) {
         text = s;
+        caret = len(s);
+        clear_sel();
         changed.emit();
     }
 
@@ -892,6 +977,7 @@ class TextField impl Widget {
         enabled = v;
         if (!enabled) {
             focused = false;
+            clear_sel();
         }
     }
 
@@ -912,6 +998,15 @@ class TextField impl Widget {
         if (enabled && pointer_over(win_id, x, y, w, h)) {
             cursor_ibeam(win_id);
         }
+        clamp_caret();
+        if (focused && enabled && __ui.mouse_down(win_id) &&
+            pointer_over(win_id, x, y, w, h)) {
+            var mx = __ui.mouse_x(win_id);
+            caret = index_at_x(mx - x);
+            if (sel < 0) {
+                sel = caret;
+            }
+        }
         var bg = fill;
         var bcol = border;
         var col = ink;
@@ -924,26 +1019,42 @@ class TextField impl Widget {
         }
         fill_round(win_id, x, y, w, h, corner_r(), bg.value());
         stroke_round(win_id, x, y, w, h, corner_r(), bcol.value());
-        var shown = text;
-        if (len(shown) == 0 && !focused) {
-            shown = placeholder;
-            col = Color.Rgb(140, 140, 140);
-            if (!enabled) {
-                col = Color.Rgb(170, 170, 178);
-            }
-        }
         var ty = y + (h - font_height()) / 2;
-        __ui.text(win_id, x + 6, ty, shown, col.value());
+        if (len(text) == 0 && !focused) {
+            var ph = Color.Rgb(140, 140, 140);
+            if (!enabled) {
+                ph = Color.Rgb(170, 170, 178);
+            }
+            __ui.text(win_id, x + 6, ty, placeholder, ph.value());
+        } else {
+            if (has_sel()) {
+                var lo = sel_lo();
+                var hi = sel_hi();
+                var x0 = x + 6 + text_width(str_slice(text, 0, lo));
+                var x1 = x + 6 + text_width(str_slice(text, 0, hi));
+                var sw = x1 - x0;
+                if (sw < 1) {
+                    sw = 1;
+                }
+                __ui.fill(win_id, x0, y + 4, sw, h - 8, select_fill.value());
+            }
+            __ui.text(win_id, x + 6, ty, text, col.value());
+        }
         if (focused && enabled) {
-            var cx = x + 6 + text_width(text);
-            var ch = font_height();
-            if (ch < 12) {
-                ch = 12;
+            var blink = (__time.now() / 500) % 2 == 0;
+            if (blink || has_sel()) {
+                var cx = x + 6 + text_width(str_slice(text, 0, caret));
+                var ch = font_height();
+                if (ch < 12) {
+                    ch = 12;
+                }
+                if (ch > h - 8) {
+                    ch = h - 8;
+                }
+                if (!has_sel() || blink) {
+                    __ui.fill(win_id, cx, y + (h - ch) / 2, 1, ch, ink.value());
+                }
             }
-            if (ch > h - 8) {
-                ch = h - 8;
-            }
-            __ui.fill(win_id, cx, y + (h - ch) / 2, 1, ch, ink.value());
         }
     }
 
@@ -952,28 +1063,114 @@ class TextField impl Widget {
             return true;
         }
         focused = true;
+        caret = index_at_x(lx);
+        sel = caret;
         return true;
     }
     fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
         return false;
     }
 
-
     fn handle_key(code: Int, text_in: String): Bool {
         if (!focused || !enabled) {
             return false;
         }
+        clamp_caret();
+        var shift = text_in == "shift" || text_in == "shift+ctrl" || text_in == "ctrl+shift";
+        var ctrl = text_in == "ctrl" || text_in == "shift+ctrl" || text_in == "ctrl+shift";
+        if (ctrl && (code == 65 || code == 97)) {
+            sel = 0;
+            caret = len(text);
+            return true;
+        }
+        if (code == 37) {
+            if (shift) {
+                if (sel < 0) {
+                    sel = caret;
+                }
+                if (caret > 0) {
+                    caret = caret - 1;
+                }
+            } else {
+                if (has_sel()) {
+                    caret = sel_lo();
+                    clear_sel();
+                } elif (caret > 0) {
+                    caret = caret - 1;
+                }
+            }
+            return true;
+        }
+        if (code == 39) {
+            if (shift) {
+                if (sel < 0) {
+                    sel = caret;
+                }
+                if (caret < len(text)) {
+                    caret = caret + 1;
+                }
+            } else {
+                if (has_sel()) {
+                    caret = sel_hi();
+                    clear_sel();
+                } elif (caret < len(text)) {
+                    caret = caret + 1;
+                }
+            }
+            return true;
+        }
+        if (code == 36) {
+            if (shift) {
+                if (sel < 0) {
+                    sel = caret;
+                }
+            } else {
+                clear_sel();
+            }
+            caret = 0;
+            return true;
+        }
+        if (code == 35) {
+            if (shift) {
+                if (sel < 0) {
+                    sel = caret;
+                }
+            } else {
+                clear_sel();
+            }
+            caret = len(text);
+            return true;
+        }
         if (code == 8) {
-            text = drop_last(text);
-            changed.emit();
+            if (has_sel()) {
+                delete_sel();
+            } elif (caret > 0) {
+                text = str_slice(text, 0, caret - 1) + str_slice(text, caret, len(text));
+                caret = caret - 1;
+                clear_sel();
+                changed.emit();
+            }
+            return true;
+        }
+        if (code == 46) {
+            if (has_sel()) {
+                delete_sel();
+            } elif (caret < len(text)) {
+                text = str_slice(text, 0, caret) + str_slice(text, caret + 1, len(text));
+                clear_sel();
+                changed.emit();
+            }
             return true;
         }
         if (code == 13) {
             submitted.emit();
             return true;
         }
-        if (len(text_in) > 0) {
-            text = text + text_in;
+        if (len(text_in) > 0 && !shift && !ctrl) {
+            erase_sel();
+            text = str_slice(text, 0, caret) + text_in + str_slice(text, caret, len(text));
+            caret = caret + len(text_in);
+            clear_sel();
             changed.emit();
             return true;
         }
@@ -986,6 +1183,7 @@ class TextField impl Widget {
 
     fn clear_focus() {
         focused = false;
+        clear_sel();
     }
 
     fn append_focusables(out: Array[Widget]) {
@@ -997,6 +1195,8 @@ class TextField impl Widget {
     fn focus_enter() {
         if (enabled) {
             focused = true;
+            caret = len(text);
+            clear_sel();
         }
     }
 
@@ -1576,6 +1776,41 @@ class TipWrap impl Widget {
 @ufcs
 fn tip(win: Window, child: Widget, text: String): TipWrap {
     return TipWrap { window: win, child: child, text: text };
+}
+
+@ufcs
+fn on_click(b: Button, handler: fn (): Void) {
+    b.clicked.connect(handler);
+}
+
+@ufcs
+fn on_change(w: TextField, handler: fn (): Void) {
+    w.changed.connect(handler);
+}
+
+@ufcs
+fn on_change(w: Toggle, handler: fn (): Void) {
+    w.changed.connect(handler);
+}
+
+@ufcs
+fn on_change(w: Checkbox, handler: fn (): Void) {
+    w.changed.connect(handler);
+}
+
+@ufcs
+fn on_change(w: RadioGroup, handler: fn (): Void) {
+    w.changed.connect(handler);
+}
+
+@ufcs
+fn on_change(w: Slider, handler: fn (): Void) {
+    w.changed.connect(handler);
+}
+
+@ufcs
+fn on_change(w: Dropdown, handler: fn (): Void) {
+    w.changed.connect(handler);
 }
 
 class ScrollView impl Widget {

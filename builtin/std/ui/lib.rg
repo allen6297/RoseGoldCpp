@@ -227,13 +227,11 @@ fn drop_last(s: String): String {
     if (n == 0) {
         return "";
     }
-    var out = "";
-    var i = 0;
-    while (i < n - 1) {
-        out = out + s[i];
-        i = i + 1;
-    }
-    return out;
+    return __str.slice(s, 0, n - 1);
+}
+
+fn str_slice(s: String, start: Int, end: Int): String {
+    return __str.slice(s, start, end);
 }
 
 fn line_step(): Int {

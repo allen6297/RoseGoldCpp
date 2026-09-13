@@ -10,21 +10,21 @@ fn main(): Int {
     var w = try ui.open_hidden("rg-extra", 400, 360);
 
     var box = Checkbox { label: "Agree", checked: false };
-    box.changed.connect(fn () { hits.n = hits.n + 1; });
+    box.on_change(fn () { hits.n = hits.n + 1; });
     var radios = RadioGroup {
         items: ["Red", "Green", "Blue"],
         selected: 1
     };
-    radios.changed.connect(fn () {
+    radios.on_change(fn () {
         hits.n = hits.n + 10;
         hits.last = radios.selected;
     });
     var bar = ProgressBar { value: 40, max_v: 100 };
     var go = Button { text: "Go" };
-    go.clicked.connect(fn () { hits.n = hits.n + 100; });
+    go.on_click(fn () { hits.n = hits.n + 100; });
     var tipped = w.tip(go, "Run action");
     var locked = Button { text: "Locked", enabled: false };
-    locked.clicked.connect(fn () { hits.n = hits.n + 1000; });
+    locked.on_click(fn () { hits.n = hits.n + 1000; });
 
     w.add(VStack {
         spacing: 8,
