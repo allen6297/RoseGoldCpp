@@ -18,92 +18,236 @@
 #include <utility>
 #include <vector>
 
-std::string Value::toString() const {
-  switch (kind) {
-  case Kind::Void:
+namespace {
+
+std::string toStringRec(const Value &v, std::set<const void *> &seen);
+bool equalsRec(const Value &a, const Value &b, std::set<const void *> &seenA,
+               std::set<const void *> &seenB);
+
+std::string toStringRec(const Value &v, std::set<const void *> &seen) {
+  switch (v.kind) {
+  case Value::Kind::Void:
     return "";
-  case Kind::Bool:
-    return b ? "true" : "false";
-  case Kind::Int:
-    return std::to_string(i);
-  case Kind::Float: {
+  case Value::Kind::Bool:
+    return v.b ? "true" : "false";
+  case Value::Kind::Int:
+    return std::to_string(v.i);
+  case Value::Kind::Float: {
     std::ostringstream ss;
-    ss << real;
+    ss << v.real;
     return ss.str();
   }
-  case Kind::String:
-    return s;
-  case Kind::FnRef:
-    return clo ? "<fn>" : s;
-  case Kind::Struct: {
-    if (!rec)
+  case Value::Kind::String:
+    return v.s;
+  case Value::Kind::FnRef:
+    return v.clo ? "<fn>" : v.s;
+  case Value::Kind::Struct: {
+    if (!v.rec)
       return "{}";
+    const void *id = v.rec.get();
+    if (!seen.insert(id).second)
+      return v.rec->name + " { ... }";
     std::string parts;
-    for (const auto &f : rec->order) {
-      auto it = rec->fields.find(f);
-      if (it == rec->fields.end())
+    for (const auto &f : v.rec->order) {
+      auto it = v.rec->fields.find(f);
+      if (it == v.rec->fields.end())
         continue;
       if (!parts.empty())
         parts += ", ";
-      parts += f + ": " + it->second.toString();
+      parts += f + ": " + toStringRec(it->second, seen);
     }
-    return rec->name + " { " + parts + " }";
+    seen.erase(id);
+    return v.rec->name + " { " + parts + " }";
   }
-  case Kind::Array: {
+  case Value::Kind::Array: {
+    if (!v.items)
+      return "[]";
+    const void *id = v.items.get();
+    if (!seen.insert(id).second)
+      return "[...]";
     std::string out = "[";
-    if (items) {
-      for (size_t n = 0; n < items->size(); ++n) {
-        if (n)
-          out += ", ";
-        out += (*items)[n].toString();
-      }
+    for (size_t n = 0; n < v.items->size(); ++n) {
+      if (n)
+        out += ", ";
+      out += toStringRec((*v.items)[n], seen);
     }
     out += "]";
+    seen.erase(id);
     return out;
   }
-  case Kind::Map: {
+  case Value::Kind::Map: {
+    if (!v.dict)
+      return "{}";
+    const void *id = v.dict.get();
+    if (!seen.insert(id).second)
+      return "{...}";
     std::string out = "{";
-    if (dict) {
-      for (size_t n = 0; n < dict->order.size(); ++n) {
-        const std::string &k = dict->order[n];
-        auto it = dict->fields.find(k);
-        if (it == dict->fields.end())
-          continue;
-        if (n)
-          out += ", ";
-        out += "\"" + k + "\": " + it->second.toString();
-      }
+    for (size_t n = 0; n < v.dict->order.size(); ++n) {
+      const std::string &k = v.dict->order[n];
+      auto it = v.dict->fields.find(k);
+      if (it == v.dict->fields.end())
+        continue;
+      if (n)
+        out += ", ";
+      out += "\"" + k + "\": " + toStringRec(it->second, seen);
     }
     out += "}";
+    seen.erase(id);
     return out;
   }
-  case Kind::Range: {
-    long long end = payload.empty() ? 0 : payload[0].i;
-    return std::to_string(i) + (b ? "..=" : "..") + std::to_string(end);
+  case Value::Kind::Range: {
+    long long end = v.payload.empty() ? 0 : v.payload[0].i;
+    return std::to_string(v.i) + (v.b ? "..=" : "..") + std::to_string(end);
   }
-  case Kind::EnumType:
-    return "enum " + s;
-  case Kind::Enum: {
-    std::string out = s + "." + variant;
-    if (payload.empty())
+  case Value::Kind::EnumType:
+    return "enum " + v.s;
+  case Value::Kind::Enum: {
+    std::string out = v.s + "." + v.variant;
+    if (v.payload.empty())
       return out;
     out += "(";
-    for (size_t i = 0; i < payload.size(); ++i) {
+    for (size_t i = 0; i < v.payload.size(); ++i) {
       if (i)
         out += ", ";
-      out += payload[i].toString();
+      out += toStringRec(v.payload[i], seen);
     }
     out += ")";
     return out;
   }
-  case Kind::SignalRef:
-    if (rec)
-      return rec->name + "." + s;
-    return s;
-  case Kind::Future:
+  case Value::Kind::SignalRef:
+    if (v.rec)
+      return v.rec->name + "." + v.s;
+    return v.s;
+  case Value::Kind::Future:
     return "<Future>";
   }
   return "";
+}
+
+bool equalsRec(const Value &a, const Value &b, std::set<const void *> &seenA,
+               std::set<const void *> &seenB) {
+  if (a.kind != b.kind) {
+    if (isNumeric(a) && isNumeric(b))
+      return numericEq(asF64(a), asF64(b));
+    return false;
+  }
+  switch (a.kind) {
+  case Value::Kind::Void:
+    return true;
+  case Value::Kind::Bool:
+    return a.b == b.b;
+  case Value::Kind::Int:
+    return a.i == b.i;
+  case Value::Kind::Float:
+    return numericEq(a.real, b.real);
+  case Value::Kind::String:
+    return a.s == b.s;
+  case Value::Kind::FnRef:
+    if (a.clo || b.clo)
+      return a.clo.get() == b.clo.get();
+    return a.s == b.s;
+  case Value::Kind::Struct: {
+    if (a.rec == b.rec)
+      return true;
+    if (!a.rec || !b.rec)
+      return false;
+    if (a.rec->name != b.rec->name)
+      return false;
+    if (a.rec->fields.size() != b.rec->fields.size())
+      return false;
+    const void *ida = a.rec.get();
+    const void *idb = b.rec.get();
+    if (!seenA.insert(ida).second || !seenB.insert(idb).second)
+      return ida == idb;
+    for (const auto &kv : a.rec->fields) {
+      auto it = b.rec->fields.find(kv.first);
+      if (it == b.rec->fields.end() ||
+          !equalsRec(kv.second, it->second, seenA, seenB)) {
+        seenA.erase(ida);
+        seenB.erase(idb);
+        return false;
+      }
+    }
+    seenA.erase(ida);
+    seenB.erase(idb);
+    return true;
+  }
+  case Value::Kind::Array: {
+    if (a.items == b.items)
+      return true;
+    if (!a.items || !b.items)
+      return false;
+    if (a.items->size() != b.items->size())
+      return false;
+    const void *ida = a.items.get();
+    const void *idb = b.items.get();
+    if (!seenA.insert(ida).second || !seenB.insert(idb).second)
+      return ida == idb;
+    for (size_t n = 0; n < a.items->size(); ++n) {
+      if (!equalsRec((*a.items)[n], (*b.items)[n], seenA, seenB)) {
+        seenA.erase(ida);
+        seenB.erase(idb);
+        return false;
+      }
+    }
+    seenA.erase(ida);
+    seenB.erase(idb);
+    return true;
+  }
+  case Value::Kind::Map: {
+    if (a.dict == b.dict)
+      return true;
+    if (!a.dict || !b.dict)
+      return false;
+    if (a.dict->fields.size() != b.dict->fields.size())
+      return false;
+    const void *ida = a.dict.get();
+    const void *idb = b.dict.get();
+    if (!seenA.insert(ida).second || !seenB.insert(idb).second)
+      return ida == idb;
+    for (const auto &kv : a.dict->fields) {
+      auto it = b.dict->fields.find(kv.first);
+      if (it == b.dict->fields.end() ||
+          !equalsRec(kv.second, it->second, seenA, seenB)) {
+        seenA.erase(ida);
+        seenB.erase(idb);
+        return false;
+      }
+    }
+    seenA.erase(ida);
+    seenB.erase(idb);
+    return true;
+  }
+  case Value::Kind::Range: {
+    long long end = a.payload.empty() ? 0 : a.payload[0].i;
+    long long otherEnd = b.payload.empty() ? 0 : b.payload[0].i;
+    return a.i == b.i && a.b == b.b && end == otherEnd;
+  }
+  case Value::Kind::EnumType:
+    return a.s == b.s;
+  case Value::Kind::Enum: {
+    if (a.s != b.s || a.variant != b.variant ||
+        a.payload.size() != b.payload.size())
+      return false;
+    for (size_t i = 0; i < a.payload.size(); ++i) {
+      if (!equalsRec(a.payload[i], b.payload[i], seenA, seenB))
+        return false;
+    }
+    return true;
+  }
+  case Value::Kind::SignalRef:
+    return a.s == b.s && a.rec == b.rec;
+  case Value::Kind::Future:
+    return a.fut == b.fut;
+  }
+  return false;
+}
+
+} // namespace
+
+std::string Value::toString() const {
+  std::set<const void *> seen;
+  return toStringRec(*this, seen);
 }
 
 bool Value::truthy() const {
@@ -144,93 +288,9 @@ double asF64(const Value &v) {
 }
 
 bool Value::equals(const Value &other) const {
-  if (kind != other.kind) {
-    if (isNumeric(*this) && isNumeric(other))
-      return numericEq(asF64(*this), asF64(other));
-    return false;
-  }
-  switch (kind) {
-  case Kind::Void:
-    return true;
-  case Kind::Bool:
-    return b == other.b;
-  case Kind::Int:
-    return i == other.i;
-  case Kind::Float:
-    return numericEq(real, other.real);
-  case Kind::String:
-    return s == other.s;
-  case Kind::FnRef:
-    if (clo || other.clo)
-      return clo.get() == other.clo.get();
-    return s == other.s;
-  case Kind::Struct: {
-    if (rec == other.rec)
-      return true;
-    if (!rec || !other.rec)
-      return false;
-    if (rec->name != other.rec->name)
-      return false;
-    if (rec->fields.size() != other.rec->fields.size())
-      return false;
-    for (const auto &kv : rec->fields) {
-      auto it = other.rec->fields.find(kv.first);
-      if (it == other.rec->fields.end() || !kv.second.equals(it->second))
-        return false;
-    }
-    return true;
-  }
-  case Kind::Array: {
-    if (items == other.items)
-      return true;
-    if (!items || !other.items)
-      return false;
-    if (items->size() != other.items->size())
-      return false;
-    for (size_t n = 0; n < items->size(); ++n) {
-      if (!(*items)[n].equals((*other.items)[n]))
-        return false;
-    }
-    return true;
-  }
-  case Kind::Map: {
-    if (dict == other.dict)
-      return true;
-    if (!dict || !other.dict)
-      return false;
-    if (dict->fields.size() != other.dict->fields.size())
-      return false;
-    for (const auto &kv : dict->fields) {
-      auto it = other.dict->fields.find(kv.first);
-      if (it == other.dict->fields.end() || !kv.second.equals(it->second))
-        return false;
-    }
-    return true;
-  }
-  case Kind::Range: {
-    long long end = payload.empty() ? 0 : payload[0].i;
-    long long otherEnd =
-        other.payload.empty() ? 0 : other.payload[0].i;
-    return i == other.i && b == other.b && end == otherEnd;
-  }
-  case Kind::EnumType:
-    return s == other.s;
-  case Kind::Enum: {
-    if (s != other.s || variant != other.variant ||
-        payload.size() != other.payload.size())
-      return false;
-    for (size_t i = 0; i < payload.size(); ++i) {
-      if (!payload[i].equals(other.payload[i]))
-        return false;
-    }
-    return true;
-  }
-  case Kind::SignalRef:
-    return s == other.s && rec == other.rec;
-  case Kind::Future:
-    return fut == other.fut;
-  }
-  return false;
+  std::set<const void *> seenA;
+  std::set<const void *> seenB;
+  return equalsRec(*this, other, seenA, seenB);
 }
 
 std::string readFile(const std::string &path) {
@@ -241,4 +301,3 @@ std::string readFile(const std::string &path) {
   ss << in.rdbuf();
   return ss.str();
 }
-
