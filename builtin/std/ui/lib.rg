@@ -10,6 +10,7 @@ trait Widget {
     fn append_focusables(out: Array[Widget]);
     fn focus_enter();
     fn has_focus(): Bool;
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int;
 }
 
 trait LazyRows {
@@ -108,6 +109,18 @@ class Pad impl Widget {
     fn has_focus(): Bool {
         return child.has_focus();
     }
+
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        var inner_w = w - amount * 2;
+        var inner_h = h - amount * 2;
+        if (inner_w < 0) {
+            inner_w = 0;
+        }
+        if (inner_h < 0) {
+            inner_h = 0;
+        }
+        return child.hover_cursor(lx - amount, ly - amount, inner_w, inner_h);
+    }
 }
 
 class Backdrop impl Widget {
@@ -157,6 +170,10 @@ class Backdrop impl Widget {
 
     fn has_focus(): Bool {
         return child.has_focus();
+    }
+
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return child.hover_cursor(lx, ly, w, h);
     }
 }
 
@@ -210,6 +227,93 @@ fn control_height(min_h: Int, pad: Int): Int {
         return min_h;
     }
     return h;
+}
+
+fn sb_width(): Int {
+    return 14;
+}
+
+fn corner_r(): Int {
+    return 8;
+}
+
+fn fill_round(win_id: Int, x: Int, y: Int, w: Int, h: Int, r: Int, color: Int) {
+    __ui.fill_round(win_id, x, y, w, h, r, color);
+}
+
+fn stroke_round(win_id: Int, x: Int, y: Int, w: Int, h: Int, r: Int, color: Int) {
+    __ui.stroke_round(win_id, x, y, w, h, r, color);
+}
+
+fn paint_chevron(win_id: Int, cx: Int, cy: Int, size: Int, up: Bool, color: Int) {
+    var s = size;
+    if (s < 4) {
+        s = 4;
+    }
+    if (up) {
+        __ui.line(win_id, cx - s, cy + s / 2, cx, cy - s / 2, color);
+        __ui.line(win_id, cx + s, cy + s / 2, cx, cy - s / 2, color);
+        __ui.line(win_id, cx - s + 1, cy + s / 2, cx, cy - s / 2 + 1, color);
+        __ui.line(win_id, cx + s - 1, cy + s / 2, cx, cy - s / 2 + 1, color);
+    } else {
+        __ui.line(win_id, cx - s, cy - s / 2, cx, cy + s / 2, color);
+        __ui.line(win_id, cx + s, cy - s / 2, cx, cy + s / 2, color);
+        __ui.line(win_id, cx - s + 1, cy - s / 2, cx, cy + s / 2 - 1, color);
+        __ui.line(win_id, cx + s - 1, cy - s / 2, cx, cy + s / 2 - 1, color);
+    }
+}
+
+fn paint_vscroll(win_id: Int, x: Int, y: Int, w: Int, vh: Int, offset: Int, content_h: Int) {
+    var max = content_h - vh;
+    if (max <= 0 || vh < 1) {
+        return;
+    }
+    var bw = sb_width();
+    var tx = x + w - bw;
+    fill_round(win_id, tx + 1, y + 1, bw - 2, vh - 2, 5, Color.Rgb(236, 236, 240).value());
+    var thumb = (vh * vh) / content_h;
+    if (thumb < 24) {
+        thumb = 24;
+    }
+    if (thumb > vh - 4) {
+        thumb = vh - 4;
+    }
+    var track = vh - 4 - thumb;
+    var ty = y + 2;
+    if (track > 0 && max > 0) {
+        ty = y + 2 + (offset * track) / max;
+    }
+    fill_round(win_id, tx + 3, ty, bw - 6, thumb, 4, Color.Rgb(160, 160, 168).value());
+}
+
+fn vscroll_hit(lx: Int, ly: Int, w: Int, vh: Int): Bool {
+    return lx >= w - sb_width() && lx < w && ly >= 0 && ly < vh;
+}
+
+fn vscroll_offset_at(ly: Int, vh: Int, content_h: Int): Int {
+    var max = content_h - vh;
+    if (max <= 0 || vh < 1) {
+        return 0;
+    }
+    var thumb = (vh * vh) / content_h;
+    if (thumb < 24) {
+        thumb = 24;
+    }
+    if (thumb > vh - 4) {
+        thumb = vh - 4;
+    }
+    var track = vh - 4 - thumb;
+    if (track < 1) {
+        return 0;
+    }
+    var y = ly - 2 - thumb / 2;
+    if (y < 0) {
+        y = 0;
+    }
+    if (y > track) {
+        y = track;
+    }
+    return (y * max) / track;
 }
 
 fn wrap_lines(text: String, max_w: Int): Array[String] {
@@ -463,8 +567,8 @@ class Window {
                                __ui.mouse_x(id), __ui.mouse_y(id), width, rh);
         }
         __ui.clear(id, theme.window_bg.value());
-        __ui.cursor(id, 0);
         root.paint(id, 0, 0, width);
+        __ui.cursor(id, root.hover_cursor(__ui.mouse_x(id), __ui.mouse_y(id), width, rh));
         __ui.present(id);
     }
 
@@ -567,7 +671,12 @@ fn cursor_ibeam(win_id: Int) {
 fn pointer_over(win_id: Int, x: Int, y: Int, w: Int, h: Int): Bool {
     var mx = __ui.mouse_x(win_id);
     var my = __ui.mouse_y(win_id);
-    return mx >= x && mx < x + w && my >= y && my < y + h;
+    return hit_test(mx - x, my - y, w, h);
+}
+
+fn hit_test(lx: Int, ly: Int, w: Int, h: Int): Bool {
+    // 2px slop so borders / AA edges keep hover.
+    return lx >= -2 && lx < w + 2 && ly >= -2 && ly < h + 2;
 }
 
 fn font_height(): Int {

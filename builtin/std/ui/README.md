@@ -57,8 +57,9 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | `TextField` | click to focus; keys insert / backspace (`8`) / submit (`13`); `changed` / `submitted` |
 | `Toggle` | `on` bool; `changed` |
 | `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
-| `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; clips via host |
-| `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, **visible-row cache** |
+| `Dropdown` | `items`, `selected`, expands when `open`; click / Enter / arrows / Esc; `changed` |
+| `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; vertical scrollbar chrome |
+| `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, scrollbar, **visible-row cache** |
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
 | `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm"\|"x.png")` |
@@ -109,14 +110,15 @@ trait Widget {
     fn append_focusables(out: Array[Widget]);
     fn focus_enter();
     fn has_focus(): Bool;
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int;
 }
 ```
 
 For `LazyColumn`, implement `LazyRows` (`count` / `row(i)`) or use `LabelRows`.
 
-Draw with `__ui.fill` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.image` / `__ui.image_rgb` / `__ui.clip_push` / `__ui.clip_pop`.
+Draw with `__ui.fill` / `__ui.fill_round` / `__ui.text` / `__ui.line` / `__ui.stroke_rect` / `__ui.stroke_round` / `__ui.image` / `__ui.image_rgb` / `__ui.clip_push` / `__ui.clip_pop`. Helpers: `fill_round` / `stroke_round` / `paint_chevron` / `corner_r()`.
 
-Hover cursors: widgets call `cursor_hand` / `cursor_ibeam` (or `__ui.cursor(id, 0|1|2)`) while painting under the pointer. `Window.tick` resets to arrow each frame.
+Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after paint (hand/I-beam). Widgets may still call `cursor_hand` / `cursor_ibeam` while painting for immediate feedback.
 
 ## Tests
 
@@ -129,6 +131,7 @@ Hover cursors: widgets call `cursor_hand` / `cursor_ibeam` (or `__ui.cursor(id, 
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_extra.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_lazy.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_tab.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_dropdown.rg
 ```
 
 ## Not yet

@@ -128,6 +128,26 @@ class VStack impl Widget {
         }
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        var cy = 0;
+        var i = 0;
+        while (i < len(children)) {
+            if (i > 0) {
+                cy = cy + spacing;
+            }
+            var child = children[i];
+            var ch = child.height(w);
+            if (hit_test(lx, ly - cy, w, ch)) {
+                var c = child.hover_cursor(lx, ly - cy, w, ch);
+                if (c != 0) {
+                    return c;
+                }
+            }
+            cy = cy + ch;
+            i = i + 1;
+        }
+        return 0;
+    }
 }
 
 class HStack impl Widget {
@@ -375,6 +395,28 @@ class HStack impl Widget {
         }
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        var n = len(children);
+        if (n == 0) {
+            return 0;
+        }
+        var widths = child_widths(w);
+        var cx = origin_x(w, widths);
+        var i = 0;
+        while (i < n) {
+            var cw = widths[i];
+            var ch = children[i].height(cw);
+            if (hit_test(lx - cx, ly, cw, h)) {
+                var c = children[i].hover_cursor(lx - cx, ly, cw, ch);
+                if (c != 0) {
+                    return c;
+                }
+            }
+            cx = cx + cw + spacing;
+            i = i + 1;
+        }
+        return 0;
+    }
 }
 
 class Spacer impl Widget {
@@ -420,6 +462,10 @@ class Spacer impl Widget {
     fn has_focus(): Bool {
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return 0;
+    }
+
 }
 
 class Label impl Widget {
@@ -505,6 +551,10 @@ class Label impl Widget {
     fn has_focus(): Bool {
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return 0;
+    }
+
 }
 
 class Button impl Widget {
@@ -571,9 +621,9 @@ class Button impl Widget {
         } elif (hot) {
             bg = hover;
         }
-        __ui.fill(win_id, x, y, w, h, bg.value());
+        fill_round(win_id, x, y, w, h, corner_r(), bg.value());
         if (focused) {
-            __ui.stroke_rect(win_id, x, y, w, h, Color.Rgb(47, 111, 196).value());
+            stroke_round(win_id, x, y, w, h, corner_r(), Color.Rgb(47, 111, 196).value());
         }
         var tw = text_width(text);
         var tx = x + 8;
@@ -617,6 +667,13 @@ class Button impl Widget {
     fn has_focus(): Bool {
         return focused;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+
 }
 
 class TextField impl Widget {
@@ -651,12 +708,12 @@ class TextField impl Widget {
         if (pointer_over(win_id, x, y, w, h)) {
             cursor_ibeam(win_id);
         }
-        __ui.fill(win_id, x, y, w, h, fill.value());
+        fill_round(win_id, x, y, w, h, corner_r(), fill.value());
         var bcol = border;
         if (focused) {
             bcol = Color.Rgb(47, 111, 196);
         }
-        __ui.stroke_rect(win_id, x, y, w, h, bcol.value());
+        stroke_round(win_id, x, y, w, h, corner_r(), bcol.value());
         var shown = text;
         var col = ink;
         if (len(shown) == 0 && !focused) {
@@ -723,6 +780,13 @@ class TextField impl Widget {
     fn has_focus(): Bool {
         return focused;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (hit_test(lx, ly, w, h)) {
+            return 2;
+        }
+        return 0;
+    }
+
 }
 
 class Toggle impl Widget {
@@ -737,7 +801,7 @@ class Toggle impl Widget {
     }
 
     fn min_width(): Int {
-        return 44 + text_width(label);
+        return 50 + text_width(label);
     }
 
     fn height(w: Int): Int {
@@ -757,17 +821,17 @@ class Toggle impl Widget {
         if (on) {
             track = Color.Rgb(47, 111, 196);
         }
-        var mid = y + (h - 16) / 2;
-        __ui.fill(win_id, x, mid, 40, 16, track.value());
-        var knob_x = x + 2;
+        var mid = y + (h - 22) / 2;
+        fill_round(win_id, x, mid, 42, 22, 11, track.value());
+        var knob_x = x + 3;
         if (on) {
-            knob_x = x + 22;
+            knob_x = x + 21;
         }
-        __ui.fill(win_id, knob_x, mid - 2, 16, 20, Color.White.value());
-        __ui.stroke_rect(win_id, knob_x, mid - 2, 16, 20, Color.Rgb(120, 120, 120).value());
+        fill_round(win_id, knob_x, mid + 2, 18, 18, 9, Color.White.value());
+        stroke_round(win_id, knob_x, mid + 2, 18, 18, 9, Color.Rgb(140, 140, 148).value());
         if (len(label) > 0) {
             var ty = y + (h - font_height()) / 2;
-            __ui.text(win_id, x + 48, ty, label, Color.Rgb(32, 32, 32).value());
+            __ui.text(win_id, x + 50, ty, label, Color.Rgb(32, 32, 32).value());
         }
     }
 
@@ -806,6 +870,13 @@ class Toggle impl Widget {
     fn has_focus(): Bool {
         return focused;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+
 }
 
 class ScrollView impl Widget {
@@ -813,6 +884,7 @@ class ScrollView impl Widget {
     var viewport_h: Int = 120;
     var offset: Int = 0;
     var layout_w: Int = 0;
+    var bar_drag: Bool = false;
 
     fn min_width(): Int {
         return child.min_width();
@@ -826,13 +898,36 @@ class ScrollView impl Widget {
         return 0;
     }
 
-    fn max_offset(): Int {
-        var cw = layout_w;
-        if (cw < 1) {
-            cw = 1;
+    fn content_width(w: Int): Int {
+        if (w < 1) {
+            return 1;
         }
-        var ch = child.height(cw);
-        var max = ch - viewport_h;
+        if (child.height(w) > viewport_h) {
+            var cw = w - sb_width();
+            if (cw < 1) {
+                return 1;
+            }
+            return cw;
+        }
+        if (w > sb_width()) {
+            var cw = w - sb_width();
+            if (child.height(cw) > viewport_h) {
+                return cw;
+            }
+        }
+        return w;
+    }
+
+    fn content_h(): Int {
+        var w = layout_w;
+        if (w < 1) {
+            w = 1;
+        }
+        return child.height(content_width(w));
+    }
+
+    fn max_offset(): Int {
+        var max = content_h() - viewport_h;
         if (max < 0) {
             max = 0;
         }
@@ -852,10 +947,20 @@ class ScrollView impl Widget {
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         layout_w = w;
         clamp_offset();
-        __ui.clip_push(win_id, x, y, w, viewport_h);
-        child.paint(win_id, x, y - offset, w);
+        if (bar_drag && __ui.mouse_down(win_id)) {
+            var my = __ui.mouse_y(win_id) - y;
+            offset = vscroll_offset_at(my, viewport_h, content_h());
+            clamp_offset();
+        }
+        if (!__ui.mouse_down(win_id)) {
+            bar_drag = false;
+        }
+        var cw = content_width(w);
+        __ui.clip_push(win_id, x, y, cw, viewport_h);
+        child.paint(win_id, x, y - offset, cw);
         __ui.clip_pop(win_id);
-        __ui.stroke_rect(win_id, x, y, w, viewport_h, Color.Rgb(200, 200, 200).value());
+        paint_vscroll(win_id, x, y, w, viewport_h, offset, content_h());
+        stroke_round(win_id, x, y, w, viewport_h, corner_r(), Color.Rgb(200, 200, 200).value());
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
@@ -863,7 +968,17 @@ class ScrollView impl Widget {
         if (ly < 0 || ly >= viewport_h || lx < 0 || lx >= w) {
             return false;
         }
-        return child.handle_click(lx, ly + offset, w, child.height(w));
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            bar_drag = true;
+            offset = vscroll_offset_at(ly, viewport_h, content_h());
+            clamp_offset();
+            return true;
+        }
+        var cw = content_width(w);
+        if (lx >= cw) {
+            return false;
+        }
+        return child.handle_click(lx, ly + offset, cw, child.height(cw));
     }
 
     fn handle_key(code: Int, text: String): Bool {
@@ -894,6 +1009,20 @@ class ScrollView impl Widget {
 
     fn has_focus(): Bool {
         return child.has_focus();
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        layout_w = w;
+        if (!hit_test(lx, ly, w, viewport_h)) {
+            return 0;
+        }
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            return 1;
+        }
+        var cw = content_width(w);
+        if (lx >= cw) {
+            return 0;
+        }
+        return child.hover_cursor(lx, ly + offset, cw, child.height(cw));
     }
 }
 
@@ -947,6 +1076,10 @@ class Canvas impl Widget {
     fn has_focus(): Bool {
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return 0;
+    }
+
 }
 
 class Slider impl Widget {
@@ -1031,11 +1164,11 @@ class Slider impl Widget {
         }
         var thumb = ((value - min_v) * inner) / span;
         __ui.fill(win_id, x + 6, mid - 2, thumb, 4, fill.value());
-        __ui.fill(win_id, x + 6 + thumb - 6, mid - 8, 12, 16, fill.value());
-        __ui.stroke_rect(win_id, x + 6 + thumb - 6, mid - 8, 12, 16,
-                         Color.Rgb(30, 80, 150).value());
+        fill_round(win_id, x + 6 + thumb - 7, mid - 7, 14, 14, 7, fill.value());
+        stroke_round(win_id, x + 6 + thumb - 7, mid - 7, 14, 14, 7,
+                     Color.Rgb(30, 80, 150).value());
         if (focused) {
-            __ui.stroke_rect(win_id, x, y, w, h, Color.Rgb(47, 111, 196).value());
+            stroke_round(win_id, x, y, w, h, corner_r(), Color.Rgb(47, 111, 196).value());
         }
     }
 
@@ -1080,6 +1213,13 @@ class Slider impl Widget {
     fn has_focus(): Bool {
         return focused;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+
 }
 
 class LabelRows impl LazyRows {
@@ -1102,6 +1242,7 @@ class LazyColumn impl Widget {
     var layout_w: Int = 0;
     var selected: Int = -1;
     var focused: Bool = false;
+    var bar_drag: Bool = false;
     var select_fill: Color = Color.Rgb(200, 220, 255);
     var cache: Array[Widget] = [];
     var cache_first: Int = 0;
@@ -1129,6 +1270,17 @@ class LazyColumn impl Widget {
 
     fn content_h(): Int {
         return source.count() * step();
+    }
+
+    fn content_width(w: Int): Int {
+        var cw = w;
+        if (content_h() > viewport_h) {
+            cw = w - sb_width();
+        }
+        if (cw < 1) {
+            return 1;
+        }
+        return cw;
     }
 
     fn max_offset(): Int {
@@ -1247,27 +1399,38 @@ class LazyColumn impl Widget {
     fn paint(win_id: Int, x: Int, y: Int, w: Int) {
         layout_w = w;
         sync_cache();
+        if (bar_drag && __ui.mouse_down(win_id)) {
+            var my = __ui.mouse_y(win_id) - y;
+            offset = vscroll_offset_at(my, viewport_h, content_h());
+            clamp_offset();
+            sync_cache();
+        }
+        if (!__ui.mouse_down(win_id)) {
+            bar_drag = false;
+        }
+        var cw = content_width(w);
         if (pointer_over(win_id, x, y, w, viewport_h)) {
             cursor_hand(win_id);
         }
-        __ui.clip_push(win_id, x, y, w, viewport_h);
+        __ui.clip_push(win_id, x, y, cw, viewport_h);
         var first = first_index();
         var last = last_index();
         var i = first;
         while (i <= last) {
             var ry = y + i * step() - offset;
             if (i == selected) {
-                __ui.fill(win_id, x, ry, w, step(), select_fill.value());
+                fill_round(win_id, x, ry, cw, step(), 4, select_fill.value());
             }
-            cached_row(i).paint(win_id, x, ry, w);
+            cached_row(i).paint(win_id, x, ry, cw);
             i = i + 1;
         }
         __ui.clip_pop(win_id);
+        paint_vscroll(win_id, x, y, w, viewport_h, offset, content_h());
         var border = Color.Rgb(200, 200, 200);
         if (focused) {
             border = Color.Rgb(47, 111, 196);
         }
-        __ui.stroke_rect(win_id, x, y, w, viewport_h, border.value());
+        stroke_round(win_id, x, y, w, viewport_h, corner_r(), border.value());
     }
 
     fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
@@ -1277,6 +1440,17 @@ class LazyColumn impl Widget {
             return false;
         }
         focused = true;
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            bar_drag = true;
+            offset = vscroll_offset_at(ly, viewport_h, content_h());
+            clamp_offset();
+            sync_cache();
+            return true;
+        }
+        var cw = content_width(w);
+        if (lx >= cw) {
+            return true;
+        }
         var n = source.count();
         if (n < 1) {
             return true;
@@ -1288,7 +1462,7 @@ class LazyColumn impl Widget {
         }
         select(i);
         sync_cache();
-        cached_row(i).handle_click(lx, y - i * step(), w, step());
+        cached_row(i).handle_click(lx, y - i * step(), cw, step());
         return true;
     }
 
@@ -1401,6 +1575,238 @@ class LazyColumn impl Widget {
     fn has_focus(): Bool {
         return focused;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        layout_w = w;
+        if (!hit_test(lx, ly, w, viewport_h)) {
+            return 0;
+        }
+        if (vscroll_hit(lx, ly, w, viewport_h) && max_offset() > 0) {
+            return 1;
+        }
+        var cw = content_width(w);
+        sync_cache();
+        var n = source.count();
+        if (n > 0 && lx < cw) {
+            var y = ly + offset;
+            var i = y / step();
+            if (i >= 0 && i < n) {
+                var c = cached_row(i).hover_cursor(lx, y - i * step(), cw, step());
+                if (c != 0) {
+                    return c;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+class Dropdown impl Widget {
+    var items: Array[String] = [];
+    var selected: Int = -1;
+    var open: Bool = false;
+    var focused: Bool = false;
+    var placeholder: String = "Select";
+    var fill: Color = Color.White;
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var border: Color = Color.Rgb(160, 160, 160);
+    var select_fill: Color = Color.Rgb(200, 220, 255);
+    signal changed();
+
+    fn closed_h(): Int {
+        return control_height(32, 12);
+    }
+
+    fn item_h(): Int {
+        return control_height(28, 8);
+    }
+
+    fn current_label(): String {
+        if (selected >= 0 && selected < len(items)) {
+            return items[selected];
+        }
+        return placeholder;
+    }
+
+    fn set_selected(i: Int) {
+        var next = i;
+        var n = len(items);
+        if (n < 1) {
+            next = -1;
+        } elif (next < 0) {
+            next = -1;
+        } elif (next >= n) {
+            next = n - 1;
+        }
+        if (next != selected) {
+            selected = next;
+            changed.emit();
+        }
+    }
+
+    fn min_width(): Int {
+        var mw = text_width(placeholder) + 28;
+        var i = 0;
+        while (i < len(items)) {
+            var tw = text_width(items[i]) + 28;
+            if (tw > mw) {
+                mw = tw;
+            }
+            i = i + 1;
+        }
+        return mw;
+    }
+
+    fn height(w: Int): Int {
+        var h = closed_h();
+        if (open) {
+            h = h + len(items) * item_h();
+        }
+        return h;
+    }
+
+    fn flex(): Int {
+        return 0;
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        if (!focused) {
+            open = false;
+        }
+        var ch = closed_h();
+        var ih = item_h();
+        var r = corner_r();
+        var over = pointer_over(win_id, x, y, w, height(w));
+        if (over) {
+            cursor_hand(win_id);
+        }
+        var edge = border;
+        if (focused || open) {
+            edge = Color.Rgb(47, 111, 196);
+        }
+        if (open && len(items) > 0) {
+            var full_h = ch + len(items) * ih;
+            fill_round(win_id, x, y, w, full_h, r, fill.value());
+            stroke_round(win_id, x, y, w, full_h, r, edge.value());
+            __ui.fill(win_id, x + 1, y + ch, w - 2, 1, Color.Rgb(220, 220, 226).value());
+            var i = 0;
+            while (i < len(items)) {
+                var ry = y + ch + i * ih;
+                if (i == selected) {
+                    fill_round(win_id, x + 4, ry + 2, w - 8, ih - 4, 4, select_fill.value());
+                }
+                __ui.text(win_id, x + 8, ry + (ih - font_height()) / 2, items[i], ink.value());
+                i = i + 1;
+            }
+        } else {
+            fill_round(win_id, x, y, w, ch, r, fill.value());
+            stroke_round(win_id, x, y, w, ch, r, edge.value());
+        }
+        var ty = y + (ch - font_height()) / 2;
+        __ui.text(win_id, x + 8, ty, current_label(), ink.value());
+        paint_chevron(win_id, x + w - 16, y + ch / 2, 5, open, Color.Rgb(90, 90, 98).value());
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        if (ly < 0 || ly >= h || lx < 0 || lx >= w) {
+            return false;
+        }
+        focused = true;
+        var ch = closed_h();
+        if (ly < ch) {
+            open = !open;
+            return true;
+        }
+        if (!open) {
+            return true;
+        }
+        var ih = item_h();
+        var i = (ly - ch) / ih;
+        if (i >= 0 && i < len(items)) {
+            set_selected(i);
+            open = false;
+        }
+        return true;
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        if (!focused) {
+            return false;
+        }
+        // Esc
+        if (code == 27) {
+            if (open) {
+                open = false;
+                return true;
+            }
+            return false;
+        }
+        // Enter / Space
+        if (code == 13 || code == 32) {
+            if (open) {
+                open = false;
+            } else {
+                open = true;
+                if (selected < 0 && len(items) > 0) {
+                    set_selected(0);
+                }
+            }
+            return true;
+        }
+        // Up / Down
+        if (code == 38 || code == 40) {
+            if (!open) {
+                open = true;
+            }
+            var n = len(items);
+            if (n < 1) {
+                return true;
+            }
+            if (code == 38) {
+                if (selected <= 0) {
+                    set_selected(0);
+                } else {
+                    set_selected(selected - 1);
+                }
+            } else {
+                if (selected < 0) {
+                    set_selected(0);
+                } elif (selected >= n - 1) {
+                    set_selected(n - 1);
+                } else {
+                    set_selected(selected + 1);
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        return false;
+    }
+
+    fn clear_focus() {
+        focused = false;
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        out.push(self);
+    }
+
+    fn focus_enter() {
+        focused = true;
+    }
+
+    fn has_focus(): Bool {
+        return focused;
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        if (hit_test(lx, ly, w, h)) {
+            return 1;
+        }
+        return 0;
+    }
+
 }
 
 class ImageView impl Widget {
@@ -1461,6 +1867,10 @@ class ImageView impl Widget {
     fn has_focus(): Bool {
         return false;
     }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        return 0;
+    }
+
 }
 
 fn make_image(iw: Int, ih: Int, pixels: Array[Int]) {

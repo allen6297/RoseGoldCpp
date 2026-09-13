@@ -6,6 +6,7 @@
 #include "stb_image.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -94,6 +95,7 @@ struct HostWin {
   bool scroll_pending = false;
   int scroll_dx = 0;
   int scroll_dy = 0;
+  int wheel_acc = 0; // residual WM_MOUSEWHEEL delta for smooth trackpads
   struct ClipRect {
     int x0 = 0;
     int y0 = 0;
@@ -132,6 +134,57 @@ uint32_t packRgb(long long color) {
   const unsigned g = static_cast<unsigned>(color >> 8) & 255u;
   const unsigned b = static_cast<unsigned>(color) & 255u;
   return b | (g << 8) | (r << 16);
+}
+
+void fbPlot(HostWin &win, int x, int y, uint32_t p);
+
+void fbPlotCover(HostWin &win, int x, int y, uint32_t src, int cover) {
+  if (cover <= 0)
+    return;
+  if (x < 0 || y < 0 || x >= win.fb_w || y >= win.fb_h)
+    return;
+  if (!win.clip_stack.empty()) {
+    const HostWin::ClipRect &c = win.clip_stack.back();
+    if (x < c.x0 || y < c.y0 || x >= c.x1 || y >= c.y1)
+      return;
+  }
+  if (cover >= 256) {
+    win.fb[static_cast<size_t>(y) * win.fb_w + x] = src;
+    return;
+  }
+  uint32_t &dst = win.fb[static_cast<size_t>(y) * win.fb_w + x];
+  const int inv = 256 - cover;
+  const int dr = (dst >> 16) & 255;
+  const int dg = (dst >> 8) & 255;
+  const int db = dst & 255;
+  const int sr = (src >> 16) & 255;
+  const int sg = (src >> 8) & 255;
+  const int sb = src & 255;
+  const int r = (sr * cover + dr * inv) >> 8;
+  const int g = (sg * cover + dg * inv) >> 8;
+  const int b = (sb * cover + db * inv) >> 8;
+  dst = static_cast<uint32_t>(b) | (static_cast<uint32_t>(g) << 8) |
+        (static_cast<uint32_t>(r) << 16);
+}
+
+float sdRoundBox(float px, float py, float hw, float hh, float radius) {
+  float r = radius;
+  if (r < 0.f)
+    r = 0.f;
+  float maxR = hw < hh ? hw : hh;
+  if (r > maxR)
+    r = maxR;
+  const float ax = px < 0.f ? -px : px;
+  const float ay = py < 0.f ? -py : py;
+  float qx = ax - hw + r;
+  float qy = ay - hh + r;
+  const float mx = qx > 0.f ? qx : 0.f;
+  const float my = qy > 0.f ? qy : 0.f;
+  const float outside = sqrtf(mx * mx + my * my);
+  float inside = qx > qy ? qx : qy;
+  if (inside > 0.f)
+    inside = 0.f;
+  return outside + inside - r;
 }
 
 void ensureFb(HostWin &win) {
@@ -263,6 +316,98 @@ void fbStrokeRect(HostWin &win, int x, int y, int w, int h, long long color) {
   fbFill(win, x, y + h - 1, w, 1, color);
   fbFill(win, x, y, 1, h, color);
   fbFill(win, x + w - 1, y, 1, h, color);
+}
+
+int clampRoundRadius(int w, int h, int radius) {
+  int r = radius;
+  if (r < 0)
+    r = 0;
+  const int lim = (w < h ? w : h) / 2;
+  if (r > lim)
+    r = lim;
+  return r;
+}
+
+void fbFillRound(HostWin &win, int x, int y, int w, int h, int radius,
+                 long long color) {
+  ensureFb(win);
+  if (w < 1 || h < 1)
+    return;
+  const int r = clampRoundRadius(w, h, radius);
+  if (r == 0) {
+    fbFill(win, x, y, w, h, color);
+    return;
+  }
+  const uint32_t p = packRgb(color);
+  const float cx = static_cast<float>(x) + static_cast<float>(w) * 0.5f;
+  const float cy = static_cast<float>(y) + static_cast<float>(h) * 0.5f;
+  const float hw = static_cast<float>(w) * 0.5f;
+  const float hh = static_cast<float>(h) * 0.5f;
+  const float rf = static_cast<float>(r);
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w;
+  int y1 = y + h;
+  clipBounds(win, x0, y0, x1, y1);
+  for (int row = y0; row < y1; ++row) {
+    for (int col = x0; col < x1; ++col) {
+      const float sd =
+          sdRoundBox(static_cast<float>(col) + 0.5f - cx,
+                     static_cast<float>(row) + 0.5f - cy, hw, hh, rf);
+      float cov = 0.5f - sd;
+      if (cov <= 0.f)
+        continue;
+      if (cov >= 1.f)
+        fbPlot(win, col, row, p);
+      else
+        fbPlotCover(win, col, row, p, static_cast<int>(cov * 256.f));
+    }
+  }
+}
+
+void fbStrokeRound(HostWin &win, int x, int y, int w, int h, int radius,
+                   long long color) {
+  ensureFb(win);
+  if (w < 1 || h < 1)
+    return;
+  const int r = clampRoundRadius(w, h, radius);
+  if (r == 0) {
+    fbStrokeRect(win, x, y, w, h, color);
+    return;
+  }
+  const uint32_t p = packRgb(color);
+  const float cx = static_cast<float>(x) + static_cast<float>(w) * 0.5f;
+  const float cy = static_cast<float>(y) + static_cast<float>(h) * 0.5f;
+  // Inset half a pixel so AA stays inside the widget hit box.
+  const float hw = static_cast<float>(w) * 0.5f - 0.5f;
+  const float hh = static_cast<float>(h) * 0.5f - 0.5f;
+  if (hw < 1.f || hh < 1.f) {
+    fbStrokeRect(win, x, y, w, h, color);
+    return;
+  }
+  float rf = static_cast<float>(r) - 0.5f;
+  if (rf < 0.f)
+    rf = 0.f;
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w;
+  int y1 = y + h;
+  clipBounds(win, x0, y0, x1, y1);
+  for (int row = y0; row < y1; ++row) {
+    for (int col = x0; col < x1; ++col) {
+      const float sd =
+          sdRoundBox(static_cast<float>(col) + 0.5f - cx,
+                     static_cast<float>(row) + 0.5f - cy, hw, hh, rf);
+      const float d = sd < 0.f ? -sd : sd;
+      float cov = 1.f - (d - 0.25f) / 0.75f;
+      if (cov <= 0.f)
+        continue;
+      if (cov >= 1.f)
+        fbPlot(win, col, row, p);
+      else
+        fbPlotCover(win, col, row, p, static_cast<int>(cov * 256.f));
+    }
+  }
 }
 
 struct RgbImage {
@@ -412,9 +557,25 @@ void feedKey(HostWin &win, int code, std::string text) {
 }
 
 void feedScroll(HostWin &win, int dx, int dy) {
-  win.scroll_dx = dx;
-  win.scroll_dy = dy;
+  if (!win.scroll_pending) {
+    win.scroll_dx = 0;
+    win.scroll_dy = 0;
+  }
+  win.scroll_dx += dx;
+  win.scroll_dy += dy;
   win.scroll_pending = true;
+}
+
+// Wheel delta units: 120 per notch (Windows WHEEL_DELTA). Keep a residual so
+// precision trackpads that send small deltas still produce smooth pixel steps.
+int wheelDeltaToPixels(HostWin &win, int delta) {
+  constexpr int kWheelUnit = 120;
+  constexpr int kPixelsPerNotch = 48;
+  win.wheel_acc += delta;
+  const int px = win.wheel_acc * kPixelsPerNotch / kWheelUnit;
+  if (px != 0)
+    win.wheel_acc -= px * kWheelUnit / kPixelsPerNotch;
+  return px;
 }
 
 const uint8_t kFont8[96][8] = {
@@ -909,8 +1070,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     win->mouse_x = static_cast<int>(pt.x);
     win->mouse_y = static_cast<int>(pt.y);
     const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-    feedScroll(*win, 0, delta / WHEEL_DELTA * 24);
-    runFrame(id);
+    const int px = wheelDeltaToPixels(*win, delta);
+    if (px != 0) {
+      feedScroll(*win, 0, px);
+      runFrame(id);
+    }
     return 0;
   }
   if (msg == WM_KEYDOWN && win) {
@@ -998,6 +1162,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       blitFbToDc(hdc, *win, cw, ch);
     }
     EndPaint(hwnd, &ps);
+    if (win)
+      applyCursor(*win);
     return 0;
   }
   if (msg == WM_CLOSE) {
@@ -1026,7 +1192,10 @@ void ensureClass() {
   WNDCLASSW wc{};
   wc.lpfnWndProc = wndProc;
   wc.hInstance = GetModuleHandleW(nullptr);
-  wc.hCursor = gArrowCursor;
+  // NULL class cursor: we own the cursor via WM_SETCURSOR / applyCursor.
+  // A non-NULL class cursor (IDC_ARROW) is restored after GDI blits and
+  // fights hover cursors, especially near control edges.
+  wc.hCursor = nullptr;
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
   wc.lpszClassName = L"RoseGoldC.Window";
   gAtom = RegisterClassW(&wc);
@@ -1263,8 +1432,13 @@ void rgScrollWheel(id self, SEL, id event) {
     return;
   const double dy = reinterpret_cast<double (*)(id, SEL)>(objc_msgSend)(
       event, sel_registerName("scrollingDeltaY"));
-  feedScroll(*win, 0, static_cast<int>(dy));
-  runFrame(win->id);
+  int py = static_cast<int>(dy);
+  if (py == 0 && dy != 0.0)
+    py = dy > 0.0 ? 1 : -1;
+  if (py != 0) {
+    feedScroll(*win, 0, py);
+    runFrame(win->id);
+  }
 }
 
 void rgKeyDown(id self, SEL, id event) {
@@ -2029,7 +2203,7 @@ void xHandle(const XEvent &e) {
     if (win && (e.xbutton.button == 4 || e.xbutton.button == 5)) {
       win->mouse_x = e.xbutton.x;
       win->mouse_y = e.xbutton.y;
-      feedScroll(*win, 0, e.xbutton.button == 4 ? 24 : -24);
+      feedScroll(*win, 0, e.xbutton.button == 4 ? 48 : -48);
       runFrame(win->id);
     }
     return;
@@ -2605,6 +2779,28 @@ Value uiHostCall(Interpreter &I, const std::string &name,
       fbStrokeRect(*win, static_cast<int>(needInt(1)),
                    static_cast<int>(needInt(2)), static_cast<int>(needInt(3)),
                    static_cast<int>(needInt(4)), needInt(5));
+    return Value::makeVoid();
+  }
+  if (name == "fill_round") {
+    if (args.size() != 7)
+      I.runtime("__ui.fill_round takes 7 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      fbFillRound(*win, static_cast<int>(needInt(1)),
+                  static_cast<int>(needInt(2)), static_cast<int>(needInt(3)),
+                  static_cast<int>(needInt(4)), static_cast<int>(needInt(5)),
+                  needInt(6));
+    return Value::makeVoid();
+  }
+  if (name == "stroke_round") {
+    if (args.size() != 7)
+      I.runtime("__ui.stroke_round takes 7 arguments", line, col);
+    HostWin *win = findAlive(needInt(0));
+    if (win)
+      fbStrokeRound(*win, static_cast<int>(needInt(1)),
+                    static_cast<int>(needInt(2)), static_cast<int>(needInt(3)),
+                    static_cast<int>(needInt(4)), static_cast<int>(needInt(5)),
+                    needInt(6));
     return Value::makeVoid();
   }
   if (name == "image_rgb") {

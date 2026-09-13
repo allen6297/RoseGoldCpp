@@ -84,6 +84,9 @@ fn main(): Int {
     w.key_at(36, "");
     checks.eq(lazy.selected, 0);
     checks.eq(lazy.offset, 0);
+    var cw = 320 - 24;
+    w.click_at(12 + cw - 4, 12 + 80);
+    checks.that(lazy.offset > 0);
     w.close();
 
     var hits = Hits { n: 0, last: -1 };

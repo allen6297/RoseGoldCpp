@@ -598,8 +598,7 @@ fn main(): Int {
 
 **Desktop UI polish (recommended before mobile/web)**
 
-1. Dropdown / context menu widgets.
-2. Scrollbar chrome on `ScrollView` and `LazyColumn` (thumb + click-to-page).
+- Context menus / popup menus (overlay layer; `Dropdown` covers inline selects).
 
 **Later / when you have a concrete target**
 

@@ -1312,6 +1312,10 @@ struct TypeChecker {
         arity(6);
         return;
       }
+      if (name == "fill_round" || name == "stroke_round") {
+        arity(7);
+        return;
+      }
       if (name == "clip_push") {
         arity(5);
         return;

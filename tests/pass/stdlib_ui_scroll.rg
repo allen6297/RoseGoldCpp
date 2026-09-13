@@ -18,6 +18,11 @@ fn main(): Int {
     w.scroll_at(0, 1000, 40, 40);
     checks.that(scroll.offset < before);
     checks.eq(scroll.offset, 0);
+
+    // click near bottom of scrollbar track (window pad 12, content ~296 wide)
+    var cw = 320 - 24;
+    w.click_at(12 + cw - 4, 12 + 70);
+    checks.that(scroll.offset > 0);
     w.close();
     return 0;
 }
