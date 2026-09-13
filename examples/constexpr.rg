@@ -1,3 +1,4 @@
+ /// Adds two integers.
 @constexpr
 fn add(a: Int, b: Int): Int {
     return a + b;
@@ -11,8 +12,14 @@ fn abs(n: Int): Int {
     return n;
 }
 
+/#
+  Block comment.
+#/
+
 fn main(): Int {
-    const n = add(2, 40);
+    // line comment
+    var x = 2;
+    const n = add(x, 40);
     print(n);
     print(abs(-3));
     return 0;

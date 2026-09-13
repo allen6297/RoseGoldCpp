@@ -13,6 +13,14 @@ fn main(): Int {
     print(sign(-2));
     print(sign(0));
 
+    if false && (1 / 0 == 1) {
+        print("and-bad");
+    }
+    if true || (1 / 0 == 1) {
+        print("or-ok");
+    }
+    print(true && false);
+
     var i = 0;
     var s = 0;
     while i < 4 {
@@ -20,5 +28,17 @@ fn main(): Int {
         i = i + 1;
     }
     print(s);
+
+    var sum = 0;
+    for x in [1, 2, 3] {
+        sum = sum + x;
+    }
+    print(sum);
+    for i in 0..3 {
+        print(i);
+    }
+    for i in 1..=2 {
+        print(i);
+    }
     return 0;
 }

@@ -1,5 +1,6 @@
 struct Point {
     x: Int;
+    @optional
     y: Int;
 
     fn mag2(): Int {
@@ -7,12 +8,22 @@ struct Point {
     }
 }
 
+data Size {
+    w: Int;
+    h: Int;
+}
+
 fn main(): Int {
-    var p = Point { x: 3, y: 4 };
-    print(p);
+    var p = Point { x: 3 };
     print(p.x);
-    p.y = 5;
     print(p.y);
+    p.y = 4;
     print(p.mag2());
+
+    var a = Size { w: 3, h: 4 };
+    var b = Size { w: 3, h: 4 };
+    if a == b {
+        print("eq");
+    }
     return 0;
 }

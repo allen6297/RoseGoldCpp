@@ -11,225 +11,155 @@ class ContactRows impl LazyRows {
     var query: String = "";
 
     fn matches(c: Contact): Bool {
-        var q = str.trim(query);
-        if (str.is_empty(q)) {
-            return true;
-        }
-        q = str.lower(q);
-        return str.contains(str.lower(c.name), q) || str.contains(str.lower(c.note), q);
+        var q = str.lower(str.trim(query));
+        return str.is_empty(q) || str.contains(str.lower(c.name + " " + c.note), q);
     }
 
     fn count(): Int {
         var n = 0;
-        var i = 0;
-        while (i < len(people)) {
-            if (matches(people[i])) {
+        for c in people {
+            if (matches(c)) {
                 n = n + 1;
             }
-            i = i + 1;
         }
         return n;
     }
 
     fn real_index(vis: Int): Int {
         var seen = 0;
-        var i = 0;
-        while (i < len(people)) {
+        for i in len(people) {
             if (matches(people[i])) {
                 if (seen == vis) {
                     return i;
                 }
                 seen = seen + 1;
             }
-            i = i + 1;
         }
         return -1;
     }
 
     fn row(i: Int): Widget {
-        var ri = real_index(i);
-        return Label { text: people[ri].name };
+        return Label { text: people[real_index(i)].name };
     }
 }
 
 fn main(): Int {
-    var people: Array[Contact] = [
-        Contact { name: "Ada", note: "Analytical engine" },
-        Contact { name: "Grace", note: "Compilers" },
-        Contact { name: "Alan", note: "Halting problem" },
-        Contact { name: "Katherine", note: "Orbital mechanics" },
-        Contact { name: "Margaret", note: "Apollo software" },
-        Contact { name: "Barbara", note: "Software engineering" },
-        Contact { name: "Dennis", note: "C and Unix" },
-        Contact { name: "Ken", note: "Unix" },
-        Contact { name: "Donald", note: "Art of Computer Programming" },
-        Contact { name: "John", note: "Lisp" },
-        Contact { name: "Guido", note: "Python" },
-        Contact { name: "Bjarne", note: "C++" }
-    ];
-    var rows = ContactRows { people: people };
+    var rows = ContactRows {
+        people: [
+            Contact { name: "Ada", note: "Analytical engine" },
+            Contact { name: "Grace", note: "Compilers" },
+            Contact { name: "Alan", note: "Halting problem" },
+            Contact { name: "Ken", note: "Unix" }
+        ]
+    };
     var theme = Theme { window_bg: Color.Rgb(248, 248, 252) };
-    var w = try ui.open_theme("Contacts", 420, 500, theme);
+    var w = try ui.open_theme("Contacts", 400, 420, theme);
     var search = theme.field("Search");
     var name = theme.field("");
     var note = theme.field("");
     var status = theme.label("Select a contact");
-    var list = LazyColumn {
-        source: rows,
-        row_h: 28,
-        viewport_h: 180
+    var list = LazyColumn { source: rows, row_h: 28, viewport_h: 140 };
+    var idx = fn (): Int { return rows.real_index(list.selected); };
+    var say = fn (s: String) { status.set_text(s); };
+    var dirty = fn () {
+        list.invalidate_cache();
+        w.mark_dirty();
     };
 
     list.selection_changed.connect(fn () {
-        var ri = rows.real_index(list.selected);
+        var ri = idx();
         if (ri < 0) {
             name.text = "";
             note.text = "";
-            if (!str.is_empty(str.trim(rows.query))) {
-                if (rows.count() == 0) {
-                    status.set_text("No matches");
-                } else {
-                    status.set_text("Filtered");
-                }
+            if (rows.count() == 0 && !str.is_empty(str.trim(rows.query))) {
+                say("No matches");
+            } elif (str.is_empty(str.trim(rows.query))) {
+                say("Select a contact");
             } else {
-                status.set_text("Select a contact");
+                say("Filtered");
             }
             return;
         }
-        name.text = people[ri].name;
-        note.text = people[ri].note;
-        if (str.is_empty(people[ri].name)) {
-            status.set_text("New contact");
+        name.text = rows.people[ri].name;
+        note.text = rows.people[ri].note;
+        if (str.is_empty(rows.people[ri].name)) {
+            say("New contact");
         } else {
-            status.set_text("Editing " + people[ri].name);
+            say("Editing " + rows.people[ri].name);
         }
     });
-
     search.changed.connect(fn () {
         rows.query = search.text;
-        list.selected = -1;
         list.offset = 0;
         list.invalidate_cache();
-        name.text = "";
-        note.text = "";
-        if (str.is_empty(str.trim(rows.query))) {
-            status.set_text("Select a contact");
-        } elif (rows.count() == 0) {
-            status.set_text("No matches");
-        } else {
-            status.set_text("Filtered");
-        }
+        list.selected = -1;
+        list.selection_changed.emit();
     });
     name.changed.connect(fn () { w.mark_dirty(); });
     note.changed.connect(fn () { w.mark_dirty(); });
 
-    var menu = w.menu(["Clear fields", "Duplicate", "Delete"]);
+    var menu = w.menu(["Clear fields", "Delete"]);
     menu.chosen.connect(fn () {
+        var ri = idx();
         if (menu.selected == 0) {
             name.text = "";
             note.text = "";
             w.mark_dirty();
-            status.set_text("Cleared");
-        } elif (menu.selected == 1) {
-            var ri = rows.real_index(list.selected);
-            if (ri >= 0) {
-                people.push(people[ri]);
-                rows.people = people;
-                list.invalidate_cache();
-                list.select(rows.count() - 1);
-                w.mark_dirty();
-                status.set_text("Duplicated");
-            }
-        } elif (menu.selected == 2) {
-            var ri = rows.real_index(list.selected);
-            if (ri >= 0) {
-                var next: Array[Contact] = [];
-                var i = 0;
-                while (i < len(people)) {
-                    if (i != ri) {
-                        next.push(people[i]);
-                    }
-                    i = i + 1;
+            say("Cleared");
+        } elif (ri >= 0) {
+            var next: Array[Contact] = [];
+            for i in len(rows.people) {
+                if (i != ri) {
+                    next.push(rows.people[i]);
                 }
-                people = next;
-                rows.people = people;
-                list.selected = -1;
-                list.invalidate_cache();
-                name.text = "";
-                note.text = "";
-                w.mark_dirty();
-                status.set_text("Deleted");
             }
+            rows.people = next;
+            list.selected = -1;
+            dirty();
+            list.selection_changed.emit();
+            say("Deleted");
         }
     });
-    list.context_requested.connect(fn () {
-        w.show_menu_at_pointer(menu);
-    });
-
-    var actions = theme.button("Actions");
-    actions.clicked.connect(fn () {
-        w.show_menu_at_pointer(menu);
-    });
+    list.context_requested.connect(fn () { w.show_menu_at_pointer(menu); });
 
     var add = theme.button("New");
     add.clicked.connect(fn () {
         search.text = "";
         rows.query = "";
-        people.push(Contact { name: "", note: "" });
-        rows.people = people;
-        list.invalidate_cache();
-        list.select(len(people) - 1);
-        name.text = "";
-        note.text = "";
-        w.mark_dirty();
-        status.set_text("New contact");
+        rows.people.push(Contact { name: "", note: "" });
+        dirty();
+        list.select(len(rows.people) - 1);
     });
-
     var save = theme.button("Save");
     save.clicked.connect(fn () {
-        var ri = rows.real_index(list.selected);
+        var ri = idx();
         if (ri >= 0) {
-            people[ri] = Contact { name: name.text, note: note.text };
-            rows.people = people;
+            rows.people[ri] = Contact { name: name.text, note: note.text };
             list.invalidate_cache();
             w.mark_clean();
-            if (str.is_empty(str.trim(name.text))) {
-                status.set_text("Saved");
-            } else {
-                status.set_text("Saved " + name.text);
-            }
+            say("Saved " + name.text);
         } elif (!str.is_empty(str.trim(name.text))) {
-            people.push(Contact { name: name.text, note: note.text });
-            rows.people = people;
+            rows.people.push(Contact { name: name.text, note: note.text });
             search.text = "";
             rows.query = "";
             list.invalidate_cache();
-            list.select(len(people) - 1);
             w.mark_clean();
-            status.set_text("Added " + name.text);
+            list.select(len(rows.people) - 1);
         }
     });
-
-    var avatar = ui.load_image("examples/assets/dot.png");
+    var more = theme.button("Menu");
+    more.clicked.connect(fn () { w.show_menu_at_pointer(menu); });
     var quit = theme.button("Close");
-    quit.clicked.connect(fn () {
-        w.request_close();
-    });
+    quit.clicked.connect(fn () { w.request_close(); });
     w.add(VStack {
-        spacing: 10,
+        spacing: 8,
         children: [
-            HStack {
-                spacing: 12,
-                children: [avatar, status, Spacer {}, actions, quit]
-            },
+            HStack { spacing: 8, children: [status, Spacer {}, more, quit] },
             search,
             list,
             theme.form_row("Name", name),
             theme.form_row("Note", note),
-            HStack {
-                spacing: 8,
-                children: [add, save, Spacer {}]
-            }
+            HStack { spacing: 8, children: [add, save, Spacer {}] }
         ]
     });
     w.run();
