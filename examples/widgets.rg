@@ -7,22 +7,17 @@ fn main(): Int {
         button_hover: Color.Rgb(70, 140, 230),
         button_pressed: Color.Rgb(30, 80, 150)
     };
-    var w = try ui.open("Widgets", 440, 620);
-    w.theme = theme;
+    var w = try ui.open_theme("Widgets", 440, 640, theme);
 
     var name = theme.field("Name");
-    var remember = Toggle { label: "Remember me" };
-    var agree = Checkbox { label: "Email updates" };
-    var theme_pick = RadioGroup {
-        items: ["Light", "Dark", "System"],
-        selected: 0
-    };
-    var volume = Slider { value: 40, min_v: 0, max_v: 100 };
-    var load = ProgressBar { value: 55, max_v: 100 };
-    var city = Dropdown {
-        placeholder: "City",
-        items: ["Austin", "Boston", "Chicago", "Denver"]
-    };
+    var remember = theme.toggle("Remember me");
+    var agree = theme.checkbox("Email updates");
+    var theme_pick = theme.radio_group(["Light", "Dark", "System"]);
+    var volume = theme.slider();
+    volume.value = 40;
+    var load = theme.progress();
+    load.set_value(55);
+    var city = theme.dropdown("City", ["Austin", "Boston", "Chicago", "Denver"]);
     var status = theme.label("Theme, form, scroll, slider, lazy");
     volume.changed.connect(fn () {
         load.set_value(volume.value);
@@ -32,9 +27,7 @@ fn main(): Int {
     agree.changed.connect(fn () { status.set_text("checkbox"); });
     theme_pick.changed.connect(fn () { status.set_text(theme_pick.items[theme_pick.selected]); });
 
-    var menu = PopupMenu {
-        items: ["New", "Open", "Save", "Quit"]
-    };
+    var menu = w.menu(["New", "Open", "Save", "Quit"]);
     var more_btn = theme.button("Menu");
     more_btn.clicked.connect(fn () {
         w.show_menu_at_pointer(menu);
@@ -79,19 +72,14 @@ fn main(): Int {
     var swatch = ui.make_image(16, 16, rgb_px);
     var file = ui.load_image("examples/assets/dot.png");
 
-    var close_dlg = Dialog {
-        title: "Close",
-        message: "Leave the widgets demo?",
-        buttons: ["Cancel", "Close"]
-    };
-    close_dlg.chosen.connect(fn () {
-        if (close_dlg.selected == 1) {
-            w.close();
-        }
-    });
     var quit = theme.button("Close");
     quit.clicked.connect(fn () {
-        w.show_dialog(close_dlg);
+        var d = w.confirm("Close", "Leave the widgets demo?", "Close");
+        d.chosen.connect(fn () {
+            if (d.selected == 1) {
+                w.close();
+            }
+        });
     });
 
     var prompt = Dialog {
@@ -116,9 +104,10 @@ fn main(): Int {
         w.show_dialog(prompt);
     });
     name.submitted.connect(fn () { submit.clicked.emit(); });
+    name.changed.connect(fn () { w.mark_dirty(); });
     menu.chosen.connect(fn () {
         if (menu.selected == 3) {
-            w.show_dialog(close_dlg);
+            w.request_close();
         } else {
             status.set_text(menu.items[menu.selected]);
         }
@@ -128,7 +117,7 @@ fn main(): Int {
         spacing: 10,
         children: [
             theme.label("Long labels wrap when the row is narrow enough to need it."),
-            name,
+            theme.form_row("Name", name),
             remember,
             agree,
             theme_pick,

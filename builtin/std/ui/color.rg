@@ -46,6 +46,11 @@ class Theme {
     var field_fill: Color = Color.White;
     var field_border: Color = Color.Rgb(160, 160, 160);
     var field_focus: Color = Color.Rgb(47, 111, 196);
+    var accent: Color = Color.Rgb(47, 111, 196);
+    var accent_hover: Color = Color.Rgb(66, 133, 220);
+    var muted: Color = Color.Rgb(140, 140, 148);
+    var track: Color = Color.Rgb(180, 180, 180);
+    var select_fill: Color = Color.Rgb(200, 220, 255);
 }
 
 fn default_theme(): Theme {

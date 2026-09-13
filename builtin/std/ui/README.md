@@ -53,20 +53,22 @@ Width is assigned by the parent; height is `height(w)` (so labels can wrap to th
 | Widget | Notes |
 |---|---|
 | `Label` | `text`, soft-wrap + `\n`; `.foreground(Color)`, `.set_text` |
+| `Labeled` | title above a child; `theme.form_row("Name", field)` |
 | `Button` | `clicked`; hover / pressed; `enabled` / `set_enabled` |
 | `TextField` | focus + keys; `changed` / `submitted`; `enabled` |
-| `Toggle` | `on` bool; `changed`; `enabled` |
-| `Checkbox` | `checked` + label; `changed`; `enabled` |
-| `RadioGroup` | `items` / `selected`; click or arrows; `changed`; `enabled` |
-| `ProgressBar` | `value` / `max_v`; `set_value` |
-| `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed` |
-| `Dropdown` | `items`, `selected`, expands when `open`; click / Enter / arrows / Esc; `changed` |
+| `Toggle` | `on` bool; `changed`; `enabled`; `theme.toggle` |
+| `Checkbox` | `checked` + label; `changed`; `enabled`; `theme.checkbox` |
+| `RadioGroup` | `items` / `selected`; click or arrows; `changed`; `enabled`; `theme.radio_group` |
+| `ProgressBar` | `value` / `max_v`; `set_value`; `theme.progress` |
+| `Slider` | `value` / `min_v` / `max_v`; drag or click; `changed`; `theme.slider` |
+| `Dropdown` | `items`, `selected`, expands when `open`; click / Enter / arrows / Esc; `changed`; `theme.dropdown` |
 | `TipWrap` | `w.tip(child, "text")` — hover bubble via Window overlay |
-| `PopupMenu` | Overlay menu via `w.show_menu(menu, x, y)` or `w.show_menu_at_pointer(menu)`; click / arrows / Enter / Esc; `chosen` |
-| `Dialog` | Modal overlay via `w.show_dialog(dlg)`; title/message, optional field, buttons; Esc cancels; `chosen` / `cancelled` |
+| `PopupMenu` | Overlay menu via `w.show_menu` / `w.menu([...])` + `show_menu_at_pointer`; `chosen` |
+| `Dialog` | Modal overlay; also `w.confirm` / `w.alert` / `w.request_close` (dirty) |
 | `ScrollView` | `child`, `viewport_h`, wheel / `scroll_at`; vertical scrollbar chrome |
 | `LazyColumn` | virtualized list: `LazyRows`, fixed `row_h`, scroll/clip, selection, scrollbar, **visible-row cache**; right-click → `context_requested` |
 | `LabelRows` | `LazyRows` helper over `Array[String]` → `Label` rows |
+| `FilteredLabels` | `LabelRows` + query filter + `real_index` |
 | `Canvas` | stroked frame + diagonal; `redraw` signal for custom host draws |
 | `ImageView` | `ui.make_image(w, h, pixels)` or `ui.load_image("x.ppm"\|"x.png")` |
 | `Spacer` | expanding gap in rows |
@@ -83,19 +85,25 @@ ui.rgb(47, 111, 196)
 
 ```text
 var theme = Theme { window_bg: Color.Rgb(245, 245, 248) };
-w.theme = theme;
+var w = try ui.open_theme("Hi", 400, 240, theme);
 var go = theme.button("Go");
-var name = theme.field("Name");
-var title = theme.label("Hi");
+var name = theme.form_row("Name", theme.field("Name"));
+var ok = theme.checkbox("Agree");
 ```
+
+Theme factories: `button`, `label`, `field`, `form_row`, `toggle`, `checkbox`, `radio_group`, `progress`, `slider`, `dropdown`.
 
 ## Window API
 
 | Call | Purpose |
 |---|---|
 | `ui.open` / `ui.open_hidden` | Create (`throws`) |
+| `ui.open_theme` / `ui.open_hidden_theme` | Create with `theme` applied |
 | `w.add(widget)` | Attach root child |
 | `w.run()` / `w.poll()` | Event loop / one pump |
+| `w.confirm` / `w.alert` | One-shot dialogs |
+| `w.menu([...])` | Build a `PopupMenu` |
+| `w.mark_dirty` / `w.mark_clean` / `w.request_close` | Dirty flag + confirm-on-close |
 | `w.click_at` / `w.key_at` / `w.scroll_at` / `w.hover_at` | Tests / synthetic input |
 | `ui.backend()` / `ui.platform()` / `ui.kind()` | Host / OS / `desktop` |
 
@@ -144,11 +152,13 @@ Hover cursors: `Window.tick` sets the cursor from `root.hover_cursor(...)` after
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_contacts.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_dialog.rg
 .\build\RoseGoldC.exe run tests/pass/stdlib_ui_controls.rg
+.\build\RoseGoldC.exe run tests/pass/stdlib_ui_ergonomics.rg
 ```
 
 ## Not yet
 
-- Second dogfood app (todo / settings / file browser) to find API gaps
+- `.on_click` / `.on_change` UFCS aliases (language has no fn-as-parameter types yet)
+- Second dogfood app (todo / settings / file browser)
 - Caret blink / text selection; Wayland input parity
 - Mobile/web backends (names reserved on the same `__ui` surface)
 

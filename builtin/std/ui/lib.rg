@@ -966,6 +966,15 @@ class Window {
     var tip_x: Int = 0;
     var tip_y: Int = 0;
     var tip_on: Bool = false;
+    var dirty: Bool = false;
+
+    fn mark_dirty() {
+        dirty = true;
+    }
+
+    fn mark_clean() {
+        dirty = false;
+    }
 
     fn clear_tip() {
         tip_on = false;
@@ -1074,6 +1083,49 @@ class Window {
 
     fn has_dialog(): Bool {
         return len(dialogs) > 0;
+    }
+
+    fn confirm(title: String, message: String, ok: String): Dialog {
+        var d = Dialog {
+            title: title,
+            message: message,
+            buttons: ["Cancel", ok]
+        };
+        show_dialog(d);
+        return d;
+    }
+
+    fn alert(title: String, message: String): Dialog {
+        var d = Dialog {
+            title: title,
+            message: message,
+            buttons: ["OK"]
+        };
+        show_dialog(d);
+        return d;
+    }
+
+    fn menu(items: Array[String]): PopupMenu {
+        return PopupMenu { items: items };
+    }
+
+    fn request_close() {
+        if (!dirty) {
+            close();
+            return;
+        }
+        var d = Dialog {
+            title: "Close",
+            message: "Discard unsaved changes?",
+            buttons: ["Cancel", "Close"]
+        };
+        d.chosen.connect(fn () {
+            if (d.selected == 1) {
+                dirty = false;
+                close();
+            }
+        });
+        show_dialog(d);
     }
 
     fn show() throws {
@@ -1445,6 +1497,12 @@ fn open(title: String, width: Int, height: Int) throws: Window {
     return w;
 }
 
+fn open_theme(title: String, width: Int, height: Int, theme: Theme) throws: Window {
+    var w = try open(title, width, height);
+    w.theme = theme;
+    return w;
+}
+
 fn open_hidden(title: String, width: Int, height: Int) throws: Window {
     var id = try __ui.open(title, width, height, false);
     var w = Window {
@@ -1455,6 +1513,32 @@ fn open_hidden(title: String, width: Int, height: Int) throws: Window {
     };
     w.bind_frame();
     return w;
+}
+
+fn open_hidden_theme(title: String, width: Int, height: Int, theme: Theme) throws: Window {
+    var w = try open_hidden(title, width, height);
+    w.theme = theme;
+    return w;
+}
+
+@ufcs
+fn confirm(w: Window, title: String, message: String, ok: String): Dialog {
+    return w.confirm(title, message, ok);
+}
+
+@ufcs
+fn alert(w: Window, title: String, message: String): Dialog {
+    return w.alert(title, message);
+}
+
+@ufcs
+fn menu(w: Window, items: Array[String]): PopupMenu {
+    return w.menu(items);
+}
+
+@ufcs
+fn request_close(w: Window) {
+    w.request_close();
 }
 
 fn cursor_arrow(win_id: Int) {

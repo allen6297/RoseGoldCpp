@@ -599,10 +599,11 @@ fn main(): Int {
 
 ## Next steps
 
-**Desktop UI (recommended before mobile/web)**
+**Desktop UI**
 
-1. Dogfood a second small app (todo list, settings panel, or tiny file browser) — surfaces missing widgets faster than inventing them in isolation.
+1. Dogfood a second small app (todo list, settings panel, or tiny file browser) — surfaces more gaps.
 2. Optional polish: richer text (caret blink, selection), Wayland input parity, more image formats beyond PPM/PNG.
+3. When the language grows fn-as-parameter types: `.on_click` / `.on_change` UFCS aliases for signal connect.
 
 **Tooling / language**
 

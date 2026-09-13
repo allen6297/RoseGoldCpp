@@ -533,6 +533,105 @@ class Spacer impl Widget {
 
 }
 
+class Labeled impl Widget {
+    var title: String = "";
+    var child: Widget;
+    var spacing: Int = 4;
+    var title_ink: Color = Color.Rgb(32, 32, 32);
+
+    fn min_width(): Int {
+        var tw = text_width(title);
+        var cw = child.min_width();
+        if (tw > cw) {
+            return tw;
+        }
+        return cw;
+    }
+
+    fn height(w: Int): Int {
+        var h = 0;
+        if (len(title) > 0) {
+            h = h + font_height() + spacing;
+        }
+        return h + child.height(w);
+    }
+
+    fn flex(): Int {
+        return child.flex();
+    }
+
+    fn paint(win_id: Int, x: Int, y: Int, w: Int) {
+        var cy = y;
+        if (len(title) > 0) {
+            __ui.text(win_id, x, cy, title, title_ink.value());
+            cy = cy + font_height() + spacing;
+        }
+        child.paint(win_id, x, cy, w);
+    }
+
+    fn handle_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        var top = 0;
+        if (len(title) > 0) {
+            top = font_height() + spacing;
+        }
+        if (ly < top) {
+            return false;
+        }
+        return child.handle_click(lx, ly - top, w, h - top);
+    }
+    fn handle_right_click(lx: Int, ly: Int, w: Int, h: Int): Bool {
+        var top = 0;
+        if (len(title) > 0) {
+            top = font_height() + spacing;
+        }
+        if (ly < top) {
+            return false;
+        }
+        return child.handle_right_click(lx, ly - top, w, h - top);
+    }
+
+    fn handle_key(code: Int, text: String): Bool {
+        return child.handle_key(code, text);
+    }
+
+    fn handle_scroll(dx: Int, dy: Int, lx: Int, ly: Int, w: Int, h: Int): Bool {
+        var top = 0;
+        if (len(title) > 0) {
+            top = font_height() + spacing;
+        }
+        if (ly < top) {
+            return false;
+        }
+        return child.handle_scroll(dx, dy, lx, ly - top, w, h - top);
+    }
+
+    fn clear_focus() {
+        child.clear_focus();
+    }
+
+    fn append_focusables(out: Array[Widget]) {
+        child.append_focusables(out);
+    }
+
+    fn focus_enter() {
+        child.focus_enter();
+    }
+
+    fn has_focus(): Bool {
+        return child.has_focus();
+    }
+    fn hover_cursor(lx: Int, ly: Int, w: Int, h: Int): Int {
+        var top = 0;
+        if (len(title) > 0) {
+            top = font_height() + spacing;
+        }
+        if (ly < top) {
+            return 0;
+        }
+        return child.hover_cursor(lx, ly - top, w, h - top);
+    }
+}
+
 class Label impl Widget {
     var text: String = "";
     var color: Color = Color.Rgb(32, 32, 32);
@@ -918,6 +1017,10 @@ class Toggle impl Widget {
     var label: String = "";
     var focused: Bool = false;
     var enabled: Bool = true;
+    var track_off: Color = Color.Rgb(180, 180, 180);
+    var track_on: Color = Color.Rgb(47, 111, 196);
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var muted: Color = Color.Rgb(140, 140, 148);
     signal changed();
 
     fn set_on(v: Bool) {
@@ -949,9 +1052,9 @@ class Toggle impl Widget {
         if (enabled && pointer_over(win_id, x, y, w, h)) {
             cursor_hand(win_id);
         }
-        var track = Color.Rgb(180, 180, 180);
+        var track = track_off;
         if (on) {
-            track = Color.Rgb(47, 111, 196);
+            track = track_on;
         }
         if (!enabled) {
             track = Color.Rgb(200, 200, 208);
@@ -963,14 +1066,14 @@ class Toggle impl Widget {
             knob_x = x + 21;
         }
         fill_round(win_id, knob_x, mid + 2, 18, 18, 9, Color.White.value());
-        stroke_round(win_id, knob_x, mid + 2, 18, 18, 9, Color.Rgb(140, 140, 148).value());
+        stroke_round(win_id, knob_x, mid + 2, 18, 18, 9, muted.value());
         if (len(label) > 0) {
             var ty = y + (h - font_height()) / 2;
-            var ink = Color.Rgb(32, 32, 32);
+            var text_ink = ink;
             if (!enabled) {
-                ink = Color.Rgb(140, 140, 148);
+                text_ink = muted;
             }
-            __ui.text(win_id, x + 50, ty, label, ink.value());
+            __ui.text(win_id, x + 50, ty, label, text_ink.value());
         }
     }
 
@@ -1037,6 +1140,9 @@ class Checkbox impl Widget {
     var checked: Bool = false;
     var focused: Bool = false;
     var enabled: Bool = true;
+    var accent: Color = Color.Rgb(47, 111, 196);
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var muted: Color = Color.Rgb(140, 140, 148);
     signal changed();
 
     fn set_checked(v: Bool) {
@@ -1071,9 +1177,9 @@ class Checkbox impl Widget {
         var box = 18;
         var by = y + (h - box) / 2;
         var fill = Color.White;
-        var border = Color.Rgb(140, 140, 148);
+        var border = muted;
         if (checked) {
-            fill = Color.Rgb(47, 111, 196);
+            fill = accent;
             border = fill;
         }
         if (!enabled) {
@@ -1091,15 +1197,14 @@ class Checkbox impl Widget {
             __ui.line(win_id, x + 8, by + 13, x + 14, by + 5, mark.value());
         }
         if (focused && enabled) {
-            stroke_round(win_id, x - 2, by - 2, box + 4, box + 4, 5,
-                         Color.Rgb(47, 111, 196).value());
+            stroke_round(win_id, x - 2, by - 2, box + 4, box + 4, 5, accent.value());
         }
         if (len(label) > 0) {
-            var ink = Color.Rgb(32, 32, 32);
+            var text_ink = ink;
             if (!enabled) {
-                ink = Color.Rgb(140, 140, 148);
+                text_ink = muted;
             }
-            __ui.text(win_id, x + box + 8, y + (h - font_height()) / 2, label, ink.value());
+            __ui.text(win_id, x + box + 8, y + (h - font_height()) / 2, label, text_ink.value());
         }
     }
 
@@ -1164,6 +1269,9 @@ class RadioGroup impl Widget {
     var selected: Int = 0;
     var focused: Bool = false;
     var enabled: Bool = true;
+    var accent: Color = Color.Rgb(47, 111, 196);
+    var ink: Color = Color.Rgb(32, 32, 32);
+    var muted: Color = Color.Rgb(140, 140, 148);
     signal changed();
 
     fn set_selected(i: Int) {
@@ -1223,10 +1331,10 @@ class RadioGroup impl Widget {
             var ry = y + i * rh;
             var cy = ry + rh / 2;
             var on = i == selected;
-            var ring = Color.Rgb(140, 140, 148);
+            var ring = muted;
             var fill = Color.White;
             if (on) {
-                ring = Color.Rgb(47, 111, 196);
+                ring = accent;
             }
             if (!enabled) {
                 ring = Color.Rgb(190, 190, 198);
@@ -1235,21 +1343,20 @@ class RadioGroup impl Widget {
             fill_round(win_id, x, cy - 8, 16, 16, 8, fill.value());
             stroke_round(win_id, x, cy - 8, 16, 16, 8, ring.value());
             if (on) {
-                var dot = Color.Rgb(47, 111, 196);
+                var dot = accent;
                 if (!enabled) {
                     dot = Color.Rgb(160, 160, 168);
                 }
                 fill_round(win_id, x + 4, cy - 4, 8, 8, 4, dot.value());
             }
             if (focused && enabled && i == selected) {
-                stroke_round(win_id, x - 2, cy - 10, 20, 20, 10,
-                             Color.Rgb(47, 111, 196).value());
+                stroke_round(win_id, x - 2, cy - 10, 20, 20, 10, accent.value());
             }
-            var ink = Color.Rgb(32, 32, 32);
+            var text_ink = ink;
             if (!enabled) {
-                ink = Color.Rgb(140, 140, 148);
+                text_ink = muted;
             }
-            __ui.text(win_id, x + 24, ry + (rh - font_height()) / 2, items[i], ink.value());
+            __ui.text(win_id, x + 24, ry + (rh - font_height()) / 2, items[i], text_ink.value());
             i = i + 1;
         }
     }
@@ -1845,6 +1952,51 @@ class LabelRows impl LazyRows {
 
     fn row(i: Int): Widget {
         return Label { text: items[i] };
+    }
+}
+
+class FilteredLabels impl LazyRows {
+    var items: Array[String] = [];
+    var query: String = "";
+
+    fn matches(s: String): Bool {
+        var q = __str.trim(query);
+        if (__str.is_empty(q)) {
+            return true;
+        }
+        return __str.contains(__str.lower(s), __str.lower(q));
+    }
+
+    fn count(): Int {
+        var n = 0;
+        var i = 0;
+        while (i < len(items)) {
+            if (matches(items[i])) {
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    fn real_index(vis: Int): Int {
+        var seen = 0;
+        var i = 0;
+        while (i < len(items)) {
+            if (matches(items[i])) {
+                if (seen == vis) {
+                    return i;
+                }
+                seen = seen + 1;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fn row(i: Int): Widget {
+        var ri = real_index(i);
+        return Label { text: items[ri] };
     }
 }
 
@@ -2558,5 +2710,73 @@ fn field(t: Theme, placeholder: String): TextField {
         placeholder: placeholder,
         fill: t.field_fill,
         border: t.field_border
+    };
+}
+
+@ufcs
+fn form_row(t: Theme, title: String, child: Widget): Labeled {
+    return Labeled {
+        title: title,
+        child: child,
+        title_ink: t.label_ink
+    };
+}
+
+@ufcs
+fn toggle(t: Theme, label: String): Toggle {
+    return Toggle {
+        label: label,
+        track_off: t.track,
+        track_on: t.accent,
+        ink: t.label_ink,
+        muted: t.muted
+    };
+}
+
+@ufcs
+fn checkbox(t: Theme, label: String): Checkbox {
+    return Checkbox {
+        label: label,
+        accent: t.accent,
+        ink: t.label_ink,
+        muted: t.muted
+    };
+}
+
+@ufcs
+fn radio_group(t: Theme, items: Array[String]): RadioGroup {
+    return RadioGroup {
+        items: items,
+        accent: t.accent,
+        ink: t.label_ink,
+        muted: t.muted
+    };
+}
+
+@ufcs
+fn progress(t: Theme): ProgressBar {
+    return ProgressBar {
+        track: Color.Rgb(220, 220, 226),
+        fill: t.accent
+    };
+}
+
+@ufcs
+fn slider(t: Theme): Slider {
+    return Slider {
+        track: t.track,
+        fill: t.accent
+    };
+}
+
+@ufcs
+fn dropdown(t: Theme, placeholder: String, items: Array[String]): Dropdown {
+    return Dropdown {
+        placeholder: placeholder,
+        items: items,
+        fill: t.field_fill,
+        ink: t.label_ink,
+        border: t.field_border,
+        select_fill: t.select_fill
     };
 }

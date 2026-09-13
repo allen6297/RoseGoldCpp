@@ -68,12 +68,11 @@ fn main(): Int {
         Contact { name: "Bjarne", note: "C++" }
     ];
     var rows = ContactRows { people: people };
-    var w = try ui.open("Contacts", 420, 460);
     var theme = Theme { window_bg: Color.Rgb(248, 248, 252) };
-    w.theme = theme;
+    var w = try ui.open_theme("Contacts", 420, 500, theme);
     var search = theme.field("Search");
-    var name = theme.field("Name");
-    var note = theme.field("Note");
+    var name = theme.field("");
+    var note = theme.field("");
     var status = theme.label("Select a contact");
     var list = LazyColumn {
         source: rows,
@@ -121,14 +120,15 @@ fn main(): Int {
             status.set_text("Filtered");
         }
     });
+    name.changed.connect(fn () { w.mark_dirty(); });
+    note.changed.connect(fn () { w.mark_dirty(); });
 
-    var menu = PopupMenu {
-        items: ["Clear fields", "Duplicate", "Delete"]
-    };
+    var menu = w.menu(["Clear fields", "Duplicate", "Delete"]);
     menu.chosen.connect(fn () {
         if (menu.selected == 0) {
             name.text = "";
             note.text = "";
+            w.mark_dirty();
             status.set_text("Cleared");
         } elif (menu.selected == 1) {
             var ri = rows.real_index(list.selected);
@@ -137,6 +137,7 @@ fn main(): Int {
                 rows.people = people;
                 list.invalidate_cache();
                 list.select(rows.count() - 1);
+                w.mark_dirty();
                 status.set_text("Duplicated");
             }
         } elif (menu.selected == 2) {
@@ -156,6 +157,7 @@ fn main(): Int {
                 list.invalidate_cache();
                 name.text = "";
                 note.text = "";
+                w.mark_dirty();
                 status.set_text("Deleted");
             }
         }
@@ -179,6 +181,7 @@ fn main(): Int {
         list.select(len(people) - 1);
         name.text = "";
         note.text = "";
+        w.mark_dirty();
         status.set_text("New contact");
     });
 
@@ -189,6 +192,7 @@ fn main(): Int {
             people[ri] = Contact { name: name.text, note: note.text };
             rows.people = people;
             list.invalidate_cache();
+            w.mark_clean();
             if (str.is_empty(str.trim(name.text))) {
                 status.set_text("Saved");
             } else {
@@ -201,24 +205,15 @@ fn main(): Int {
             rows.query = "";
             list.invalidate_cache();
             list.select(len(people) - 1);
+            w.mark_clean();
             status.set_text("Added " + name.text);
         }
     });
 
     var avatar = ui.load_image("examples/assets/dot.png");
-    var close_dlg = Dialog {
-        title: "Close",
-        message: "Close Contacts?",
-        buttons: ["Cancel", "Close"]
-    };
-    close_dlg.chosen.connect(fn () {
-        if (close_dlg.selected == 1) {
-            w.close();
-        }
-    });
     var quit = theme.button("Close");
     quit.clicked.connect(fn () {
-        w.show_dialog(close_dlg);
+        w.request_close();
     });
     w.add(VStack {
         spacing: 10,
@@ -229,8 +224,8 @@ fn main(): Int {
             },
             search,
             list,
-            name,
-            note,
+            theme.form_row("Name", name),
+            theme.form_row("Note", note),
             HStack {
                 spacing: 8,
                 children: [add, save, Spacer {}]
