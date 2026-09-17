@@ -23,6 +23,10 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 | 6 | Fmt `#` / `\x` round-trip (+ atomic `-w`) | **Fixed** |
 | — | Unknown type names (`Bogus`) | **Fixed** |
 | — | `str.split`: `Array[String]` | **Fixed** |
+| 7 | Call-stack / sync emit depth | **Fixed** — 1024 calls / 64 sync emits |
+| 9 | `time.sleep` / `delay` | **Fixed** — 60s cap |
+| 12 | Lexer huge literals / junk recovery | **Fixed** |
+| 14 | DAP watches + `ThrowEscape` | **Fixed** |
 
 ---
 

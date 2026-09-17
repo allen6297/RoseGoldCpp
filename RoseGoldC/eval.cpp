@@ -28,6 +28,9 @@ namespace {
 constexpr long long kMaxRangeItems = 1000000;
 constexpr int kMaxJsonDepth = 64;
 constexpr size_t kMaxRepeatBytes = 16u * 1024u * 1024u;
+constexpr size_t kMaxCallDepth = 1024;
+constexpr int kMaxSyncEmitDepth = 64;
+constexpr long long kMaxSleepMs = 60000;
 } // namespace
 
 static Value zeroOfType(const std::string &ty) {
@@ -2017,6 +2020,8 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       long long ms = args[0].i;
       if (ms < 0)
         ms = 0;
+      if (ms > kMaxSleepMs)
+        runtime("time.sleep duration too large", line, col);
       std::this_thread::sleep_for(std::chrono::milliseconds(ms));
       return Value::makeVoid();
     }
@@ -2028,6 +2033,8 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       long long ms = args[0].i;
       if (ms < 0)
         ms = 0;
+      if (ms > kMaxSleepMs)
+        runtime("time.delay duration too large", line, col);
       auto fut = std::make_shared<FutureData>();
       const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
@@ -2102,6 +2109,8 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
 Value Interpreter::runUserBody(const FnDecl &fn, const std::vector<Value> &args,
                                int line, int col,
                                const std::map<std::string, Binding> *caps) {
+  if (debug.stack.size() >= kMaxCallDepth)
+    runtime("call stack overflow", line, col);
   struct ModGuard {
     Interpreter *self;
     std::string prev;
@@ -2517,6 +2526,13 @@ Value Interpreter::callSignalList(const std::string &signal, std::size_t arity,
       deferred.push_back(std::move(item));
       return Value::makeVoid();
     }
+    if (syncEmitDepth >= kMaxSyncEmitDepth)
+      runtime("signal emit nested too deeply", line, col);
+    struct EmitDepth {
+      int *depth;
+      explicit EmitDepth(int *d) : depth(d) { ++(*depth); }
+      ~EmitDepth() { --(*depth); }
+    } emitGuard(&syncEmitDepth);
     auto copy = list;
     for (const auto &fn : copy)
       callFnValue(fn, args, line, col);
@@ -2607,6 +2623,9 @@ Value Interpreter::debugEval(const std::string &source, std::string &err) {
   }
   try {
     return eval(e);
+  } catch (const ThrowEscape &ex) {
+    err = "throw: " + ex.value.toString();
+    return Value::makeVoid();
   } catch (const std::exception &ex) {
     err = ex.what();
     return Value::makeVoid();

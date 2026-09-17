@@ -297,27 +297,51 @@ struct Lexer {
 
     if (std::isdigit(static_cast<unsigned char>(c))) {
       std::string digits;
-      while (std::isdigit(static_cast<unsigned char>(peek())))
-        digits.push_back(advance());
+      bool overflowed = false;
+      auto takeDigits = [&]() {
+        while (std::isdigit(static_cast<unsigned char>(peek()))) {
+          if (digits.size() >= 256) {
+            overflowed = true;
+            while (std::isdigit(static_cast<unsigned char>(peek())))
+              advance();
+            break;
+          }
+          digits.push_back(advance());
+        }
+      };
+      takeDigits();
       if (peek() == '.' &&
           std::isdigit(static_cast<unsigned char>(peek(1)))) {
         digits.push_back(advance());
-        while (std::isdigit(static_cast<unsigned char>(peek())))
-          digits.push_back(advance());
+        takeDigits();
         Token t;
         t.kind = Tok::Float;
         t.text = digits;
-        t.real = std::stod(digits);
         t.line = startLine;
         t.col = startCol;
+        try {
+          if (overflowed)
+            throw std::out_of_range("float literal too large");
+          t.real = std::stod(digits);
+        } catch (...) {
+          record("float literal too large", startLine, startCol);
+          t.real = 0;
+        }
         return t;
       }
       Token t;
       t.kind = Tok::Integer;
       t.text = digits;
-      t.number = std::stoll(digits);
       t.line = startLine;
       t.col = startCol;
+      try {
+        if (overflowed || digits.size() > 19)
+          throw std::out_of_range("integer literal too large");
+        t.number = std::stoll(digits);
+      } catch (...) {
+        record("integer literal too large", startLine, startCol);
+        t.number = 0;
+      }
       return t;
     }
 
@@ -428,6 +452,7 @@ struct Lexer {
     default:
       record(std::string("unexpected character '") + c + "'", startLine,
              startCol);
+      advance();
       return next();
     }
   }

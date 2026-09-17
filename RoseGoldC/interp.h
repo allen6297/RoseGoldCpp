@@ -456,6 +456,7 @@ struct Interpreter {
   std::vector<FrameJob> frameJobs;
   std::vector<std::map<std::string, Binding>> env;
   int loopDepth = 0;
+  int syncEmitDepth = 0;
   std::string file;
   std::vector<std::string> argv;
   std::string out;
