@@ -1,4 +1,4 @@
-import regex;
+import std.regex;
 
 fn main(): Int {
     checks.that(regex.valid("\\d+"));

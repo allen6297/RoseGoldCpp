@@ -2106,13 +2106,12 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
         runtime("__regex." + name + " expects String", line, col);
       return args[i].s;
     };
-    auto makeRe = [&](const std::string &pattern) {
+    auto makeRe = [&](const std::string &pattern) -> std::regex {
       try {
         return std::regex(pattern);
       } catch (const std::regex_error &e) {
         runtime(std::string("invalid regex: ") + e.what(), line, col);
       }
-      return std::regex(); // unreachable
     };
     if (name == "valid") {
       if (args.size() != 1)
