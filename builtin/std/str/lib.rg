@@ -38,7 +38,7 @@ fn slice(s: String, start: Int, end: Int): String {
     return __str.slice(s, start, end);
 }
 
-fn split(s: String, sep: String): Array {
+fn split(s: String, sep: String): Array[String] {
     return __str.split(s, sep);
 }
 

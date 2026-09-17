@@ -217,13 +217,33 @@ static DispatchResult dispatch(const Invocation &inv) {
     }
     if (write) {
       if (fmt.out != original) {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) {
+        namespace fs = std::filesystem;
+        const fs::path target(path);
+        const fs::path tmp =
+            target.parent_path() /
+            (target.filename().string() + ".rgfmt.tmp");
+        {
+          std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+          if (!out) {
+            std::cerr << "cannot write " << tmp.string() << "\n";
+            result.exitCode = 2;
+            return result;
+          }
+          out << fmt.out;
+          if (!out) {
+            std::cerr << "cannot write " << tmp.string() << "\n";
+            result.exitCode = 2;
+            return result;
+          }
+        }
+        std::error_code ec;
+        fs::rename(tmp, target, ec);
+        if (ec) {
+          fs::remove(tmp);
           std::cerr << "cannot write " << path << "\n";
           result.exitCode = 2;
           return result;
         }
-        out << fmt.out;
       }
       return result;
     }

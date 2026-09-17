@@ -131,16 +131,18 @@ struct TypeChecker {
         I().traits.count(head) || I().enums.count(head))
       return;
     const StdlibExport *ex = lookupStdlibExport(head, I().file);
-    if (!ex)
+    if (ex) {
+      std::string word = "type";
+      if (ex->kind == "trait")
+        word = "trait";
+      else if (ex->kind == "fn")
+        word = "function";
+      fail(line, col,
+           "undefined " + word + " '" + head + "'" +
+               stdlibImportHint(head, I().file));
       return;
-    std::string word = "type";
-    if (ex->kind == "trait")
-      word = "trait";
-    else if (ex->kind == "fn")
-      word = "function";
-    fail(line, col,
-         "undefined " + word + " '" + head + "'" +
-             stdlibImportHint(head, I().file));
+    }
+    fail(line, col, "undefined type '" + head + "'");
   }
 
   static bool isArrayTy(const std::string &ty) {
@@ -296,21 +298,31 @@ struct TypeChecker {
       return compatible(ra, rb);
     }
     if (isArrayTy(a) && isArrayTy(b)) {
-      if (a == "Array" || b == "Array")
+      // Directional: bare Array as the *expected* type accepts any Array[T].
+      // A bare Array value may not flow into Array[T] (see assignable()).
+      if (a == "Array")
         return true;
+      if (b == "Array")
+        return false;
       return compatible(arrayElem(a), arrayElem(b));
     }
     if (isFutureTy(a) && isFutureTy(b)) {
-      if (a == "Future" || b == "Future")
+      if (a == "Future")
         return true;
+      if (b == "Future")
+        return false;
       return compatible(futureElem(a), futureElem(b));
     }
     if (isMapTy(a) && isMapTy(b)) {
       auto aa = typeArgList(a);
       auto ab = typeArgList(b);
-      if (aa.size() == 2 && ab.size() == 2)
-        return compatible(aa[0], ab[0]) && compatible(aa[1], ab[1]);
-      return true;
+      if (aa.empty())
+        return true;
+      if (ab.empty())
+        return false;
+      if (aa.size() != 2 || ab.size() != 2)
+        return false;
+      return compatible(aa[0], ab[0]) && compatible(aa[1], ab[1]);
     }
     if (isTraitType(a)) {
       if (isTraitType(b) && compatibleTrait(a, b))
@@ -323,8 +335,10 @@ struct TypeChecker {
                      b.find('[') != std::string::npos)) {
       auto aa = typeArgList(a);
       auto ab = typeArgList(b);
-      if (aa.empty() || ab.empty())
+      if (aa.empty())
         return true;
+      if (ab.empty())
+        return false;
       if (aa.size() != ab.size())
         return false;
       for (size_t i = 0; i < aa.size(); ++i) {
@@ -333,6 +347,21 @@ struct TypeChecker {
       }
       return true;
     }
+    return false;
+  }
+
+  // Array/Map literals may initialize a parameterized container; element
+  // checks run via checkArrayElems. Bare Array/Map *values* may not.
+  bool assignable(const std::string &expect, const std::string &got,
+                  const Expr &e) {
+    if (compatible(expect, got))
+      return true;
+    if (isArrayTy(expect) && expect != "Array" && got == "Array" &&
+        e.kind == Expr::Kind::Array)
+      return true;
+    if (isMapTy(expect) && expect != "Map" && got == "Map" &&
+        e.kind == Expr::Kind::Map)
+      return true;
     return false;
   }
 
@@ -904,10 +933,15 @@ struct TypeChecker {
   }
 
   void checkCompound(const std::string &op, const std::string &lt,
-                     const std::string &rt, int line, int col) {
+                     const std::string &rt, int line, int col,
+                     const Expr *rhs = nullptr) {
     if (op.empty() || op == "=") {
-      if (known(lt) && known(rt) && !compatible(lt, rt))
-        fail(line, col, "cannot assign " + rt + " to " + lt);
+      if (known(lt) && known(rt)) {
+        const bool ok =
+            rhs ? assignable(lt, rt, *rhs) : compatible(lt, rt);
+        if (!ok)
+          fail(line, col, "cannot assign " + rt + " to " + lt);
+      }
       return;
     }
     if (!known(lt) || !known(rt))
@@ -956,7 +990,7 @@ struct TypeChecker {
         break;
       const std::string &expect = fn.paramTypes[i + off];
       std::string got = infer(args[i]);
-      if (known(expect) && known(got) && !compatible(expect, got))
+      if (known(expect) && known(got) && !assignable(expect, got, args[i]))
         fail(line, col,
              "cannot pass " + got + " to '" + fn.name + "', expected " +
                  expect);
@@ -1204,7 +1238,7 @@ struct TypeChecker {
       return;
     for (const auto &kid : e.kids) {
       std::string got = infer(kid);
-      if (known(got) && !compatible(elem, got))
+      if (known(got) && !assignable(elem, got, kid))
         fail(line, col,
              "cannot pass " + got + " to " + expectTy + ", expected " +
                  elem);
@@ -1222,7 +1256,7 @@ struct TypeChecker {
         break;
       std::string expectTy = substType(hit.m->paramTypes[i + 1], env);
       std::string got = infer(args[i]);
-      if (known(expectTy) && known(got) && !compatible(expectTy, got))
+      if (known(expectTy) && known(got) && !assignable(expectTy, got, args[i]))
         fail(line, col,
              "cannot pass " + got + " to '" + hit.m->name + "', expected " +
                  expectTy);
@@ -1257,7 +1291,7 @@ struct TypeChecker {
         break;
       std::string expect = substType(fn.paramTypes[i + off], env);
       std::string got = infer(args[i]);
-      if (known(expect) && known(got) && !compatible(expect, got))
+      if (known(expect) && known(got) && !assignable(expect, got, args[i]))
         fail(line, col,
              "cannot pass " + got + " to '" + fn.name + "', expected " +
                  expect);
@@ -1274,7 +1308,8 @@ struct TypeChecker {
     checkArity(label, params.size(), args.size(), line, col);
     for (size_t i = 0; i < args.size() && i < params.size(); ++i) {
       std::string got = infer(args[i]);
-      if (known(params[i]) && known(got) && !compatible(params[i], got))
+      if (known(params[i]) && known(got) &&
+          !assignable(params[i], got, args[i]))
         fail(line, col,
              "cannot pass " + got + " to '" + label + "', expected " +
                  params[i]);
@@ -1619,7 +1654,8 @@ struct TypeChecker {
       if (!fn->paramTypes.empty() && !e.kids.empty()) {
         std::string expect = substType(fn->paramTypes[0], env);
         std::string got = infer(e.kids[0]);
-        if (known(expect) && known(got) && !compatible(expect, got))
+        if (known(expect) && known(got) &&
+            !assignable(expect, got, e.kids[0]))
           fail(e.line, e.col,
                "cannot pass " + got + " to '" + fn->name + "', expected " +
                    expect);
@@ -1629,7 +1665,8 @@ struct TypeChecker {
       if (!fn->paramTypes.empty()) {
         const std::string &expect = fn->paramTypes[0];
         std::string got = infer(e.kids[0]);
-        if (known(expect) && known(got) && !compatible(expect, got))
+        if (known(expect) && known(got) &&
+            !assignable(expect, got, e.kids[0]))
           fail(e.line, e.col,
                "cannot pass " + got + " to '" + fn->name + "', expected " +
                    expect);
@@ -1654,7 +1691,7 @@ struct TypeChecker {
         if (n == 1 && e.kids.size() >= 2) {
           const std::string elem = arrayElem(obj);
           const std::string got = infer(e.kids[1]);
-          if (known(elem) && known(got) && !compatible(elem, got))
+          if (known(elem) && known(got) && !assignable(elem, got, e.kids[1]))
             fail(e.line, e.col,
                  "cannot pass " + got + " to 'push', expected " + elem);
           if (n == 1 && e.kids.size() >= 2)
@@ -2078,7 +2115,8 @@ struct TypeChecker {
         if (i < e.kids.size()) {
           std::string expect = substType(st->typeOfField(field), env);
           std::string got = infer(e.kids[i]);
-          if (known(expect) && known(got) && !compatible(expect, got))
+          if (known(expect) && known(got) &&
+              !assignable(expect, got, e.kids[i]))
             fail(e.line, e.col,
                  "cannot assign " + got + " to field '" + field +
                      "', expected " + expect);
@@ -2160,7 +2198,7 @@ struct TypeChecker {
         }
       }
       if (known(stmt.typeName) && known(got) &&
-          !compatible(stmt.typeName, got))
+          !assignable(stmt.typeName, got, stmt.expr))
         fail(stmt.line, stmt.col,
              "variable annotated as " + stmt.typeName +
                  " but initializer looks like " + got);
@@ -2189,7 +2227,7 @@ struct TypeChecker {
       }
       std::string lt = lookup(stmt.name);
       std::string rt = infer(stmt.expr);
-      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col);
+      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col, &stmt.expr);
       if (stmt.op.empty() || stmt.op == "=")
         checkArrayElems(lt, stmt.expr, stmt.line, stmt.col);
       return;
@@ -2216,7 +2254,7 @@ struct TypeChecker {
       }
       std::string lt = known(obj) ? fieldType(obj, stmt.name) : "";
       std::string rt = infer(stmt.expr);
-      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col);
+      checkCompound(stmt.op, lt, rt, stmt.line, stmt.col, &stmt.expr);
       if (stmt.op.empty() || stmt.op == "=")
         checkArrayElems(lt, stmt.expr, stmt.line, stmt.col);
       return;
@@ -2231,7 +2269,7 @@ struct TypeChecker {
         const std::string obj = infer(stmt.target.kids[0]);
         const std::string elem = arrayElem(obj);
         const std::string rt = infer(stmt.expr);
-        if (known(elem) && known(rt) && !compatible(elem, rt))
+        if (known(elem) && known(rt) && !assignable(elem, rt, stmt.expr))
           fail(stmt.line, stmt.col, "cannot assign " + rt + " to " + elem);
         checkArrayElems(elem, stmt.expr, stmt.line, stmt.col);
       }
@@ -2248,7 +2286,7 @@ struct TypeChecker {
       {
         std::string got = infer(stmt.expr);
         if (known(currentReturn) && known(got) &&
-            !compatible(currentReturn, got))
+            !assignable(currentReturn, got, stmt.expr))
           fail(stmt.line, stmt.col,
                "cannot return " + got + " from " + currentReturn +
                    " function");

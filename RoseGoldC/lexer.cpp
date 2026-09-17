@@ -68,12 +68,6 @@ struct Lexer {
         advance();
         continue;
       }
-      // Keep '#' line comments as skipped trivia (not emitted).
-      if (c == '#') {
-        while (peek() != '\0' && peek() != '\n')
-          advance();
-        continue;
-      }
       break;
     }
   }
@@ -82,6 +76,19 @@ struct Lexer {
     std::string text;
     text.push_back(advance()); // /
     text.push_back(advance()); // /
+    while (peek() != '\0' && peek() != '\n')
+      text.push_back(advance());
+    Token t;
+    t.kind = Tok::LineComment;
+    t.text = std::move(text);
+    t.line = startLine;
+    t.col = startCol;
+    return t;
+  }
+
+  Token hashLineComment(int startLine, int startCol) {
+    std::string text;
+    text.push_back(advance()); // #
     while (peek() != '\0' && peek() != '\n')
       text.push_back(advance());
     Token t;
@@ -233,7 +240,30 @@ struct Lexer {
           text.push_back('\n');
         else if (e == 't')
           text.push_back('\t');
-        else
+        else if (e == 'r')
+          text.push_back('\r');
+        else if (e == 'x') {
+          auto hex = [&](char h) -> int {
+            if (h >= '0' && h <= '9')
+              return h - '0';
+            if (h >= 'a' && h <= 'f')
+              return h - 'a' + 10;
+            if (h >= 'A' && h <= 'F')
+              return h - 'A' + 10;
+            return -1;
+          };
+          char h1 = peek();
+          int d1 = hex(h1);
+          if (d1 < 0)
+            error("invalid \\x escape", startLine, startCol);
+          advance();
+          char h2 = peek();
+          int d2 = hex(h2);
+          if (d2 < 0)
+            error("invalid \\x escape", startLine, startCol);
+          advance();
+          text.push_back(static_cast<char>((d1 << 4) | d2));
+        } else
           text.push_back(e);
       } else {
         text.push_back(advance());
@@ -257,6 +287,8 @@ struct Lexer {
 
     if (c == '/' && peek(1) == '/')
       return lineComment(startLine, startCol);
+    if (c == '#')
+      return hashLineComment(startLine, startCol);
     if (c == '/' && peek(1) == '#')
       return blockComment(startLine, startCol);
 
@@ -265,27 +297,51 @@ struct Lexer {
 
     if (std::isdigit(static_cast<unsigned char>(c))) {
       std::string digits;
-      while (std::isdigit(static_cast<unsigned char>(peek())))
-        digits.push_back(advance());
+      bool overflowed = false;
+      auto takeDigits = [&]() {
+        while (std::isdigit(static_cast<unsigned char>(peek()))) {
+          if (digits.size() >= 256) {
+            overflowed = true;
+            while (std::isdigit(static_cast<unsigned char>(peek())))
+              advance();
+            break;
+          }
+          digits.push_back(advance());
+        }
+      };
+      takeDigits();
       if (peek() == '.' &&
           std::isdigit(static_cast<unsigned char>(peek(1)))) {
         digits.push_back(advance());
-        while (std::isdigit(static_cast<unsigned char>(peek())))
-          digits.push_back(advance());
+        takeDigits();
         Token t;
         t.kind = Tok::Float;
         t.text = digits;
-        t.real = std::stod(digits);
         t.line = startLine;
         t.col = startCol;
+        try {
+          if (overflowed)
+            throw std::out_of_range("float literal too large");
+          t.real = std::stod(digits);
+        } catch (...) {
+          record("float literal too large", startLine, startCol);
+          t.real = 0;
+        }
         return t;
       }
       Token t;
       t.kind = Tok::Integer;
       t.text = digits;
-      t.number = std::stoll(digits);
       t.line = startLine;
       t.col = startCol;
+      try {
+        if (overflowed || digits.size() > 19)
+          throw std::out_of_range("integer literal too large");
+        t.number = std::stoll(digits);
+      } catch (...) {
+        record("integer literal too large", startLine, startCol);
+        t.number = 0;
+      }
       return t;
     }
 
@@ -396,6 +452,7 @@ struct Lexer {
     default:
       record(std::string("unexpected character '") + c + "'", startLine,
              startCol);
+      advance();
       return next();
     }
   }
