@@ -3475,7 +3475,7 @@ Value uiHostCall(Interpreter &I, const std::string &name,
     HostWin *win = findAlive(needInt(0));
     const int x = static_cast<int>(needInt(1));
     const int y = static_cast<int>(needInt(2));
-    const std::string path = needStr(3);
+    const std::string path = I.sandboxPath(needStr(3), line, col);
     const RgbImage *img = cachedImage(path);
     if (win && img)
       fbBlitRgb(*win, x, y, img->w, img->h, img->px.data());
@@ -3484,13 +3484,15 @@ Value uiHostCall(Interpreter &I, const std::string &name,
   if (name == "image_width") {
     if (args.size() != 1)
       I.runtime("__ui.image_width takes 1 argument", line, col);
-    const RgbImage *img = cachedImage(needStr(0));
+    const RgbImage *img =
+        cachedImage(I.sandboxPath(needStr(0), line, col));
     return Value::makeInt(img ? img->w : 0);
   }
   if (name == "image_height") {
     if (args.size() != 1)
       I.runtime("__ui.image_height takes 1 argument", line, col);
-    const RgbImage *img = cachedImage(needStr(0));
+    const RgbImage *img =
+        cachedImage(I.sandboxPath(needStr(0), line, col));
     return Value::makeInt(img ? img->h : 0);
   }
   if (name == "clip_push") {

@@ -631,7 +631,7 @@ fn main(): Int {
 **Tooling / language**
 
 - Optional: more DAP (hit-count breakpoints, set variable).
-- Optional: `__io` path sandbox if untrusted scripts matter; import paths relative to the importing module.
+- Optional: tighter `__io` sandbox root (entry/repo vs cwd) if needed.
 - Optional: `import math` not loading the rest of `std` (already correct; stdlib is tiny).
 - See [LANGUAGE_REVIEW.md](LANGUAGE_REVIEW.md) for correctness fixes landed and remaining items.
 

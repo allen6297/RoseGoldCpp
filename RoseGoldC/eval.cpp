@@ -1886,7 +1886,7 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
     auto needPath = [&](size_t i) {
       if (args[i].kind != Value::Kind::String)
         runtime("__io." + name + " expects String", line, col);
-      return args[i].s;
+      return sandboxPath(args[i].s, line, col);
     };
     auto ioThrow = [&](const std::string &msg) {
       throw ThrowEscape{Value::makeString(msg), line, col};
@@ -2280,12 +2280,14 @@ Value Interpreter::callUser(const FnDecl &fn, const std::vector<Value> &args, in
     std::shared_ptr<std::map<std::string, Binding>> capturedCaps;
     if (caps)
       capturedCaps = std::make_shared<std::map<std::string, Binding>>(*caps);
-    const FnDecl *fnPtr = &fn;
-    enqueueMicrotask([this, fut, fnPtr, capturedArgs, capturedCaps, line,
+    // Keep a copy alive for the microtask so FnDecl* cannot dangle if the
+    // originating Program storage is released while the future is pending.
+    auto fnKeep = std::make_shared<FnDecl>(fn);
+    enqueueMicrotask([this, fut, fnKeep, capturedArgs, capturedCaps, line,
                       col]() {
       try {
         Value ret =
-            runUserBody(*fnPtr, capturedArgs, line, col,
+            runUserBody(*fnKeep, capturedArgs, line, col,
                         capturedCaps ? capturedCaps.get() : nullptr);
         settleFuture(fut, std::move(ret));
       } catch (ThrowEscape &ex) {
