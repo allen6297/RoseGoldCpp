@@ -1526,7 +1526,10 @@ void Interpreter::evalImport(const ImportDecl &im, const std::string &fromFile,
       moduleBinds[name] = target;
   };
   setBind(bind, key);
-  if (im.path[0] == "std")
+  // Short crate imports (`import regex`) rewrite to `std.regex` and should
+  // also bind `std`, matching `import std.regex` / documented `import math`.
+  if (im.path[0] == "std" || key == "std" ||
+      (key.size() > 4 && key.compare(0, 4, "std.") == 0))
     setBind("std", "std");
 }
 
