@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -2043,6 +2044,114 @@ Value Interpreter::callBuiltin(const std::string &module, const std::string &nam
       return Value::makeString(std::move(out));
     }
     runtime("unknown function __json." + name, line, col);
+  }
+  if (module == "__regex") {
+    auto needStr = [&](size_t i) {
+      if (args[i].kind != Value::Kind::String)
+        runtime("__regex." + name + " expects String", line, col);
+      return args[i].s;
+    };
+    auto makeRe = [&](const std::string &pattern) {
+      try {
+        return std::regex(pattern);
+      } catch (const std::regex_error &e) {
+        runtime(std::string("invalid regex: ") + e.what(), line, col);
+      }
+      return std::regex(); // unreachable
+    };
+    if (name == "valid") {
+      if (args.size() != 1)
+        runtime("regex.valid takes 1 argument", line, col);
+      try {
+        std::regex re(needStr(0));
+        (void)re;
+        return Value::makeBool(true);
+      } catch (const std::regex_error &) {
+        return Value::makeBool(false);
+      }
+    }
+    if (name == "is_match") {
+      if (args.size() != 2)
+        runtime("regex.is_match takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      return Value::makeBool(std::regex_search(text, re));
+    }
+    if (name == "find") {
+      if (args.size() != 2)
+        runtime("regex.find takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      std::smatch m;
+      if (!std::regex_search(text, m, re))
+        return Value::makeInt(-1);
+      return Value::makeInt(static_cast<long long>(m.position()));
+    }
+    if (name == "find_match") {
+      if (args.size() != 2)
+        runtime("regex.find_match takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      std::smatch m;
+      if (!std::regex_search(text, m, re))
+        return Value::makeString("");
+      return Value::makeString(m.str());
+    }
+    if (name == "captures") {
+      if (args.size() != 2)
+        runtime("regex.captures takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      std::smatch m;
+      if (!std::regex_search(text, m, re))
+        return Value::makeArray({});
+      std::vector<Value> parts;
+      parts.reserve(m.size());
+      for (size_t i = 0; i < m.size(); ++i)
+        parts.push_back(Value::makeString(m[i].str()));
+      return Value::makeArray(std::move(parts));
+    }
+    if (name == "findall") {
+      if (args.size() != 2)
+        runtime("regex.findall takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      std::vector<Value> parts;
+      for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end;
+           ++it)
+        parts.push_back(Value::makeString(it->str()));
+      return Value::makeArray(std::move(parts));
+    }
+    if (name == "replace") {
+      if (args.size() != 3)
+        runtime("regex.replace takes 3 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::string with = needStr(2);
+      const std::regex re = makeRe(pattern);
+      return Value::makeString(std::regex_replace(text, re, with));
+    }
+    if (name == "split") {
+      if (args.size() != 2)
+        runtime("regex.split takes 2 arguments", line, col);
+      const std::string pattern = needStr(0);
+      const std::string text = needStr(1);
+      const std::regex re = makeRe(pattern);
+      std::vector<Value> parts;
+      std::sregex_token_iterator it(text.begin(), text.end(), re, -1);
+      std::sregex_token_iterator end;
+      for (; it != end; ++it)
+        parts.push_back(Value::makeString(it->str()));
+      if (parts.empty())
+        parts.push_back(Value::makeString(text));
+      return Value::makeArray(std::move(parts));
+    }
+    runtime("unknown function __regex." + name, line, col);
   }
   if (module == "__ui")
     return uiHostCall(*this, name, args, line, col);

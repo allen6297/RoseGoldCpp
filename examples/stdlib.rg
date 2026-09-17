@@ -10,6 +10,7 @@ fn main(): Int {
     print(std.time.now() > 0);
     print(std.path.stem("README.md"));
     print(std.json.stringify({"ok": true}));
+    print(std.regex.is_match("\\d+", "42"));
     print(std.nil().to_string());
     var v = Vec2 { x: 3.0, y: 4.0 };
     print(v.length());

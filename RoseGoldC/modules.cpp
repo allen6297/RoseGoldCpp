@@ -339,8 +339,8 @@ stdlibExportIndex(const std::string &fromFile) {
   if (root.empty())
     return idx;
   indexStdlibDir(root, "std", idx);
-  const char *children[] = {"math", "str", "io",  "vec",
-                            "time", "path", "json", "ui"};
+  const char *children[] = {"math", "str", "io",  "vec", "time",
+                            "path", "json", "regex", "ui"};
   for (const char *child : children)
     indexStdlibDir(root / child, child, idx);
   return idx;
