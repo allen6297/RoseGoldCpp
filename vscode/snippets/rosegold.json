@@ -342,7 +342,7 @@
     "body": [
       "import std;"
     ],
-    "description": "Import std (std.math, std.str, std.io, std.vec, std.time, std.path, std.json, std.ui)"
+    "description": "Import std (std.math, std.str, std.io, std.vec, std.time, std.path, std.json, std.regex, std.ui)"
   },
   "Import std.math": {
     "prefix": "importstdmath",
@@ -371,6 +371,13 @@
       "import std.json;"
     ],
     "description": "Import std.json (parse, stringify, valid)"
+  },
+  "Import std.regex": {
+    "prefix": "importstdregex",
+    "body": [
+      "import std.regex;"
+    ],
+    "description": "Import std.regex (is_match, find, findall, replace, split)"
   },
   "Import ui": {
     "prefix": "importui",

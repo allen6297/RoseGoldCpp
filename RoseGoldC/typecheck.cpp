@@ -793,6 +793,17 @@ struct TypeChecker {
           return "String";
         return "";
       }
+      if (recv.text == "__regex") {
+        if (e.text == "valid" || e.text == "is_match")
+          return "Bool";
+        if (e.text == "find")
+          return "Int";
+        if (e.text == "find_match" || e.text == "replace")
+          return "String";
+        if (e.text == "captures" || e.text == "findall" || e.text == "split")
+          return "Array[String]";
+        return "Void";
+      }
       if (recv.text == "__ui") {
         if (e.text == "open")
           return "Int";
@@ -1562,6 +1573,23 @@ struct TypeChecker {
         return;
       }
       fail(line, col, "unknown function __json." + name);
+      return;
+    }
+    if (mod == "__regex") {
+      if (name == "replace") {
+        arity(3);
+        return;
+      }
+      if (name == "is_match" || name == "find" || name == "find_match" ||
+          name == "captures" || name == "findall" || name == "split") {
+        arity(2);
+        return;
+      }
+      if (name == "valid") {
+        arity(1);
+        return;
+      }
+      fail(line, col, "unknown function __regex." + name);
       return;
     }
     if (mod == "__ui") {

@@ -8,6 +8,7 @@ import io;
 import time;
 import path;
 import json;
+import regex;
 from vec import Vec2;
 from std import UUID;
 
@@ -102,6 +103,18 @@ fn stdlib_json() {
 }
 
 @test
+fn stdlib_regex() {
+    checks.that(regex.is_match("\\d+", "a42"));
+    checks.eq(regex.find("\\d+", "ab12"), 2);
+    checks.eq_string(regex.find_match("\\d+", "ab12"), "12");
+    checks.eq(len(regex.findall("[a-z]", "a1b")), 2);
+    checks.eq_string(regex.replace("a+", "xaaay", "b"), "xby");
+    checks.eq(len(regex.split("-", "a-b-c")), 3);
+    checks.that(regex.valid("\\w+"));
+    checks.that(!regex.valid("("));
+}
+
+@test
 fn stdlib_vec() {
     var v = Vec2 { x: 3.0, y: 4.0 };
     checks.eq(v.length(), 5.0);
@@ -118,6 +131,7 @@ fn stdlib_std() {
     checks.eq(len(std.v4().to_string()), 36);
     checks.that(std.time.now() > 0);
     checks.eq_string(std.path.stem("README.md"), "README");
+    checks.that(std.regex.is_match("README", "README.md"));
 }
 
 @test

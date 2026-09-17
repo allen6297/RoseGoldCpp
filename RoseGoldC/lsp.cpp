@@ -2664,8 +2664,8 @@ struct Server {
     if (ident.qualifier == "io" || ident.qualifier == "time" ||
         ident.qualifier == "path" || ident.qualifier == "math" ||
         ident.qualifier == "str" || ident.qualifier == "json" ||
-        ident.qualifier == "ui" || ident.qualifier == "vec" ||
-        ident.qualifier == "std") {
+        ident.qualifier == "regex" || ident.qualifier == "ui" ||
+        ident.qualifier == "vec" || ident.qualifier == "std") {
       NavSymbol s;
       s.name = ident.name;
       s.kind = ident.name == "Window" || ident.name == "Vec2" ||
@@ -2928,6 +2928,8 @@ struct Server {
         items.a.push_back(
             completionItem("json", 9, "std.json", "parse / stringify", "json"));
         items.a.push_back(completionItem(
+            "regex", 9, "std.regex", "match / find / replace / split", "regex"));
+        items.a.push_back(completionItem(
             "ui", 9, "std.ui", "Native windows (open / run)", "ui"));
         items.a.push_back(
             completionItem("v4", 3, "std.v4()", "Random UUID v4", "v4()"));
@@ -3024,6 +3026,26 @@ struct Server {
         items.a.push_back(completionItem(
             "valid", 2, "json.valid(s)", "True if s is JSON this crate can parse",
             "valid($0)"));
+      } else if (recv == "regex") {
+        const Builtin regexFns[] = {
+            {"valid", "valid($0)", "regex.valid(pattern)"},
+            {"is_match", "is_match($1, $2)",
+             "regex.is_match(pattern, text) — search anywhere"},
+            {"find", "find($1, $2)",
+             "regex.find(pattern, text) — start index or -1"},
+            {"find_match", "find_match($1, $2)",
+             "regex.find_match(pattern, text) — matched text or \"\""},
+            {"captures", "captures($1, $2)",
+             "regex.captures(pattern, text) — [full, g1, …] or []"},
+            {"findall", "findall($1, $2)",
+             "regex.findall(pattern, text) — non-overlapping matches"},
+            {"replace", "replace($1, $2, $3)",
+             "regex.replace(pattern, text, with) — $1 backrefs"},
+            {"split", "split($1, $2)", "regex.split(pattern, text)"},
+        };
+        for (const auto &b : regexFns)
+          items.a.push_back(
+              completionItem(b.label, 2, b.detail, "", b.insert));
       } else if (recv == "vec") {
         items.a.push_back(
             completionItem("Vec2", 7, "class Vec2", "Vec2 { x, y }", "Vec2"));

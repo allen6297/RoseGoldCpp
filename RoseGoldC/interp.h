@@ -314,12 +314,13 @@ inline bool isHostModule(const std::string &name) {
   return name == "checks" || name == "process" || name == "__math" ||
          name == "__str" || name == "__io" || name == "__uuid" ||
          name == "__time" || name == "__path" || name == "__json" ||
-         name == "__ui";
+         name == "__regex" || name == "__ui";
 }
 
 inline bool isStdlibChild(const std::string &name) {
   return name == "math" || name == "str" || name == "io" || name == "vec" ||
-         name == "time" || name == "path" || name == "json" || name == "ui";
+         name == "time" || name == "path" || name == "json" ||
+         name == "regex" || name == "ui";
 }
 
 inline bool isCrateStdlib(const std::string &name) {
