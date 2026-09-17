@@ -75,20 +75,22 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 **Now:** `checkTypeName` errors on unknown heads (`tests/fail/unknown_type_name.rg`).
 
-### 7. No call-stack / recursion limit
+### 7. Call-stack / sync emit depth — fixed
 
-**Where:** `callUser` / `runUserBody` in `eval.cpp`
+**Now:** `runUserBody` caps call depth at 1024 (`call stack overflow`). Sync `emit` caps nesting at 64 (`signal emit nested too deeply`), matching deferred waves.
 
-**Why:** Deep recursion or sync `signal.emit` re-entrancy can blow the native stack. Deferred emit has a wave cap; sync emit does not.
+**Tests:** `tests/fail/call_stack_overflow.rg`, `tests/fail/emit_nested.rg`
 
 ### 8. Range / `for i in N` resource bombs — fixed
 
 **Now:** Cap at 1_000_000 items; inclusive ranges stop at `LLONG_MAX`.  
 **Tests:** `tests/fail/range_too_large.rg`
 
-### 9. Allocation / hang builtins — partly fixed
+### 9. Allocation / hang builtins — fixed
 
-**Now:** `str.repeat` caps output at 16 MiB (`tests/fail/str_repeat_large.rg`). `time.sleep` still uncapped.
+**Now:** `str.repeat` caps output at 16 MiB; `time.sleep` / `time.delay` cap at 60_000 ms.
+
+**Tests:** `tests/fail/str_repeat_large.rg`, `tests/fail/sleep_too_large.rg`
 
 ### 10. JSON parse nesting — fixed
 
@@ -100,21 +102,19 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 **Why:** Nested packages that expect “import relative to this module” will surprise you.
 
-### 12. Lexer edge cases
+### 12. Lexer edge cases — fixed
 
-**Where:** `lexer.cpp` (`stoll` / `stod`; unexpected-char → recursive `next()`)
+**Now:** Huge integer/float literals record `… literal too large` (digit length capped); unexpected characters are consumed before recovery so junk streams cannot recurse forever.
 
-**Why:** Huge integer literals can throw; long junk streams can stack-overflow recovery.
+**Tests:** `tests/fail/int_literal_large.rg`, `tests/fail/unexpected_char.rg`
 
 ### 13. Formatter can change meaning — fixed
 
 **Now:** `#` line comments are emitted as comment tokens (kept by fmt); `\xHH` is decoded by the lexer; `fmt -w` writes via temp+rename.
 
-### 14. DAP watches + `ThrowEscape`
+### 14. DAP watches + `ThrowEscape` — fixed
 
-**Where:** `debugEval` in `eval.cpp`; `ThrowEscape` in `interp.h`
-
-**Why:** Catches `std::exception` only; language `throw` / `__io` failures can escape the DAP request path.
+**Now:** `debugEval` catches language `throw` / `ThrowEscape` and returns an error string instead of escaping the DAP request path.
 
 ### 15. Async `FnDecl*` across microtasks
 
@@ -147,8 +147,6 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 ## Suggested next fix order
 
-1. Recursion / sync signal re-entrancy limit  
-2. Optional `__io` path sandbox (if untrusted scripts are a goal)  
-3. Lexer: huge literals / junk-stream recovery  
-4. DAP: catch `ThrowEscape` in watches  
-5. Cap `time.sleep`  
+1. Optional `__io` path sandbox (only if untrusted scripts are a goal)  
+2. Import resolution relative to the importing module  
+3. Async `FnDecl*` lifetime if futures can outlive program storage  
