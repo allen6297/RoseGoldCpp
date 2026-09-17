@@ -7,7 +7,7 @@ Review of the language implementation (lexer → DAP), focused on bugs, type hol
 
 ## Verdict
 
-Solid for a growing interpreter: diagnostics recover well, async has real event-loop discipline, and the pass/fail suite is large. Clearest remaining follow-ups: `__io` sandboxing (trust-model), recursion limits, and hostile lexer streams.
+Solid for a growing interpreter: diagnostics recover well, async has real event-loop discipline, and the pass/fail suite is large. Review high/medium correctness holes from the initial audit are largely closed; remaining work is mostly optional policy (tighter sandbox root) and tooling polish.
 
 ---
 
@@ -27,6 +27,8 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 | 9 | `time.sleep` / `delay` | **Fixed** — 60s cap |
 | 12 | Lexer huge literals / junk recovery | **Fixed** |
 | 14 | DAP watches + `ThrowEscape` | **Fixed** |
+| 4 | `__io` / UI image path sandbox | **Fixed** — cwd jail |
+| 11 | Import resolution | **Fixed** — importer dir first, entry fallback |
 
 ---
 
@@ -53,15 +55,11 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 **Tests:** `tests/fail/int_overflow_add.rg`, `tests/fail/int_overflow_div.rg`
 
-### 4. Unsandboxed `__io` (and image loads)
+### 4. Unsandboxed `__io` (and image loads) — fixed
 
-**Where:** `__io` in `eval.cpp`; UI image load in `host_ui.cpp`
+**Now:** `__io` and UI image paths are resolved under the process cwd; `..` / absolute escapes raise `path outside sandbox`.
 
-**Why:** `read_text` / `write_text` / `remove` take arbitrary paths. Fine for a trusted scripting host; full FS access if untrusted code runs.
-
-**Note:** Import paths are identifiers only, so classic `import ../..` does not parse. The real escape is `__io` / UI file reads, not module tokens.
-
-**Tests:** `stdlib_io.rg`, `io_try.rg`, `io_uncaught.rg` — no hostile-path cases.
+**Tests:** `tests/fail/io_sandbox.rg`, `tests/fail/io_sandbox_dotdot.rg`
 
 ### 5. LSP/DAP unbounded `Content-Length` — fixed
 
@@ -96,11 +94,11 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 **Now:** Parse depth capped at 64 (same as stringify).
 
-### 11. Imports resolve relative to entry file
+### 11. Imports resolve relative to entry file — fixed
 
-**Where:** `Interpreter::resolveModule` in `modules.cpp` (`(void)fromFile`; uses entry `Interpreter::file`)
+**Now:** `resolveModule` searches the importing file’s directory first, then the entry script directory (so nested packages can `import helper` locally while top-level packages still resolve from nested files).
 
-**Why:** Nested packages that expect “import relative to this module” will surprise you.
+**Tests:** `tests/pass/import_rel_mod.rg` (`relpkg` → local `helper`)
 
 ### 12. Lexer edge cases — fixed
 
@@ -116,11 +114,9 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 **Now:** `debugEval` catches language `throw` / `ThrowEscape` and returns an error string instead of escaping the DAP request path.
 
-### 15. Async `FnDecl*` across microtasks
+### 15. Async `FnDecl*` across microtasks — fixed
 
-**Where:** `callUser` async path in `eval.cpp`
-
-**Why:** Safe while the `Interpreter`/kept AST lives; brittle if futures outlive program storage. Event-loop iteration limit and await-deadlock checks mitigate hangs.
+**Now:** Async `callUser` copies the `FnDecl` into a `shared_ptr` held by the microtask so the callee cannot dangle if originating Program storage is released while the future is pending.
 
 ---
 
@@ -147,6 +143,6 @@ Solid for a growing interpreter: diagnostics recover well, async has real event-
 
 ## Suggested next fix order
 
-1. Optional `__io` path sandbox (only if untrusted scripts are a goal)  
-2. Import resolution relative to the importing module  
-3. Async `FnDecl*` lifetime if futures can outlive program storage  
+1. Optional tighter sandbox root (entry-file / repo-root instead of cwd) if needed  
+2. DAP hit-count breakpoints / set variable  
+3. Further TextField polish  

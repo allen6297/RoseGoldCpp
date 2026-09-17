@@ -391,11 +391,7 @@ std::string stdlibImportHint(const std::string &name,
 
 std::vector<std::string> Interpreter::resolveModule(const std::string &name,
                                        const std::string &fromFile) {
-  (void)fromFile;
   namespace fs = std::filesystem;
-  fs::path base = fs::path(file).parent_path();
-  if (base.empty())
-    base = ".";
   std::string stem = name;
   if (stem.size() > 3 && stem.compare(stem.size() - 3, 3, ".rg") == 0)
     stem = stem.substr(0, stem.size() - 3);
@@ -455,32 +451,97 @@ std::vector<std::string> Interpreter::resolveModule(const std::string &name,
     if (c == '.')
       c = static_cast<char>(fs::path::preferred_separator);
   }
-  addDir(base / stem);
-  if (dotted != stem)
-    addDir(base / dotted);
 
-  std::error_code ec;
-  if (fs::is_directory(base, ec)) {
-    std::vector<fs::path> paths;
-    for (const auto &entry : fs::directory_iterator(base, ec)) {
-      if (ec)
-        break;
-      std::error_code fec;
-      if (!entry.is_regular_file(fec) || fec)
-        continue;
-      if (entry.path().extension() == ".rg")
-        paths.push_back(entry.path());
+  // Prefer the importing file's directory, then fall back to the entry
+  // script directory so top-level packages still resolve from nested files.
+  std::vector<fs::path> bases;
+  auto pushBase = [&](fs::path base) {
+    if (base.empty())
+      base = ".";
+    std::error_code ec;
+    fs::path key = fs::weakly_canonical(base, ec);
+    const std::string id =
+        ec ? base.generic_string() : key.generic_string();
+    for (const auto &existing : bases) {
+      fs::path ek = fs::weakly_canonical(existing, ec);
+      const std::string eid =
+          ec ? existing.generic_string() : ek.generic_string();
+      if (eid == id)
+        return;
     }
-    std::sort(paths.begin(), paths.end());
-    for (const auto &path : paths) {
-      try {
-        if (fileHasMod(readFile(path.generic_string()), stem))
-          add(path);
-      } catch (...) {
+    bases.push_back(std::move(base));
+  };
+  if (!fromFile.empty())
+    pushBase(fs::path(fromFile).parent_path());
+  pushBase(fs::path(file).parent_path());
+
+  for (const auto &base : bases) {
+    const size_t before = out.size();
+    addDir(base / stem);
+    if (dotted != stem)
+      addDir(base / dotted);
+
+    std::error_code ec;
+    if (fs::is_directory(base, ec)) {
+      std::vector<fs::path> paths;
+      for (const auto &entry : fs::directory_iterator(base, ec)) {
+        if (ec)
+          break;
+        std::error_code fec;
+        if (!entry.is_regular_file(fec) || fec)
+          continue;
+        if (entry.path().extension() == ".rg")
+          paths.push_back(entry.path());
+      }
+      std::sort(paths.begin(), paths.end());
+      for (const auto &path : paths) {
+        try {
+          if (fileHasMod(readFile(path.generic_string()), stem))
+            add(path);
+        } catch (...) {
+        }
       }
     }
+    if (out.size() > before)
+      return out;
   }
   return out;
+}
+
+std::string Interpreter::sandboxPath(const std::string &raw, int line,
+                                     int col) const {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  // Sandbox is the process working directory so relative paths keep their
+  // existing meaning (scripts, assets, scratch files) while absolute paths
+  // and .. escapes cannot leave the project tree.
+  fs::path root = fs::current_path(ec);
+  if (ec)
+    runtime("cannot resolve sandbox root", line, col);
+  fs::path rootCanon = fs::weakly_canonical(root, ec);
+  if (ec)
+    rootCanon = root;
+
+  fs::path req(raw);
+  if (req.empty())
+    runtime("invalid path '" + raw + "'", line, col);
+  if (req.is_relative())
+    req = rootCanon / req;
+  fs::path canon = fs::weakly_canonical(req, ec);
+  if (ec) {
+    fs::path parent = req.parent_path();
+    if (parent.empty())
+      parent = rootCanon;
+    fs::path parentCanon = fs::weakly_canonical(parent, ec);
+    if (ec)
+      runtime("invalid path '" + raw + "'", line, col);
+    canon = parentCanon / req.filename();
+  }
+
+  fs::path rel = fs::relative(canon, rootCanon, ec);
+  if (ec || (!rel.empty() && *rel.begin() == ".."))
+    runtime("path outside sandbox '" + raw + "'", line, col);
+  return canon.generic_string();
 }
 
 namespace {

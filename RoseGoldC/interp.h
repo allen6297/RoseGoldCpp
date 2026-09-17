@@ -505,6 +505,7 @@ struct Interpreter {
   Program *keep(Program p);
   bool fileHasMod(const std::string &source, const std::string &name) const;
   std::filesystem::path stdlibRoot() const;
+  std::string sandboxPath(const std::string &path, int line, int col) const;
   std::vector<std::string> resolveModule(const std::string &name,
                                          const std::string &fromFile);
   void ingestFns(LoadedMod &m, std::vector<FnDecl> &fns, bool fromMod,
